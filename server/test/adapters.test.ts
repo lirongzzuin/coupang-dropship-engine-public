@@ -202,6 +202,18 @@ describe('OwnerclanSource 계정 유형·권한', () => {
   });
 });
 
+describe('DomeggookSource 배송비', () => {
+  it('수량별비례(tbl)는 fee 필드가 없어도 배송비·상자당 수량을 읽음, 무료배송은 0', async () => {
+    const view = (deli: any) => (async () => jsonRes({ domeggook: { basis: { title: 't', status: '판매중' }, price: { supply: 5000 }, qty: { inventory: 10 }, deli, thumb: {}, desc: {}, seller: {}, category: {}, detail: {} } })) as unknown as typeof fetch;
+    const tbl = await new DomeggookSource({ apiKey: 'K', market: 'supply', logger: log, fetchImpl: view({ pay: '선결제', supply: { type: '수량별비례', tbl: '10+3000|10+3000' }, merge: { enable: 'y' } }) }).getProduct('1');
+    expect(tbl).toMatchObject({ shippingFee: 3000, maxPerBox: 10, shippingPerUnit: false });
+    const one = await new DomeggookSource({ apiKey: 'K', market: 'supply', logger: log, fetchImpl: view({ pay: '선결제', supply: { type: '수량별비례', tbl: '1+4500|1+4500' }, merge: { enable: 'n' } }) }).getProduct('1');
+    expect(one).toMatchObject({ shippingFee: 4500, shippingPerUnit: true });
+    const free = await new DomeggookSource({ apiKey: 'K', market: 'supply', logger: log, fetchImpl: view({ pay: '무료배송', supply: null, merge: { enable: 'y' } }) }).getProduct('1');
+    expect(free).toMatchObject({ shippingFee: 0, maxPerBox: null });
+  });
+});
+
 describe('DomeggookSource', () => {
   const urls: string[] = [];
   const fetchImpl = (async (url: string) => {

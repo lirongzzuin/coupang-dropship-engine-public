@@ -96,7 +96,7 @@ export class DomeggookSource implements SourceAdapter {
     const d = await this.call({ ver: '4.6', mode: 'getItemView', no });
     if (!d?.basis) return null;
     const unitPrice = parseTierPrice(this.market === 'supply' ? d.price?.supply ?? d.price?.dome : d.price?.dome);
-    const deli = this.market === 'supply' ? (d.deli?.supply?.fee !== undefined ? d.deli.supply : d.deli?.dome) : d.deli?.dome;
+    const deli = this.market === 'supply' ? (d.deli?.supply?.fee !== undefined || d.deli?.supply?.tbl ? d.deli.supply : d.deli?.dome) : d.deli?.dome;
     const free = String(d.deli?.pay ?? '').includes('무료') && !String(d.deli?.pay ?? '').includes('조건');
     // 수량별비례 "10+3000|10+3000" = 10개까지 한 상자 3,000원(fee 필드 없음) → 보수적으로 최소 수량·최대 금액
     const tiers = String(deli?.tbl ?? '').split('|').map((x) => x.split('+').map(Number)).filter((x) => x.length === 2 && x.every(Number.isFinite));
