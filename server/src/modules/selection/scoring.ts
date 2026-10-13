@@ -5,12 +5,28 @@ import type { TargetPrice } from '../pricing/pricing.js';
 /** 순수 함수: 게이트·점수 계산(테스트 용이성을 위해 I/O 없음). 수식은 docs/selection-model.md */
 
 export interface KeywordSignals {
+  /** 월간 검색량(네이버 검색광고) */
   searchVolume?: number;
+  /** 네이버 데이터랩 주간 추세(권한 있을 때만) */
   trend?: number[];
+  /** 검색광고 검색량을 매일 저장해 만든 월별 추이의 기울기(-1~1) — 데이터랩 대체 */
+  volumeSlope?: number;
+  /** 구글 트렌드 주간 값(보조) */
+  googleTrend?: number[];
   naverLowest?: number;
   naverCount?: number;
   naverMalls?: number;
+  /** 쿠팡 검색 상위 최저가·로켓 비율(쿠팡 파트너스) */
+  coupangLowest?: number;
+  coupangRocketRatio?: number;
   coupangSalesEst?: number;
+}
+
+/** 가격 경쟁 기준가: 쿠팡 판매이므로 쿠팡 최저가 우선, 없으면 네이버 최저가 */
+export function marketReference(sig: KeywordSignals): { price: number; source: '쿠팡' | '네이버' } | null {
+  if (sig.coupangLowest && sig.coupangLowest > 0) return { price: sig.coupangLowest, source: '쿠팡' };
+  if (sig.naverLowest && sig.naverLowest > 0) return { price: sig.naverLowest, source: '네이버' };
+  return null;
 }
 
 export interface GateResult {
@@ -19,6 +35,22 @@ export interface GateResult {
   detail: string;
   /** soft=false 면 하드 게이트(탈락) */
   hard: boolean;
+}
+
+/** 월별 검색량 이력 → 최근 달 대비 이전 달 평균의 변화율(-1~1). 2개월 미만이면 undefined */
+export function monthlySlope(history: Array<{ at: Date; value: number }>): number | undefined {
+  const byMonth = new Map<string, number[]>();
+  for (const h of history) {
+    const m = h.at.toISOString().slice(0, 7);
+    byMonth.set(m, [...(byMonth.get(m) ?? []), h.value]);
+  }
+  const months = [...byMonth.keys()].sort();
+  if (months.length < 2) return undefined;
+  const avg = (a: number[]) => a.reduce((x, y) => x + y, 0) / a.length;
+  const latest = avg(byMonth.get(months[months.length - 1]!)!);
+  const prev = avg(months.slice(-4, -1).map((m) => avg(byMonth.get(m)!)));
+  if (prev <= 0) return latest > 0 ? 1 : 0;
+  return Math.max(-1, Math.min(1, (latest - prev) / prev));
 }
 
 export function trendSlope(series: number[] | undefined, window: number): number | undefined {
@@ -52,9 +84,10 @@ export function evaluateGates(
   const kcOk = !kcNeeded || !!(d.kc && (d.kc.certified || d.kc.exempt));
   g.push({ name: 'kc', hard: true, pass: kcOk, detail: kcNeeded ? (kcOk ? 'KC 정보 있음' : 'KC 인증정보 없음') : '해당 없음' });
   g.push({ name: 'profit', hard: true, pass: tp.feasible && (tp.breakdown?.profit ?? -1) >= s.pricing.minProfitKrw, detail: tp.feasible ? `목표가 ${tp.price} 이익 ${tp.breakdown?.profit}` : '불가' });
-  if (sig.naverLowest && sig.naverLowest > 0) {
-    const limit = sig.naverLowest * (1 + sel.competitiveTolerance);
-    g.push({ name: 'competitive', hard: true, pass: tp.price <= limit, detail: `목표가 ${tp.price} / 시장최저 ${sig.naverLowest}` });
+  const ref = marketReference(sig);
+  if (ref) {
+    const limit = ref.price * (1 + sel.competitiveTolerance);
+    g.push({ name: 'competitive', hard: true, pass: tp.price <= limit, detail: `목표가 ${tp.price} / ${ref.source} 최저 ${ref.price}` });
   } else {
     g.push({ name: 'competitive', hard: sel.requireMarketPrice, pass: !sel.requireMarketPrice, detail: '시장가 정보 없음' });
   }
@@ -75,10 +108,15 @@ export function scoreCandidate(
   const parts: Record<string, number> = {};
   const clamp = (x: number) => Math.max(0, Math.min(1, x));
   if (sig.searchVolume !== undefined) parts.demand = clamp(Math.log10(sig.searchVolume + 1) / 5);
-  const slope = trendSlope(sig.trend, 4);
+  // 추세: 데이터랩 → 없으면 검색량 월별 추이
+  const slope = trendSlope(sig.trend, 4) ?? sig.volumeSlope;
   if (slope !== undefined) parts.trend = (slope + 1) / 2;
+  const gSlope = trendSlope(sig.googleTrend, 4);
+  if (gSlope !== undefined) parts.googleTrend = (gSlope + 1) / 2;
   if (sig.naverCount !== undefined) parts.competition = 1 - clamp(Math.log10(sig.naverCount + 1) / 6);
-  if (sig.naverLowest && tp.feasible) parts.priceAdvantage = clamp(((sig.naverLowest - tp.price) / sig.naverLowest) * 5);
+  const ref = marketReference(sig);
+  if (ref && tp.feasible) parts.priceAdvantage = clamp(((ref.price - tp.price) / ref.price) * 5);
+  if (sig.coupangRocketRatio !== undefined) parts.rocketCompetition = 1 - clamp(sig.coupangRocketRatio);
   if (tp.feasible && tp.breakdown) parts.margin = clamp(tp.breakdown.margin / 0.3);
   parts.supplier = clamp((d.sellerScore !== undefined ? d.sellerScore / 100 : 0.7) * 0.7 + (opts.apiOrder ? 0.3 : 0));
   if (sig.coupangSalesEst !== undefined) parts.coupangSales = clamp(Math.log10(sig.coupangSalesEst + 1) / 4);

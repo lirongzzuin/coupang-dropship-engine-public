@@ -1,6 +1,9 @@
 import { join } from 'node:path';
 import { CoupangClient } from './adapters/coupang/client.js';
 import { CoupangMarket } from './adapters/coupang/market.js';
+import { CoupangPartnersClient } from './adapters/coupang/partners.js';
+import { GoogleTrendsClient } from './adapters/google/trends.js';
+import { CompositeMarketData } from './adapters/marketData.js';
 import { DomeggookSource } from './adapters/domeggook/source.js';
 import { DryRunMarket } from './adapters/dryRunMarket.js';
 import { FakeMarket } from './adapters/fake/fakeMarket.js';
@@ -69,8 +72,17 @@ export async function buildContext(env: Env, o: BuildOverrides = {}): Promise<Ap
     searchAd: env.NAVER_SEARCHAD_CUSTOMER_ID && env.NAVER_SEARCHAD_API_KEY && env.NAVER_SEARCHAD_SECRET
       ? { customerId: env.NAVER_SEARCHAD_CUSTOMER_ID, apiKey: env.NAVER_SEARCHAD_API_KEY, secret: env.NAVER_SEARCHAD_SECRET }
       : undefined,
+    datalabEnabled: env.NAVER_DATALAB_ENABLED,
     logger: log,
   });
+  const kv = new KvStore(db);
+  const marketData = new CompositeMarketData(
+    naver,
+    env.GOOGLE_TRENDS_ENABLED ? new GoogleTrendsClient({ logger: log, cache: kv, now: () => clock.now() }) : undefined,
+    env.COUPANG_PARTNERS_ACCESS_KEY && env.COUPANG_PARTNERS_SECRET_KEY
+      ? new CoupangPartnersClient({ accessKey: env.COUPANG_PARTNERS_ACCESS_KEY, secretKey: env.COUPANG_PARTNERS_SECRET_KEY, logger: log, cache: kv, now: () => clock.now() })
+      : undefined,
+  );
 
   const demo = env.DEMO_MODE && env.MARKET_ADAPTER === 'fake';
   let sources = o.sources;
@@ -93,10 +105,10 @@ export async function buildContext(env: Env, o: BuildOverrides = {}): Promise<Ap
     log,
     clock,
     settings,
-    kv: new KvStore(db),
+    kv,
     market,
     sources,
-    marketData: o.marketData ?? (demo && !naver.hasOpenApi ? new DemoMarketData() : naver),
+    marketData: o.marketData ?? (demo && !naver.hasOpenApi ? new DemoMarketData() : marketData),
     notifications: new NotificationService(db, notifier, env.PUBLIC_BASE_URL, clock),
     storage: o.storage ?? new LocalStorage(join(env.DATA_DIR, 'media'), env.PUBLIC_BASE_URL),
     pii: new PiiCipher(env.PII_KEY),

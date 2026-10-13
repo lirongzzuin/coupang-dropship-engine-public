@@ -501,4 +501,38 @@ describe('CS·리포트·감시', () => {
     expect(o.listing_id).toBe(listing.id);
     expect(o.status).toBe('PURCHASED');
   });
+
+  it('데이터랩 없이: 연관 키워드 자동 확장 + 구글/쿠팡 신호 저장 + 쿠팡 최저가 게이트', async () => {
+    h = await makeHarness({ live: true });
+    await h.ctx.settings.update({ selection: { mode: 'manual_approve', expandRelatedPerSeed: 2 } });
+    h.marketData.related.set('정리함', [
+      { keyword: '서랍 정리함', volume: 8000, competition: '낮음' },
+      { keyword: '옷 정리함', volume: 300000, competition: '중간' }, // 검색량 상한 초과
+      { keyword: '공구 정리함', volume: 5000, competition: '높음' }, // 경쟁 높음 제외
+      { keyword: '책상 정리함', volume: 3000, competition: '중간' },
+    ]);
+    h.apiSource.add({ sourceItemId: 'R1', title: '서랍 정리함 3단', price: 15000 });
+    h.apiSource.add({ sourceItemId: 'R2', title: '책상 정리함 원목', price: 15000 });
+    h.marketData.lowest.set('서랍 정리함', 40000);
+    h.marketData.lowest.set('책상 정리함', 40000);
+    h.marketData.coupang.set('책상 정리함', { lowest: 15000, median: 20000, rocketRatio: 0.8, count: 10 }); // 쿠팡엔 더 싼 경쟁자
+    h.marketData.google.set('서랍 정리함', [10, 10, 10, 10, 30, 30, 30, 30]);
+    const r = await runSelection(h.ctx, { keywords: ['정리함'] });
+    expect(r.keywords).toBe(3); // 정리함 + 서랍 정리함 + 책상 정리함
+    const cands = await h.ctx.db.selectFrom('candidates').innerJoin('source_products', 'source_products.id', 'candidates.source_product_id').select(['source_products.source_item_id as id', 'candidates.passed', 'candidates.keyword']).execute();
+    const r1 = cands.find((c) => c.id === 'R1' && c.keyword === '서랍 정리함')!;
+    const r2 = cands.find((c) => c.id === 'R2' && c.keyword === '책상 정리함')!;
+    expect(r1.passed).toBe(true);
+    expect(r2.passed).toBe(false); // 쿠팡 최저가보다 비쌈
+    const kinds = (await h.ctx.db.selectFrom('market_signals').select('kind').distinct().execute()).map((x) => x.kind);
+    expect(kinds).toEqual(expect.arrayContaining(['related_of', 'google_trend', 'coupang_lowest', 'coupang_rocket_ratio']));
+  });
+
+  it('CSV: 판매량 외 리뷰수·상품수·평균가 열도 저장', async () => {
+    h = await makeHarness({ live: true });
+    const r = await importCoupangSalesCsv(h.ctx, '키워드,쿠팡 판매량,리뷰수,평균가\n정리함,500,"1,234",19900\n', 'pandarank');
+    expect(r.imported).toBe(1);
+    const rows = await h.ctx.db.selectFrom('market_signals').select(['kind', 'value']).where('keyword', '=', '정리함').execute();
+    expect(rows).toEqual(expect.arrayContaining([{ kind: 'coupang_sales_est', value: 500 }, { kind: 'coupang_reviews', value: 1234 }, { kind: 'coupang_avg_price', value: 19900 }]));
+  });
 });

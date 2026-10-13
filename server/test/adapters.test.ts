@@ -8,6 +8,8 @@ import { DomeggookSource } from '../src/adapters/domeggook/source.js';
 import { NaverClient, NaverShoppingSource } from '../src/adapters/naver/client.js';
 import { OwnerclanSource } from '../src/adapters/ownerclan/source.js';
 import { TelegramNotifier } from '../src/adapters/telegram/notifier.js';
+import { CoupangPartnersClient } from '../src/adapters/coupang/partners.js';
+import { GoogleTrendsClient, parseGoogleJson } from '../src/adapters/google/trends.js';
 import { createLogger } from '../src/lib/logger.js';
 
 const log = createLogger('silent');
@@ -217,10 +219,11 @@ describe('Naver', () => {
       calls.push({ url, init });
       if (url.includes('/v1/search/shop.json')) return jsonRes({ total: 345, items: [{ title: '<b>정리함</b>', lprice: '15900', mallName: 'A몰', productId: '9001', link: 'https://l', image: 'https://i', productType: '2' }] });
       if (url.includes('/v1/datalab/search')) return jsonRes({ results: [{ data: [{ ratio: 50 }, { ratio: 100 }] }] });
-      if (url.includes('keywordstool')) return jsonRes({ keywordList: [{ relKeyword: '정리함', monthlyPcQcCnt: 1200, monthlyMobileQcCnt: '< 10' }] });
+      if (url.includes('keywordstool')) return jsonRes({ keywordList: [{ relKeyword: '정리함', monthlyPcQcCnt: 1200, monthlyMobileQcCnt: '< 10', compIdx: '중간' }, { relKeyword: '서랍정리함', monthlyPcQcCnt: 3000, monthlyMobileQcCnt: 9000, compIdx: '낮음' }] });
       return jsonRes({}, 404);
     }) as unknown as typeof fetch;
-    const n = new NaverClient({ clientId: 'id', clientSecret: 'sec', searchAd: { customerId: 'C', apiKey: 'K', secret: 'S' }, logger: log, fetchImpl });
+    const n = new NaverClient({ clientId: 'id', clientSecret: 'sec', searchAd: { customerId: 'C', apiKey: 'K', secret: 'S' }, datalabEnabled: true, logger: log, fetchImpl });
+    expect(await new NaverClient({ clientId: 'id', clientSecret: 'sec', logger: log, fetchImpl }).weeklyTrend('x', 12)).toBeNull(); // 데이터랩 권한 없으면 호출 안 함
     const r = await n.shoppingSearch('정리함');
     expect(r).toEqual({ total: 345, items: [{ title: '정리함', price: 15900, mall: 'A몰', productId: '9001', link: 'https://l', image: 'https://i', productType: 2 }] });
     expect((calls[0]!.init!.headers as Record<string, string>)['X-Naver-Client-Id']).toBe('id');
@@ -231,6 +234,7 @@ describe('Naver', () => {
     const sig = createHmac('sha256', 'S').update(`${h['X-Timestamp']}.GET./keywordstool`).digest('base64');
     expect(h['X-Signature']).toBe(sig);
     expect(calls.at(-1)!.url).toContain('hintKeywords=%EC%A0%95%EB%A6%AC%ED%95%A8');
+    expect(await n.relatedKeywords('정리함')).toEqual([{ keyword: '서랍정리함', volume: 12000, competition: '낮음' }]);
 
     const src = new NaverShoppingSource(n);
     await src.search('정리함');
@@ -258,5 +262,63 @@ describe('TelegramNotifier', () => {
     expect(body.text).toContain('a &amp; b');
     expect(body.parse_mode).toBe('HTML');
     expect(await new TelegramNotifier({ logger: log }).send({ level: 'info', title: 'x', body: 'y' })).toBe(false);
+  });
+});
+
+describe('구글 트렌드(보조)', () => {
+  const series = (vals: number[]) => `)]}',\n${JSON.stringify({ default: { timelineData: vals.map((v) => ({ value: [v] })) } })}`;
+  const make = (vals: number[], status = 200) => {
+    const urls: string[] = [];
+    const store = new Map<string, unknown>();
+    const fetchImpl = (async (url: string) => {
+      urls.push(url);
+      if (status !== 200) return new Response('', { status });
+      if (url.includes('/trends/?geo')) return new Response('', { status: 200, headers: { 'set-cookie': 'NID=abc; Path=/' } });
+      if (url.includes('/api/explore')) return new Response(`)]}'\n${JSON.stringify({ widgets: [{ id: 'TIMESERIES', token: 'T', request: { a: 1 } }] })}`);
+      return new Response(series(vals));
+    }) as unknown as typeof fetch;
+    const c = new GoogleTrendsClient({ logger: log, fetchImpl, cache: { get: async (k) => store.get(k), set: async (k, v) => void store.set(k, v) } });
+    (c as any).limiter.setRate(1000);
+    return { c, urls };
+  };
+  it('쿠키 → explore → multiline 파싱, 하루 캐시', async () => {
+    const { c, urls } = make([10, 20, 30, 40, 50, 60, 70, 80]);
+    expect(await c.weeklyTrend('정리함')).toEqual([10, 20, 30, 40, 50, 60, 70, 80]);
+    expect(urls[1]).toContain('geo%22%3A%22KR');
+    const n = urls.length;
+    await c.weeklyTrend('정리함');
+    expect(urls.length).toBe(n);
+  });
+  it('희소 데이터(0이 70% 이상)는 무시, 오류·429는 null', async () => {
+    expect(await make([0, 0, 0, 0, 0, 0, 0, 100]).c.weeklyTrend('a')).toBeNull();
+    expect(await make([1], 429).c.weeklyTrend('b')).toBeNull();
+    expect(parseGoogleJson(")]}'\n{\"x\":1}")).toEqual({ x: 1 });
+  });
+});
+
+describe('쿠팡 파트너스(선택)', () => {
+  it('HMAC 서명·검색 파싱·시간당 한도·7일 캐시', async () => {
+    const urls: Array<{ url: string; auth: string }> = [];
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      urls.push({ url, auth: String((init!.headers as Record<string, string>).Authorization) });
+      return jsonRes({ rCode: '0', data: { productData: [
+        { productName: 'A', productPrice: 21000, isRocket: true, rank: 1 },
+        { productName: 'B', productPrice: 18900, isRocket: false, rank: 2 },
+        { productName: 'C', productPrice: 25000, isRocket: true, rank: 3 },
+      ] } });
+    }) as unknown as typeof fetch;
+    const store = new Map<string, unknown>();
+    const c = new CoupangPartnersClient({ accessKey: 'AK', secretKey: 'SK', logger: log, fetchImpl, maxPerHour: 2, cache: { get: async (k) => store.get(k), set: async (k, v) => void store.set(k, v) } });
+    const v = await c.searchSignal('정리함');
+    expect(v).toMatchObject({ lowest: 18900, median: 21000, count: 3 });
+    expect(v!.rocketRatio).toBeCloseTo(2 / 3);
+    expect(urls[0]!.url).toContain('/v2/providers/affiliate_open_api/apis/openapi/products/search?keyword=%EC%A0%95%EB%A6%AC%ED%95%A8&limit=10');
+    const m = urls[0]!.auth.match(/signed-date=(\w+), signature=(\w+)/)!;
+    expect(m[2]).toBe(createHmac('sha256', 'SK').update(`${m[1]}GET/v2/providers/affiliate_open_api/apis/openapi/products/searchkeyword=%EC%A0%95%EB%A6%AC%ED%95%A8&limit=10`).digest('hex'));
+    await c.searchSignal('정리함'); // 캐시
+    expect(urls.length).toBe(1);
+    await c.searchSignal('b');
+    expect(await c.searchSignal('c')).toBeNull(); // 시간당 2회 초과
+    expect(urls.length).toBe(2);
   });
 });

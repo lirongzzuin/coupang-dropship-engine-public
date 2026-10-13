@@ -1,7 +1,7 @@
 import { createHmac } from 'node:crypto';
 import type { Logger } from '../../lib/logger.js';
 import { HttpError, RateLimiter, retry } from '../../lib/util.js';
-import type { MarketDataProvider, MarketSearchResult } from '../../ports/misc.js';
+import type { MarketDataProvider, MarketSearchResult, RelatedKeyword } from '../../ports/misc.js';
 import type { SourceAdapter, SourceProductDetail, SourceProductSummary } from '../../ports/source.js';
 
 /**
@@ -14,6 +14,8 @@ export interface NaverOptions {
   clientId?: string;
   clientSecret?: string;
   searchAd?: { customerId: string; apiKey: string; secret: string };
+  /** 데이터랩(검색어트렌드) 사용 여부 — 앱에 권한이 있을 때만 true */
+  datalabEnabled?: boolean;
   logger: Logger;
   fetchImpl?: typeof fetch;
 }
@@ -68,6 +70,7 @@ export class NaverClient implements MarketDataProvider {
   }
 
   async weeklyTrend(keyword: string, weeks: number): Promise<number[] | null> {
+    if (!this.opts.datalabEnabled) return null;
     const end = new Date();
     const start = new Date(end.getTime() - weeks * 7 * 86400_000);
     const d = await this.openapi('POST', '/v1/datalab/search', undefined, {
@@ -80,29 +83,44 @@ export class NaverClient implements MarketDataProvider {
     return (d.results?.[0]?.data ?? []).map((x: any) => Number(x.ratio) || 0);
   }
 
+  get hasSearchAd(): boolean {
+    return !!this.opts.searchAd;
+  }
+
+  /** 검색광고 키워드도구 호출: hintKeywords(최대 5개, 공백 제거) → 입력 키워드 + 연관 키워드 목록 */
+  private async keywordTool(hints: string[]): Promise<RelatedKeyword[]> {
+    const ad = this.opts.searchAd!;
+    const path = '/keywordstool';
+    const ts = String(Date.now());
+    const sig = createHmac('sha256', ad.secret).update(`${ts}.GET.${path}`).digest('base64');
+    await this.adLimiter.take();
+    const res = await this.fetchImpl(`https://api.searchad.naver.com${path}?${new URLSearchParams({ hintKeywords: hints.map((k) => k.replace(/\s+/g, '')).join(','), showDetail: '1' })}`, {
+      headers: { 'X-Timestamp': ts, 'X-API-KEY': ad.apiKey, 'X-Customer': ad.customerId, 'X-Signature': sig },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) throw new HttpError(res.status, `searchad keywordstool ${res.status}`);
+    const d: any = await res.json();
+    // 검색량이 적으면 "< 10" 문자열로 옴
+    const n = (v: unknown) => (typeof v === 'number' ? v : String(v).includes('<') ? 5 : Number(v) || 0);
+    return (d.keywordList ?? []).map((k: any) => ({ keyword: String(k.relKeyword), volume: n(k.monthlyPcQcCnt) + n(k.monthlyMobileQcCnt), competition: String(k.compIdx ?? '') }));
+  }
+
   async monthlySearchVolume(keywords: string[]): Promise<Record<string, number> | null> {
-    const ad = this.opts.searchAd;
-    if (!ad) return null;
+    if (!this.opts.searchAd) return null;
     const out: Record<string, number> = {};
-    // hintKeywords 는 공백 제거 필요, 한 번에 최대 5개(공식 문서 SPA, 2차 자료 기준)
     for (let i = 0; i < keywords.length; i += 5) {
-      const chunk = keywords.slice(i, i + 5).map((k) => k.replace(/\s+/g, ''));
-      const path = '/keywordstool';
-      const ts = String(Date.now());
-      const sig = createHmac('sha256', ad.secret).update(`${ts}.GET.${path}`).digest('base64');
-      await this.adLimiter.take();
-      const res = await this.fetchImpl(`https://api.searchad.naver.com${path}?${new URLSearchParams({ hintKeywords: chunk.join(','), showDetail: '1' })}`, {
-        headers: { 'X-Timestamp': ts, 'X-API-KEY': ad.apiKey, 'X-Customer': ad.customerId, 'X-Signature': sig },
-        signal: AbortSignal.timeout(15_000),
-      });
-      if (!res.ok) throw new HttpError(res.status, `searchad keywordstool ${res.status}`);
-      const d: any = await res.json();
-      for (const k of d.keywordList ?? []) {
-        const n = (v: unknown) => (typeof v === 'number' ? v : String(v).includes('<') ? 5 : Number(v) || 0);
-        out[String(k.relKeyword)] = n(k.monthlyPcQcCnt) + n(k.monthlyMobileQcCnt);
-      }
+      const chunk = keywords.slice(i, i + 5);
+      const list = await this.keywordTool(chunk);
+      const wanted = new Set(chunk.map((k) => k.replace(/\s+/g, '')));
+      for (const k of list) if (wanted.has(k.keyword.replace(/\s+/g, ''))) out[k.keyword] = k.volume;
     }
     return out;
+  }
+
+  async relatedKeywords(seed: string): Promise<RelatedKeyword[] | null> {
+    if (!this.opts.searchAd) return null;
+    const self = seed.replace(/\s+/g, '');
+    return (await this.keywordTool([seed])).filter((k) => k.keyword.replace(/\s+/g, '') !== self);
   }
 }
 

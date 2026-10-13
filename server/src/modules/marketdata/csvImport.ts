@@ -7,7 +7,14 @@ import type { AppContext } from '../../context.js';
  */
 const COLUMN_ALIASES = {
   keyword: ['키워드', 'keyword', '검색어', '상품키워드'],
-  sales: ['판매량', '월판매량', '예상판매량', '추정판매량', 'sales', 'monthly_sales', '월 판매량'],
+  sales: ['판매량', '월판매량', '예상판매량', '추정판매량', 'sales', 'monthly_sales', '월 판매량', '쿠팡 판매량', '쿠팡판매량'],
+};
+/** 있으면 함께 저장하는 선택 열 → market_signals.kind */
+const OPTIONAL_COLUMNS: Record<string, string[]> = {
+  coupang_reviews: ['리뷰수', '리뷰 수', '총리뷰수', 'reviews'],
+  coupang_products: ['상품수', '상품 수', '경쟁상품수', 'products'],
+  coupang_avg_price: ['평균가', '평균가격', '평균 가격', 'avg_price'],
+  coupang_lowest: ['최저가', '쿠팡최저가', 'min_price'],
 };
 
 export function parseCsv(text: string): string[][] {
@@ -49,6 +56,7 @@ export async function importCoupangSalesCsv(ctx: AppContext, text: string, toolN
   const ki = find(COLUMN_ALIASES.keyword);
   const si = find(COLUMN_ALIASES.sales);
   if (ki < 0 || si < 0) throw new Error(`열을 찾을 수 없습니다. 필요: 키워드(${COLUMN_ALIASES.keyword.join('/')}), 판매량(${COLUMN_ALIASES.sales.join('/')})`);
+  const optional = Object.entries(OPTIONAL_COLUMNS).map(([kind, aliases]) => ({ kind, idx: find(aliases) })).filter((x) => x.idx >= 0);
   let imported = 0, skipped = 0;
   const now = ctx.clock.now();
   for (const r of rows.slice(1)) {
@@ -59,6 +67,12 @@ export async function importCoupangSalesCsv(ctx: AppContext, text: string, toolN
       continue;
     }
     await ctx.db.insertInto('market_signals').values({ keyword: kw, kind: 'coupang_sales_est', value: v, meta: JSON.stringify({ tool: toolName }), at: now }).execute();
+    for (const o of optional) {
+      const ov = Number((r[o.idx] ?? '').replace(/[^\d.]/g, ''));
+      if ((r[o.idx] ?? '').trim() !== '' && Number.isFinite(ov)) {
+        await ctx.db.insertInto('market_signals').values({ keyword: kw, kind: o.kind, value: ov, meta: JSON.stringify({ tool: toolName }), at: now }).execute();
+      }
+    }
     imported++;
   }
   return { imported, skipped };

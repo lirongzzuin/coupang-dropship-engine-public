@@ -3,7 +3,7 @@ import { addDays, errMessage } from '../../lib/util.js';
 import { upsertSourceProduct } from '../catalog.js';
 import { createDraftFromCandidate, registerListing } from '../listing/service.js';
 import { targetPrice } from '../pricing/pricing.js';
-import { evaluateGates, type KeywordSignals, scoreCandidate } from './scoring.js';
+import { evaluateGates, type KeywordSignals, monthlySlope, scoreCandidate } from './scoring.js';
 
 /**
  * 상품 선정 파이프라인: 키워드 → 시장 신호 → 공급처 후보 → 게이트 → 점수 → (auto) 자동 등록
@@ -49,6 +49,43 @@ export async function collectSignals(ctx: AppContext, keywords: string[]): Promi
     } catch (e) {
       ctx.log.warn({ kw, err: errMessage(e) }, '쇼핑검색 실패(무시)');
     }
+    // 검색량 이력(매일 저장) → 월별 추이: 데이터랩이 없어도 추세 확보
+    if (!sig.trend) {
+      const hist = await ctx.db.selectFrom('market_signals').select(['at', 'value']).where('keyword', '=', kw).where('kind', '=', 'search_volume').where('at', '>=', addDays(now, -150)).execute();
+      const slope = monthlySlope(hist.map((h) => ({ at: new Date(h.at), value: h.value })));
+      if (slope !== undefined) sig.volumeSlope = slope;
+    }
+    // 구글 트렌드(보조)
+    if (ctx.marketData.googleTrend) {
+      try {
+        const g = await ctx.marketData.googleTrend(kw);
+        if (g?.length) {
+          sig.googleTrend = g;
+          await save(kw, 'google_trend', g[g.length - 1] ?? 0, g);
+        }
+      } catch (e) {
+        ctx.log.warn({ kw, err: errMessage(e) }, '구글 트렌드 실패(무시)');
+      }
+    }
+    // 쿠팡 검색 상위 가격(쿠팡 파트너스, 선택)
+    if (ctx.marketData.coupangSearch) {
+      try {
+        const c = await ctx.marketData.coupangSearch(kw);
+        if (c) {
+          sig.coupangLowest = c.lowest;
+          sig.coupangRocketRatio = c.rocketRatio;
+          await save(kw, 'coupang_lowest', c.lowest, { median: c.median, count: c.count });
+          await save(kw, 'coupang_rocket_ratio', c.rocketRatio);
+        }
+      } catch (e) {
+        ctx.log.warn({ kw, err: errMessage(e) }, '쿠팡 파트너스 실패(무시)');
+      }
+    }
+    // 최근 7일 내 저장된 쿠팡 최저가(직접 조회 실패·한도 초과 시 재사용)
+    if (sig.coupangLowest === undefined) {
+      const cl = await ctx.db.selectFrom('market_signals').select('value').where('keyword', '=', kw).where('kind', '=', 'coupang_lowest').where('at', '>=', addDays(now, -7)).orderBy('at', 'desc').executeTakeFirst();
+      if (cl) sig.coupangLowest = cl.value;
+    }
     // 수동 임포트한 쿠팡 판매량 추정치(최근 30일 내)
     const est = await ctx.db.selectFrom('market_signals').select('value').where('keyword', '=', kw).where('kind', '=', 'coupang_sales_est').where('at', '>=', addDays(now, -30)).orderBy('at', 'desc').executeTakeFirst();
     if (est) sig.coupangSalesEst = est.value;
@@ -72,6 +109,33 @@ async function winnerKeywords(ctx: AppContext): Promise<string[]> {
   return rows.map((r) => r.keyword);
 }
 
+/** 네이버 검색광고 연관 키워드로 시드 확장(검색량 범위·경쟁도·금지어 필터) */
+export async function expandKeywords(ctx: AppContext, seeds: string[]): Promise<string[]> {
+  const s = await ctx.settings.get();
+  const n = s.selection.expandRelatedPerSeed;
+  if (n <= 0 || !ctx.marketData.relatedKeywords) return [];
+  const out: string[] = [];
+  const blocked = [...s.selection.blockedKeywords, ...s.selection.blockedCategoryKeywords];
+  for (const seed of seeds) {
+    try {
+      const rel = (await ctx.marketData.relatedKeywords(seed)) ?? [];
+      const picked = rel
+        .filter((r) => r.volume >= s.selection.relatedMinVolume && r.volume <= s.selection.relatedMaxVolume)
+        .filter((r) => !(s.selection.relatedExcludeHighCompetition && r.competition === '높음'))
+        .filter((r) => !blocked.some((b) => b && r.keyword.includes(b)))
+        .sort((a, b) => b.volume - a.volume)
+        .slice(0, n);
+      for (const r of picked) {
+        out.push(r.keyword);
+        await ctx.db.insertInto('market_signals').values({ keyword: r.keyword, kind: 'related_of', value: r.volume, meta: JSON.stringify({ seed, competition: r.competition }), at: ctx.clock.now() }).execute();
+      }
+    } catch (e) {
+      ctx.log.warn({ seed, err: errMessage(e) }, '연관 키워드 확장 실패(무시)');
+    }
+  }
+  return out;
+}
+
 export interface SelectionResult {
   runId: string;
   keywords: number;
@@ -84,7 +148,8 @@ export interface SelectionResult {
 export async function runSelection(ctx: AppContext, opts: { keywords?: string[] } = {}): Promise<SelectionResult> {
   const s = await ctx.settings.get();
   const runId = `run-${ctx.clock.now().getTime()}`;
-  const keywords = [...new Set([...(opts.keywords ?? s.selection.seedKeywords), ...(opts.keywords ? [] : await winnerKeywords(ctx))].map((k) => k.trim()).filter(Boolean))];
+  const seeds = [...new Set([...(opts.keywords ?? s.selection.seedKeywords), ...(opts.keywords ? [] : await winnerKeywords(ctx))].map((k) => k.trim()).filter(Boolean))];
+  const keywords = [...new Set([...seeds, ...(await expandKeywords(ctx, seeds))])];
   const result: SelectionResult = { runId, keywords: keywords.length, evaluated: 0, passed: 0, autoListed: 0, errors: [] };
   if (!keywords.length) return result;
   const signals = await collectSignals(ctx, keywords);

@@ -84,6 +84,14 @@ export const settingsSchema = z.object({
        */
       autoListRequiresApiOrder: z.boolean().default(true),
       seedKeywords: z.array(z.string()).default([]),
+      /** 시드 키워드마다 네이버 검색광고 연관 키워드를 몇 개까지 자동 추가할지(0=끔) */
+      expandRelatedPerSeed: z.number().int().default(5),
+      /** 연관 키워드 최소 월간 검색량 */
+      relatedMinVolume: z.number().int().default(1000),
+      /** 연관 키워드 최대 검색량(너무 큰 대형 키워드는 경쟁 과열) */
+      relatedMaxVolume: z.number().int().default(200000),
+      /** 광고 경쟁이 '높음'인 연관 키워드 제외 */
+      relatedExcludeHighCompetition: z.boolean().default(true),
       sources: z.array(z.string()).default(['ownerclan', 'domeggook']),
       perKeywordLimit: z.number().int().default(20),
       topNotify: z.number().int().default(5),
@@ -114,6 +122,10 @@ export const settingsSchema = z.object({
           margin: z.number().default(0.15),
           supplier: z.number().default(0.05),
           coupangSales: z.number().default(0.0),
+          /** 구글 트렌드(보조, 한국 쇼핑 키워드는 희소) */
+          googleTrend: z.number().default(0.05),
+          /** 쿠팡 검색 상위의 로켓배송 비율이 낮을수록 유리 */
+          rocketCompetition: z.number().default(0.05),
         })
         .default({}),
     })

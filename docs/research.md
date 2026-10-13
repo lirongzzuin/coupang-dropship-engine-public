@@ -134,18 +134,17 @@
 
 ---
 
-## 2-4. 수요·시장 데이터
+## 2-4. 수요·시장 데이터 (2026-10-13 개정: 데이터랩 미제공 반영)
 
-| 소스 | 엔드포인트 / 사양 | 한도 | 특성 | 신뢰도 / 출처 |
+| 소스 | 사양 | 한도 | 시스템에서의 역할 | 신뢰도 / 출처 |
 |---|---|---|---|---|
-| 네이버 데이터랩 통합검색어 트렌드 | `POST https://openapi.naver.com/v1/datalab/search`. 주제어 그룹 최대 5개 × 그룹당 검색어 20개. timeUnit date/week/month. **2016-01-01부터** | **1,000회/일** | **상대값**(구간 내 최대값=100). 요청마다 정규화가 달라짐 → 앵커 키워드를 함께 넣어 요청 간 비교 | [공식] https://developers.naver.com/docs/serviceapi/datalab/search/search.md |
-| 네이버 쇼핑인사이트 | `POST /v1/datalab/shopping/categories`(분야 최대 3개), `/category/{device,gender,age}`, `/category/keywords`, `/category/keyword/{device,gender,age}`. **2017-08-01부터** | **1,000회/일** | 검색 **클릭** 추이, 상대값 | [공식] https://developers.naver.com/docs/serviceapi/datalab/shopping/shopping.md |
-| 네이버 쇼핑 검색 | `GET /v1/search/shop.json?query&display(≤100)&start(≤1000)&sort(sim/date/asc/dsc)&exclude(used:rental:cbshop)` | **25,000회/일**(검색 API 공통) | `lprice`, `hprice`, `mallName`, `productType`(가격비교/매칭 구분), `category1~4` → 최저가 분포, 판매처 분포, 상품 수(`total`) | [공식] https://developers.naver.com/docs/serviceapi/search/shopping/shopping.md |
-| 네이버 검색광고 키워드도구 | `GET https://api.searchad.naver.com/keywordstool` (HMAC 서명, `X-Customer`, `X-API-KEY`). 응답 `monthlyPcQcCnt`, `monthlyMobileQcCnt`(**절대 월간 조회수**, 저검색은 "< 10" 문자열), 경쟁지수 등 | 공식 수치 미공개. 에러코드 1016 "Too many connections" 존재 | **절대값 기준점** → 데이터랩 상대값을 절대값으로 환산하는 데 사용 | 계정·키 [공식] https://github.com/naver/searchad-apidoc , 에러코드 [공식] NaverSA_API_Error_Code_MAP.md / 필드명 [2차] https://pypi.org/project/naver-search-ad / 한도 [미확인] |
-| 구글 트렌드 | **공식 API는 2025-07-24 알파 발표, 신청자 allowlist 방식**(셀프서비스 키·가격·쿼터 공개 없음). pytrends는 **2025-04-17 아카이브**. 유료 대안 SerpApi, DataForSEO(가격은 자료마다 다름) | — | 한국 쇼핑 수요에 대한 설명력이 낮음 → **보조 지표, 가중치 낮게, 실패하면 무시** | [2차] https://ppc.land/google-opens-alpha-testing-for-new-trends-api-targeting-developers-and-journalists/ , https://scrapebadger.com/blog/does-google-trends-have-an-api-what-to-use-in-2026 |
-| 쿠팡 판매량 | **공식 소스 없음**(API 목록 확인). 외부 도구: 아이템스카우트(쿠팡 어시스턴트 확장), 셀러라이프, 스마트데이터, 판다랭크 등. 대부분 리뷰 수·순위 등으로 **추정**하며, CSV 포맷과 추정식은 비공개이거나 유료 회원 전용 | — | **신뢰도 낮음**. 툴별 파서 어댑터로 수동 임포트하고, 값은 "추정치"로 태깅. 판매자 서버에서 쿠팡을 크롤링하는 것은 금지(0절 3) | [2차] Chrome 웹스토어 각 확장 페이지. CSV 포맷 [미확인] → 실제 내보낸 파일을 받아 파서 작성 |
-
----
+| **네이버 검색광고 키워드도구** | `GET https://api.searchad.naver.com/keywordstool` (HMAC). 입력 키워드와 **연관 키워드 목록**, 월간 PC/모바일 조회수(절대값, 적으면 "< 10"), 경쟁도 `compIdx`(낮음/중간/높음) | 공식 수치 미공개 → 1 req/s | **핵심 수요 지표.** ① 월간 검색량 ② 시드별 연관 키워드 자동 확장(검색량 범위·경쟁도 필터) ③ **매일 저장한 검색량으로 월별 추이를 계산해 데이터랩 대체** | 계정·에러코드 [공식] https://github.com/naver/searchad-apidoc / 필드명 [2차] |
+| 네이버 쇼핑 검색 | `GET /v1/search/shop.json` display≤100 | 25,000회/일 | 시장 최저가·상품 수·판매처 수 | [공식] https://developers.naver.com/docs/serviceapi/search/shopping/shopping.md |
+| 네이버 데이터랩(검색어트렌드·쇼핑인사이트) | `POST /v1/datalab/search` 등 | 1,000회/일 | **사용자 앱에서 제공되지 않음(사용자 확인 2026-10-13)** → 기본 off(`NAVER_DATALAB_ENABLED`), 권한이 있으면 켜서 사용 | [공식] 문서 / 사용자 확인 |
+| **구글 트렌드** | 공식 API는 신청자 대상 알파(5년치, 일·주·월). 시스템은 trends.google.com 공개 웹 데이터(explore → widgetdata/multiline) 사용, 12개월 주간 값 | 비공식 → 8초 간격, 키워드당 하루 1회 캐시, 429면 1시간 휴식 | **보조 추세**(가중치 0.05). **실측: 한국 쇼핑 키워드 일부는 희소(0이 대부분)** → 0이 아닌 값이 30% 미만이면 무시. 이 Mac(가정용 IP)에서 정상 응답 확인 | [공식] https://developers.google.com/search/apis/trends (알파) / 실측 2026-10-13 |
+| **쿠팡 파트너스 Open API**(선택) | `GET https://api-gateway.coupang.com/v2/providers/affiliate_open_api/apis/openapi/products/search?keyword=&limit=10`, CEA HMAC. 상위 상품명·가격·로켓 여부·순위 | 검색 **시간당 10회**(2차 자료, 일부 분당 50회) → 시간당 10회 + 키워드당 7일 캐시 | **쿠팡 내 최저가로 가격 경쟁 게이트**(네이버보다 우선), 로켓배송 비율(높을수록 불리) | [2차] https://codedosa.com/12603 / 이용 조건(API 활성화 실적 요건, 약관상 제휴 목적 외 이용 제한 여부) **[미확인] — 직접 확인 필요** |
+| 쿠팡 판매량·리뷰(유료 분석 툴 CSV) | 아이템스카우트·판다랭크·셀러라이프 등 내보내기 | — | 판매량 추정·리뷰 수·상품 수·평균가 열을 자동 인식해 저장(추정치, 기본 가중치 0) | [2차] / 포맷은 열 이름 후보로 인식 |
+| **자사 판매 실적** | 주문 데이터 | — | 최근 14일 3건 이상 팔린 키워드는 자동으로 시드에 추가 | 내부 |
 
 ## 2-5. 법규·운영 체크리스트 (판단 아님: "확인 필요 + 근거")
 

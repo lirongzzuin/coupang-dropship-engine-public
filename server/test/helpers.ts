@@ -26,6 +26,18 @@ export class FakeMarketData implements MarketDataProvider {
   lowest = new Map<string, number>();
   volume = new Map<string, number>();
   trend = new Map<string, number[]>();
+  related = new Map<string, Array<{ keyword: string; volume: number; competition: string }>>();
+  google = new Map<string, number[]>();
+  coupang = new Map<string, { lowest: number; median: number; rocketRatio: number; count: number }>();
+  async relatedKeywords(seed: string) {
+    return this.related.get(seed) ?? null;
+  }
+  async googleTrend(keyword: string) {
+    return this.google.get(keyword) ?? null;
+  }
+  async coupangSearch(keyword: string) {
+    return this.coupang.get(keyword) ?? null;
+  }
   async shoppingSearch(keyword: string): Promise<MarketSearchResult | null> {
     const p = this.lowest.get(keyword);
     if (p === undefined) return null;

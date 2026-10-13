@@ -17,7 +17,7 @@ import { parseCsv } from '../src/modules/marketdata/csvImport.js';
 import { resolveCourierCode } from '../src/modules/orders/service.js';
 import { canTransition, ORDER_STATUSES } from '../src/modules/orders/stateMachine.js';
 import { computeProfit, feeRateFor, guardPriceChange, targetPrice } from '../src/modules/pricing/pricing.js';
-import { evaluateGates, scoreCandidate, trendSlope } from '../src/modules/selection/scoring.js';
+import { evaluateGates, marketReference, monthlySlope, scoreCandidate, trendSlope } from '../src/modules/selection/scoring.js';
 import { TEST_ENV_BASE } from './helpers.js';
 
 const S0 = () => mergeSettings(defaultSettings(), { fees: { monthlyServiceFee: 0 } });
@@ -209,6 +209,28 @@ describe('selection scoring', () => {
     expect(g3.find((g) => g.name === 'kc')!.pass).toBe(true);
     const g4 = evaluateGates(s, { ...d, title: '건강기능식품 비타민' }, tp, { naverLowest: 99999 }, { apiOrder: true });
     expect(g4.find((g) => g.name === 'category')!.pass).toBe(false);
+  });
+  it('가격 기준: 쿠팡 최저가 우선, 없으면 네이버', () => {
+    expect(marketReference({ naverLowest: 30000, coupangLowest: 25000 })).toEqual({ price: 25000, source: '쿠팡' });
+    expect(marketReference({ naverLowest: 30000 })).toEqual({ price: 30000, source: '네이버' });
+    expect(marketReference({})).toBeNull();
+    // 네이버 기준 통과여도 쿠팡 최저가보다 비싸면 탈락
+    const g = evaluateGates(s, d, tp, { naverLowest: tp.price + 5000, coupangLowest: tp.price - 100 }, { apiOrder: true });
+    expect(g.find((x) => x.name === 'competitive')!.pass).toBe(false);
+    expect(g.find((x) => x.name === 'competitive')!.detail).toContain('쿠팡');
+  });
+  it('검색량 월별 추이 기울기(데이터랩 대체)', () => {
+    const at = (m: string) => new Date(`2026-${m}-15T00:00:00Z`);
+    expect(monthlySlope([{ at: at('09'), value: 1000 }])).toBeUndefined();
+    expect(monthlySlope([{ at: at('08'), value: 1000 }, { at: at('09'), value: 1000 }, { at: at('10'), value: 1500 }])).toBe(0.5);
+    expect(monthlySlope([{ at: at('09'), value: 2000 }, { at: at('10'), value: 1000 }])).toBe(-0.5);
+  });
+  it('구글 트렌드·로켓 비율이 점수에 반영', () => {
+    const base = scoreCandidate(s, d, tp, { naverLowest: 30000 }, { apiOrder: true });
+    const up = scoreCandidate(s, d, tp, { naverLowest: 30000, googleTrend: [10, 10, 10, 10, 20, 20, 20, 20], coupangRocketRatio: 0 }, { apiOrder: true });
+    expect(up.parts.googleTrend).toBe(1);
+    expect(up.parts.rocketCompetition).toBe(1);
+    expect(up.score).toBeGreaterThan(base.score);
   });
   it('시장가 미상: requireMarketPrice 설정 따름', () => {
     expect(evaluateGates(s, d, tp, {}, { apiOrder: true }).find((g) => g.name === 'competitive')!.pass).toBe(false);

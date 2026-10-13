@@ -58,6 +58,13 @@ export const envSchema = z.object({
   NAVER_SEARCHAD_CUSTOMER_ID: optStr,
   NAVER_SEARCHAD_API_KEY: optStr,
   NAVER_SEARCHAD_SECRET: optStr,
+  /** 네이버 데이터랩(검색어트렌드) 권한이 있는 앱일 때만 true */
+  NAVER_DATALAB_ENABLED: bool(false),
+  /** 구글 트렌드 보조 지표(공개 웹 데이터, 가정용 IP에서 동작). 문제 시 false */
+  GOOGLE_TRENDS_ENABLED: bool(true),
+  /** 쿠팡 파트너스 Open API(선택): 쿠팡 검색 상위 가격·로켓 비율 */
+  COUPANG_PARTNERS_ACCESS_KEY: optStr,
+  COUPANG_PARTNERS_SECRET_KEY: optStr,
 
   TELEGRAM_BOT_TOKEN: optStr,
   TELEGRAM_CHAT_ID: optStr,
