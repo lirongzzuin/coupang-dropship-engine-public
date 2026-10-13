@@ -3,6 +3,24 @@
 #   curl -fsSL https://raw.githubusercontent.com/<계정>/<레포>/main/deploy/setup-vps.sh | sudo bash
 # 또는 레포 파일을 복사해 sudo bash deploy/setup-vps.sh
 set -euo pipefail
+
+# 이 스크립트는 VPS(Ubuntu 서버) 전용 — 내 PC(macOS 등)에서 실행 방지
+if [ "$(uname -s)" != "Linux" ]; then
+  echo "❌ 이 스크립트는 VPS(Ubuntu 서버)에서 실행해야 합니다. 현재 OS: $(uname -s)"
+  echo "   1) 서버 접속:  ssh root@<서버IP>"
+  echo "   2) 서버에서:   git clone https://github.com/lirongzzuin/coupang-dropship-engine.git && cd coupang-dropship-engine"
+  echo "   3) 서버에서:   sudo bash deploy/setup-vps.sh"
+  exit 1
+fi
+if ! command -v apt-get >/dev/null; then
+  echo "❌ Ubuntu/Debian 계열 서버에서만 지원합니다."
+  exit 1
+fi
+if [ "$(id -u)" -ne 0 ]; then
+  echo "❌ root 권한이 필요합니다: sudo bash deploy/setup-vps.sh"
+  exit 1
+fi
+
 DEPLOY_USER=${DEPLOY_USER:-deploy}
 DEPLOY_PATH=${DEPLOY_PATH:-/opt/dropship}
 
