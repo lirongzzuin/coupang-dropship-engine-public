@@ -1,3 +1,4 @@
+import { keywordMatches } from './demandModel.js';
 import { extractImageUrls } from '../listing/text.js';
 import type { Settings } from '../../config/settings.js';
 import type { SourceProductDetail } from '../../ports/source.js';
@@ -81,10 +82,8 @@ export function evaluateGates(
   const g: GateResult[] = [];
   g.push({ name: 'status', hard: true, pass: d.status === 'active', detail: d.status });
   if (opts.keyword) {
-    const n = (x: string) => x.replace(/\s+/g, '').toLowerCase();
-    const title = n(d.title);
-    const words = opts.keyword.split(/\s+/).filter(Boolean);
-    const rel = title.includes(n(opts.keyword)) || words.every((w) => title.includes(n(w)));
+    // 단어 단위 일치(복합명사는 끝 단어가 핵심): '필사노트'는 노트 ✓, '노트북'은 노트 ✗
+    const rel = keywordMatches(d.title, opts.keyword);
     g.push({ name: 'relevance', hard: true, pass: rel, detail: rel ? '키워드 일치' : `상품명에 '${opts.keyword}' 없음` });
   }
   if (opts.enforceCategory && s.discovery.allowTopCategories.length) {

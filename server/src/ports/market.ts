@@ -79,6 +79,16 @@ export interface CategoryMeta {
   notices: CategoryNoticeMeta[];
   /** 필수 구매옵션 속성 이름 */
   requiredAttributes: string[];
+  /** 필수 구매옵션 상세(값 형식·단위) */
+  requiredAttributeSpecs?: AttributeSpec[];
+}
+
+export interface AttributeSpec {
+  name: string;
+  /** STRING | NUMBER */
+  dataType: string;
+  basicUnit?: string;
+  usableUnits?: string[];
 }
 
 export interface RevenueLine {

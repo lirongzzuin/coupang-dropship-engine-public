@@ -216,8 +216,8 @@ export async function reviewSlowListings(ctx: AppContext): Promise<{ lowered: nu
       continue;
     }
     const setAt = new Date(l.price_set_at ?? l.listed_at!);
-    if (setAt > cutoff) continue; // 마지막 가격 조정 후 아직 기간이 안 지남
-    await pauseListing(ctx, l, `판매 부진(${s.listing.zeroSaleDays}일 0건)`, true);
+    if (setAt > addDays(ctx.clock.now(), -s.listing.stopAfterLowerDays)) continue; // 하한가 시도 후 아직 기간이 안 지남
+    await pauseListing(ctx, l, `판매 부진(${s.listing.zeroSaleDays}일 0건 → 하한가 ${s.listing.stopAfterLowerDays}일도 0건)`, true);
     out.stopped++;
   }
   if (out.stopped) await ctx.notifications.notify('info', `판매 부진 상품 ${out.stopped}개 종료`, '다음 선정 주기에 새 후보로 교체됩니다.', { path: '/listings' });

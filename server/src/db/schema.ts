@@ -309,6 +309,8 @@ export interface DB {
   kv: KvTable;
   keywords: KeywordsTable;
   listing_items: ListingItemsTable;
+  daily_metrics: DailyMetricsTable;
+  selection_runs: SelectionRunsTable;
 }
 
 export type OrderRow = Selectable<OrdersTable>;
@@ -318,3 +320,27 @@ export type SourceProductRow = Selectable<SourceProductsTable>;
 export type CandidateRow = Selectable<CandidatesTable>;
 export type NewOrder = Insertable<OrdersTable>;
 export type OrderUpdate = Updateable<OrdersTable>;
+
+export interface DailyMetricsTable {
+  /** KST YYYY-MM-DD */
+  day: string;
+  listing_id: number;
+  status: string;
+  sale_price: number;
+  markup: number | null;
+  orders: number;
+  revenue: number;
+  expected_profit: number;
+}
+
+export interface SelectionRunsTable {
+  run_id: string;
+  at: Ts;
+  keywords: number;
+  evaluated: number;
+  passed: number;
+  listed: number;
+  fails: Json | null;
+  skipped: Json | null;
+  model: Json | null;
+}

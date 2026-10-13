@@ -337,7 +337,7 @@ describe('DRY_RUN 기본 모드', () => {
     const m = h.notifier.sent.find((x) => x.title.startsWith('상품 선정 결과'))!;
     expect(m.title).toContain('모의 실행');
     expect(m.body).toContain('모의 등록(실제 쿠팡엔 안 올라감) 1개');
-    expect(m.body).toMatch(/원목 수납 정리함 — [\d,]+원 \(예상 이익 [\d,]+원\)/);
+    expect(m.body).toMatch(/원목 수납 정리함 — [\d,]+원 \(개당 이익 [\d,]+원, 기대 월이익 [\d,]+원\)/);
   });
 });
 
@@ -461,7 +461,9 @@ describe('CS·리포트·감시', () => {
     await h.ctx.settings.update({ coupang: { keyIssuedAt: '2026-04-30' } });
     const body = await sendDailyReport(h.ctx);
     expect(body).toContain('어제');
-    expect(body).toContain('키 만료까지 14일');
+    expect(body).toContain('쿠팡 API 키 재발급(D-14)');
+    expect(body).toContain('주문 수집 마지막 성공: 없음'); // 한 번도 안 돌았으면 시스템 확인 필요
+    expect(h.notifier.titles().some((t) => t.startsWith('☀️ 아침 브리핑'))).toBe(true);
     h.clock.advanceMinutes(60);
     const w = await watchdog(h.ctx);
     expect(w.alerts).toBe(2);

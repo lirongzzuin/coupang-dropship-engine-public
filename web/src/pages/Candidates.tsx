@@ -8,11 +8,12 @@ interface Cand {
   id: number; keyword: string; score: number; passed: boolean; target_price: number | null; est_profit: number | null; est_margin: number | null;
   market_lowest: number | null; status: string; gates: Gate[]; title: string; source: string; price: number; shipping_fee: number; url: string;
   image_url: string | null; image_reuse_allowed: boolean;
+  signals?: { demand?: { sales: number; profit: number; factors?: Record<string, number> }; keywordMedianPrice?: number; searchVolume?: number; competition?: string } | null;
 }
 
 const GATE_LABEL: Record<string, string> = {
   status: '판매상태', stock: '재고', relevance: '키워드 일치', allowedCategory: '허용 분류', moq: '최소주문', supplyPrice: '공급가 범위', trademark: '상표', category: '금지 카테고리', kc: 'KC 인증',
-  profit: '이익', competitive: '가격 경쟁력', images: '이미지', notice: '고시정보', apiOrder: '자동 발주',
+  profit: '이익', competitive: '가격 경쟁력', prepDays: '출고일', sellerQuality: '판매자 평가', images: '이미지', notice: '고시정보', apiOrder: '자동 발주',
 };
 
 export function Candidates() {
@@ -72,6 +73,13 @@ function CandItem({ c, act, onDone }: { c: Cand; act: ReturnType<typeof useActio
         <div>
           <a className="item-title" href={c.url} target="_blank" rel="noreferrer">{c.title}</a>
           <div className="item-sub">공급 {won(c.price)}+{won(c.shipping_fee)} → 판매 {won(c.target_price)} · 이익 {won(c.est_profit)} ({c.est_margin ? `${Math.round(c.est_margin * 100)}%` : '-'}) · 시장최저 {won(c.market_lowest)}</div>
+          {c.signals?.demand && (
+            <div className="item-sub">
+              기대 월 {c.signals.demand.sales}개 · 월이익 {won(c.signals.demand.profit)} · 검색량 {c.signals.searchVolume?.toLocaleString() ?? '?'}
+              {c.signals.competition ? ` · 경쟁 ${c.signals.competition}` : ''}
+              {c.signals.keywordMedianPrice ? ` · 키워드 중앙가 ${won(c.signals.keywordMedianPrice)}` : ''}
+            </div>
+          )}
         </div>
       </div>
       <div className="gates">

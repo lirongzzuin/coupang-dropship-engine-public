@@ -148,6 +148,10 @@ export class CoupangMarket implements MarketPort {
         details: (n.noticeCategoryDetailNames ?? []).map((x: any) => ({ name: x.noticeCategoryDetailName, required: x.required === 'MANDATORY' })),
       })),
       requiredAttributes: (d.attributes ?? []).filter((a: any) => a.required === 'MANDATORY').map((a: any) => a.attributeTypeName),
+      requiredAttributeSpecs: (d.attributes ?? []).filter((a: any) => a.required === 'MANDATORY').map((a: any) => ({
+        name: String(a.attributeTypeName), dataType: String(a.dataType ?? 'STRING'),
+        basicUnit: a.basicUnit && a.basicUnit !== '없음' ? String(a.basicUnit) : undefined, usableUnits: (a.usableUnits ?? []).map(String),
+      })),
     };
   }
 

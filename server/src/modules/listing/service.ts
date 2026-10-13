@@ -129,6 +129,9 @@ export async function registerListing(ctx: AppContext, id: number, actor = 'syst
   const meta = await ctx.market.getCategoryMeta(categoryCode);
   let images = l.images as string[];
   let sourceHtml = d?.detailHtml;
+  if (s.listing.convertImages && isLive(ctx.env, 'LIVE_LISTING') && !ctx.env.MEDIA_PUBLIC_BASE_URL) {
+    throw new ListingError('이미지 공개 주소 미설정 — 쿠팡이 상품 이미지를 가져갈 수 없습니다. 터미널에서 bash ~/dropship/bin/media-public.sh 를 실행하세요');
+  }
   if (s.listing.convertImages) {
     // 확장자 없는 URL·GIF·PNG → 흰 배경 .jpg(우리 서버 /media). 상세 이미지는 재사용 허용 상품만
     images = await prepareMainImages(ctx, images);

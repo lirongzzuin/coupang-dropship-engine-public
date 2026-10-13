@@ -1,5 +1,5 @@
 import type { Settings } from '../../config/settings.js';
-import type { CategoryMeta } from '../../ports/market.js';
+import type { AttributeSpec, CategoryMeta } from '../../ports/market.js';
 import type { SourceProductDetail } from '../../ports/source.js';
 import { truncate } from '../../lib/util.js';
 
@@ -82,7 +82,7 @@ export function buildCoupangPayload(s: Settings, p: PayloadInput): Record<string
         searchTags: p.tags.slice(0, 20),
         images: p.images.slice(0, 10).map((url, i) => ({ imageOrder: i, imageType: i === 0 ? 'REPRESENTATION' : 'DETAIL', vendorPath: url })),
         notices: buildNotices(p.meta, p.detail, c.companyContactNumber),
-        attributes: [{ attributeTypeName: '수량', attributeValueName: `${o.units}개` }],
+        attributes: buildAttributes(p.meta, p.title, o.units),
         contents: [{ contentsType: 'HTML', contentDetails: [{ content: p.detailHtml, detailType: 'TEXT' }] }],
         offerCondition: 'NEW',
       })),
@@ -115,4 +115,41 @@ export function buildNotices(meta: CategoryMeta, detail: SourceProductDetail | n
 
 function kstLocal(d: Date): string {
   return new Date(d.getTime() + 9 * 3600_000).toISOString().slice(0, 19);
+}
+
+export class AttributeError extends Error {}
+
+const COLORS = ['블랙', '화이트', '그레이', '베이지', '네이비', '핑크', '블루', '레드', '그린', '브라운', '아이보리', '옐로우', '퍼플', '민트', '오렌지', '실버', '골드', '투명', '카키', '와인', '차콜', '크림', '검정', '흰색', '회색', '빨강', '파랑', '노랑', '초록', '분홍', '하늘색', '남색', '갈색'];
+
+/**
+ * 카테고리 필수 구매옵션(색상·사이즈·수량 등)을 상품명에서 채운다. 쿠팡은 필수 속성이 빠지면 등록을 거부.
+ * - 수량: 묶음 수량(n개)
+ * - 색상: 상품명의 색상 단어, 없으면 "상세페이지 참조"
+ * - 사이즈: 상품명의 규격(44리터, 30x40cm 등), 패션은 FREE, 없으면 "상세페이지 참조"
+ * - 그 밖의 숫자형 속성(용량·중량 등): 상품명에서 단위가 맞는 숫자를 찾고, 없으면 등록 불가(AttributeError → 다른 후보로)
+ */
+export function buildAttributes(meta: CategoryMeta, title: string, units: number): Array<{ attributeTypeName: string; attributeValueName: string }> {
+  const specs: AttributeSpec[] = meta.requiredAttributeSpecs ?? meta.requiredAttributes.map((name) => ({ name, dataType: name === '수량' ? 'NUMBER' : 'STRING' }));
+  const out: Array<{ attributeTypeName: string; attributeValueName: string }> = [];
+  const has = (n: string) => out.some((x) => x.attributeTypeName === n);
+  for (const a of specs) {
+    const n = a.name;
+    if (n === '수량' || (a.dataType === 'NUMBER' && /수량|개수/.test(n))) {
+      out.push({ attributeTypeName: n, attributeValueName: `${units}${a.usableUnits?.includes('개') || !a.basicUnit ? '개' : a.basicUnit}` });
+    } else if (/색상|컬러/.test(n)) {
+      out.push({ attributeTypeName: n, attributeValueName: COLORS.find((c) => title.includes(c)) ?? '상세페이지 참조' });
+    } else if (/사이즈|크기/.test(n)) {
+      const m = title.match(/(\d+\s*[xX*×]\s*\d+(?:\s*[xX*×]\s*\d+)?\s*(?:cm|mm)?|\d+(?:\.\d+)?\s*(?:리터|L|ml|cm|mm|m)(?![A-Za-z])|(?<![A-Za-z])(?:XS|S|M|L|XL|XXL|FREE)(?![A-Za-z]))/);
+      out.push({ attributeTypeName: n, attributeValueName: m ? m[0].replace(/\s+/g, '') : /패션|의류|잡화/.test(n) ? 'FREE' : '상세페이지 참조' });
+    } else if (a.dataType === 'NUMBER') {
+      const unitsRe = (a.usableUnits?.length ? a.usableUnits : a.basicUnit ? [a.basicUnit] : []).map((u) => u.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+      const m = unitsRe ? title.match(new RegExp(`(\\d+(?:\\.\\d+)?)\\s*(${unitsRe})`, 'i')) : null;
+      if (!m) throw new AttributeError(`필수 속성 '${n}' 값을 상품명에서 찾지 못함`);
+      out.push({ attributeTypeName: n, attributeValueName: `${m[1]}${m[2]}` });
+    } else {
+      out.push({ attributeTypeName: n, attributeValueName: '상세페이지 참조' });
+    }
+  }
+  if (!has('수량') && !specs.length) out.push({ attributeTypeName: '수량', attributeValueName: `${units}개` });
+  return out;
 }

@@ -148,6 +148,19 @@ export const settingsSchema = z.object({
       sources: z.array(z.string()).default(['ownerclan', 'domeggook']),
       perKeywordLimit: z.number().int().default(20),
       topNotify: z.number().int().default(5),
+      /** 같은 키워드로 동시에 운영할 최대 상품 수(분산) */
+      maxPerKeyword: z.number().int().default(2),
+      /** 최종 점수 = 기대 월이익 점수 × blend + 품질 점수 × (1 − blend) */
+      demandBlend: z.number().min(0).max(1).default(0.6),
+      /** 수요 모델 계수(docs/selection-model.md) */
+      model: z
+        .object({
+          baseSalesPer10k: z.number().default(1.5),
+          volumeExponent: z.number().default(0.6),
+          brandFactor: z.number().default(0.6),
+          bulkFactor: z.number().default(0.5),
+        })
+        .default({}),
       /** 공급가 하한(저가 상품은 배송비 고정비로 불리 — feasibility.md 2-3) */
       minSupplyPrice: z.number().int().default(15000),
       maxSupplyPrice: z.number().int().default(200000),
@@ -260,6 +273,8 @@ export const settingsSchema = z.object({
         .array(z.string())
         .default(['무료배송', '할인', '세일', '최저가', '특가', '특별가', '한정수량', '신상', '인기상품', '1+1', '당일출고', '당일발송', '국내발송', '묶음배송', '고급', '고품질', '본사정품', '최신', '지금구매', '이벤트']),
       maxTitleLength: z.number().int().default(100),
+      /** 하한가로 내린 뒤에도 이 기간 0건이면 판매종료 → 새 상품으로 교체 */
+      stopAfterLowerDays: z.number().int().default(10),
       /** 공급처 이미지를 .jpg로 변환해 우리 서버(/media)에서 제공(쿠팡은 확장자 없는 URL·GIF 거부) */
       convertImages: z.boolean().default(true),
       maxTags: z.number().int().default(20),

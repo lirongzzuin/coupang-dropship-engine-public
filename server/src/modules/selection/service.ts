@@ -4,7 +4,8 @@ import { upsertSourceProduct } from '../catalog.js';
 import { createDraftFromCandidate, registerListing } from '../listing/service.js';
 import { pickKeywordsForRun, recordKeywordResults } from '../keywords/service.js';
 import { targetPrice } from '../pricing/pricing.js';
-import { evaluateGates, type KeywordSignals, marketReference, monthlySlope, scoreCandidate } from './scoring.js';
+import { DEFAULT_MODEL, expectedMonthly, keywordMatches, learnedFactor, looksBranded, looksBulk, median, productFamily, profitScore } from './demandModel.js';
+import { evaluateGates, type KeywordSignals, marketReference, monthlySlope, scoreCandidate, trendSlope } from './scoring.js';
 
 /**
  * 상품 선정 파이프라인: 키워드 → 시장 신호 → 공급처 후보 → 게이트 → 점수 → (auto) 자동 등록
@@ -105,6 +106,39 @@ export async function collectSignals(ctx: AppContext, keywords: string[]): Promi
 }
 
 /** 잘 팔리는 상품의 키워드를 자동으로 시드에 추가(최근 14일 주문 3건 이상) */
+/**
+ * 학습 데이터: 실제로 올린 상품(모의 등록 제외)의 판매 vs 기대 판매를 키워드·카테고리별로 합산.
+ * 기대 판매 = 선정 당시 수요 모델의 월판매 × 운영 개월 수. 등록 7일 미만은 판단 보류.
+ */
+export async function learnedHistory(ctx: AppContext): Promise<{ byKeyword: Map<string, { orders: number; expected: number }>; byCategory: Map<string, { orders: number; expected: number }> }> {
+  const now = ctx.clock.now().getTime();
+  const rows = await ctx.db.selectFrom('listings').innerJoin('candidates', 'candidates.id', 'listings.candidate_id')
+    .select(['listings.id', 'listings.listed_at', 'listings.status', 'listings.updated_at', 'candidates.keyword', 'candidates.signals'])
+    .where('listings.dry_run', '=', false).where('listings.listed_at', 'is not', null).execute();
+  const counts = rows.length
+    ? await ctx.db.selectFrom('orders').select(['listing_id', (eb) => eb.fn.countAll<number>().as('n')])
+      .where('listing_id', 'in', rows.map((r) => r.id)).where('status', 'not in', ['CANCELLED']).groupBy('listing_id').execute()
+    : [];
+  const orders = new Map(counts.map((c) => [c.listing_id, Number(c.n)]));
+  const byKeyword = new Map<string, { orders: number; expected: number }>();
+  const byCategory = new Map<string, { orders: number; expected: number }>();
+  const add = (m: Map<string, { orders: number; expected: number }>, k: string, o: number, e: number) => {
+    const cur = m.get(k) ?? { orders: 0, expected: 0 };
+    m.set(k, { orders: cur.orders + o, expected: cur.expected + e });
+  };
+  for (const r of rows) {
+    const end = r.status === 'stopped' ? new Date(r.updated_at).getTime() : now;
+    const months = (end - new Date(r.listed_at!).getTime()) / (30 * 86400_000);
+    if (months < 0.25) continue;
+    const sig = (typeof r.signals === 'string' ? JSON.parse(r.signals) : r.signals) as { demand?: { sales?: number }; category?: string } | null;
+    const expected = (sig?.demand?.sales ?? 1) * months;
+    const o = orders.get(r.id) ?? 0;
+    add(byKeyword, r.keyword, o, expected);
+    if (sig?.category) add(byCategory, sig.category, o, expected);
+  }
+  return { byKeyword, byCategory };
+}
+
 async function winnerKeywords(ctx: AppContext): Promise<string[]> {
   const since = addDays(ctx.clock.now(), -14);
   const rows = await ctx.db
@@ -179,15 +213,23 @@ export async function runSelection(ctx: AppContext, opts: { keywords?: string[] 
   const seenTitles = new Set<string>();
   const sources = s.selection.sources.map((id) => ctx.sources.get(id)).filter((x): x is NonNullable<typeof x> => !!x && x.capabilities.search);
 
+  const learned = await learnedHistory(ctx);
+  const comp = Object.fromEntries((await ctx.db.selectFrom('keywords').select(['keyword', 'competition']).where('keyword', 'in', keywords).execute()).map((r) => [r.keyword, r.competition]));
+  const model = { ...DEFAULT_MODEL, ...s.selection.model };
+  const failCounts: Record<string, number> = {};
+
   for (const kw of keywords) {
+    // 1) 공급처별 검색 → 키워드 공급가 중앙값(사람들이 많이 사는 가격대의 기준)
+    const bySource: Array<{ src: (typeof sources)[number]; found: Awaited<ReturnType<(typeof sources)[number]['search']>> }> = [];
     for (const src of sources) {
-      let found;
       try {
-        found = await src.search(kw, { limit: s.selection.perKeywordLimit, minPrice: s.selection.minSupplyPrice, maxPrice: s.selection.maxSupplyPrice });
+        bySource.push({ src, found: await src.search(kw, { limit: s.selection.perKeywordLimit, minPrice: s.selection.minSupplyPrice, maxPrice: s.selection.maxSupplyPrice }) });
       } catch (e) {
         result.errors.push(`${src.id}/${kw}: ${errMessage(e)}`);
-        continue;
       }
+    }
+    const kwMedian = median(bySource.flatMap((x) => x.found.filter((i) => keywordMatches(i.title, kw)).map((i) => i.price)));
+    for (const { src, found } of bySource) {
       for (const item of found) {
         try {
           const d = src.capabilities.detail ? await src.getProduct(item.sourceItemId, { title: item.title }) : null;
@@ -197,7 +239,6 @@ export async function runSelection(ctx: AppContext, opts: { keywords?: string[] 
           if (already) continue;
           const tp = targetPrice(s, { cost: d.price, shipping: d.shippingFee, categoryPath: d.categoryPath, inputVatDeductible: d.taxInvoice, minResalePrice: d.minResalePrice });
           const apiOrder = src.capabilities.apiOrder;
-          // 시장 최저가에서 자기 자신(같은 상품) 제외는 네이버 소스일 때만 의미가 있음
           const sig = { ...signals[kw] };
           // 같은 키워드 안에서 같은 상품명(다른 판매자 복제)은 한 번만. 키워드가 다르면 시장가 기준이 달라 따로 평가
           const dupKey = `${kw}|${d.title.replace(/\s+/g, '')}`;
@@ -205,7 +246,27 @@ export async function runSelection(ctx: AppContext, opts: { keywords?: string[] 
           seenTitles.add(dupKey);
           const gates = evaluateGates(s, d, tp, sig, { apiOrder, keyword: kw, enforceCategory: s.discovery.enforceCategoryForSources.includes(src.id), marketPriceAvailable });
           const passed = gates.every((g) => !g.hard || g.pass);
-          const { score, parts } = scoreCandidate(s, d, tp, sig, { apiOrder });
+          for (const g of gates) if (g.hard && !g.pass) failCounts[g.name] = (failCounts[g.name] ?? 0) + 1;
+          const quality = scoreCandidate(s, d, tp, sig, { apiOrder });
+          // 2) 기대 월이익(수요 모델) — 우선순위의 핵심
+          const conv = ['fastShipping', 'imageRichness', 'returnable'].map((k) => quality.parts[k]).filter((x): x is number => x !== undefined);
+          const top = (d.categoryPath ?? '').split('>')[0] ?? '';
+          const learnedKw = learnedFactor(learned.byKeyword.get(kw));
+          const learnedCat = learnedFactor(learned.byCategory.get(top));
+          const demand = expectedMonthly({
+            searchVolume: sig.searchVolume,
+            competition: comp[kw] ?? null,
+            priceRatio: kwMedian ? d.price / kwMedian : undefined,
+            slope: trendSlope(sig.trend, 4) ?? sig.volumeSlope,
+            conversion: conv.length ? conv.reduce((a, b) => a + b, 0) / conv.length : undefined,
+            brand: looksBranded(d.title),
+            bulk: looksBulk(d.title),
+            learned: Math.sqrt(learnedKw * learnedCat),
+            unitProfit: tp.breakdown?.profit ?? 0,
+          }, model);
+          const blend = s.selection.demandBlend;
+          const score = Math.round((profitScore(demand.profit) * blend + quality.score * (1 - blend)) * 1000) / 1000;
+          const parts = { ...quality.parts, expectedProfit: profitScore(demand.profit) };
           result.evaluated++;
           if (passed) result.passed++;
           const ks = kwStats.get(kw) ?? { passed: 0, listed: 0 };
@@ -215,7 +276,7 @@ export async function runSelection(ctx: AppContext, opts: { keywords?: string[] 
             source_product_id: sp.id,
             keyword: kw,
             score,
-            signals: JSON.stringify({ ...sig, trend: undefined, parts }),
+            signals: JSON.stringify({ ...sig, trend: undefined, competition: comp[kw] ?? undefined, keywordMedianPrice: kwMedian, parts, demand, family: productFamily(d.title), category: top }),
             gates: JSON.stringify(gates),
             passed,
             target_price: tp.feasible ? tp.price : null,
@@ -247,15 +308,25 @@ export async function runSelection(ctx: AppContext, opts: { keywords?: string[] 
     }
   }
   await notifySelectionSummary(ctx, runId, result, auto);
+  // 개선용 기록(1회 1행): 어떤 조건에서 몇 개가 왜 탈락·등록됐는지
+  await ctx.db.insertInto('selection_runs').values({
+    run_id: runId, at: ctx.clock.now(), keywords: result.keywords, evaluated: result.evaluated, passed: result.passed, listed: result.autoListed,
+    fails: JSON.stringify(failCounts), skipped: JSON.stringify(auto?.skipped ?? {}), model: JSON.stringify({ ...model, blend: s.selection.demandBlend }),
+  }).onConflict((oc) => oc.column('run_id').doNothing()).execute();
   await recordKeywordResults(ctx, kwStats);
   return result;
 }
 
 interface AutoListOutcome {
-  listed: Array<{ keyword: string; title: string; price: number; profit: number | null; dryRun: boolean }>;
+  listed: Array<{ keyword: string; title: string; price: number; profit: number | null; dryRun: boolean; monthly?: number }>;
   /** 등록하지 않은 이유별 개수 */
   skipped: Record<string, number>;
   stopReason?: string;
+}
+
+function demandOf(signals: unknown): { sales: number; profit: number } | undefined {
+  const sig = (typeof signals === 'string' ? JSON.parse(signals) : signals) as { demand?: { sales: number; profit: number } } | null;
+  return sig?.demand;
 }
 
 /** auto 모드: 무인 운영 조건을 만족하는 상위 후보만 자동 등록 */
@@ -266,12 +337,18 @@ async function autoList(ctx: AppContext, runId: string): Promise<AutoListOutcome
   const rows = await ctx.db
     .selectFrom('candidates')
     .innerJoin('source_products', 'source_products.id', 'candidates.source_product_id')
-    .select(['candidates.id', 'candidates.score', 'candidates.keyword', 'candidates.est_profit', 'source_products.source', 'source_products.image_reuse_allowed', 'source_products.title'])
+    .select(['candidates.id', 'candidates.score', 'candidates.keyword', 'candidates.est_profit', 'candidates.signals', 'source_products.source', 'source_products.image_reuse_allowed', 'source_products.title'])
     .where('run_id', '=', runId)
     .where('passed', '=', true)
     .where('candidates.status', '=', 'new')
     .orderBy('score', 'desc')
     .execute();
+  // 분산: 이미 운영 중인 상품의 계열·키워드 수(같은 상품 색상 변형 중복 등록, 한 키워드 몰빵 방지)
+  const live = await ctx.db.selectFrom('listings').leftJoin('candidates', 'candidates.id', 'listings.candidate_id')
+    .select(['listings.title', 'candidates.keyword']).where('listings.status', 'in', ['draft', 'pending_approval', 'active', 'paused']).execute();
+  const families = new Set(live.map((x) => productFamily(x.title)));
+  const perKeyword = new Map<string, number>();
+  for (const x of live) if (x.keyword) perKeyword.set(x.keyword, (perKeyword.get(x.keyword) ?? 0) + 1);
   const seenProducts = new Set<string>();
   for (const r of rows) {
     if (out.listed.length >= s.selection.autoListPerRun) {
@@ -292,14 +369,30 @@ async function autoList(ctx: AppContext, runId: string): Promise<AutoListOutcome
       continue;
     }
     if (seenProducts.has(r.title)) continue;
+    const fam = productFamily(r.title);
+    if (fam && families.has(fam)) {
+      skip('같은 상품(색상·사이즈 변형) 이미 등록');
+      continue;
+    }
+    if ((perKeyword.get(r.keyword) ?? 0) >= s.selection.maxPerKeyword) {
+      skip(`키워드당 ${s.selection.maxPerKeyword}개 한도`);
+      continue;
+    }
     seenProducts.add(r.title);
     try {
       const draft = await createDraftFromCandidate(ctx, r.id, 'auto');
       const l = await registerListing(ctx, draft.id, 'auto');
-      out.listed.push({ keyword: r.keyword, title: r.title, price: l.sale_price, profit: r.est_profit, dryRun: !!l.dry_run });
+      out.listed.push({ keyword: r.keyword, title: r.title, price: l.sale_price, profit: r.est_profit, dryRun: !!l.dry_run, monthly: demandOf(r.signals)?.profit });
+      if (fam) families.add(fam);
+      perKeyword.set(r.keyword, (perKeyword.get(r.keyword) ?? 0) + 1);
     } catch (e) {
       const msg = errMessage(e);
       ctx.log.warn({ candidate: r.id, err: msg }, '자동 등록 실패');
+      if (msg.includes('이미지 공개 주소 미설정')) {
+        out.stopReason = msg;
+        await ctx.notifications.notify('error', '자동 등록 중단: 이미지 공개 필요', msg, { path: '/settings', dedupeKey: 'autolist-media', dedupeMinutes: 24 * 60 });
+        break;
+      }
       if (msg.includes('쿠팡 정보 미입력')) {
         out.stopReason = msg;
         await ctx.notifications.notify('error', '자동 등록 중단: 설정 필요', `${msg}\n설정 화면에서 쿠팡 판매자 정보를 입력하면 다음 선정 주기에 자동 등록됩니다.`, { path: '/settings', dedupeKey: 'autolist-settings', dedupeMinutes: 24 * 60 });
@@ -321,13 +414,13 @@ async function notifySelectionSummary(ctx: AppContext, runId: string, result: Se
   if (!result.evaluated && !result.errors.length) return;
   const won = (n: number | null | undefined) => (n === null || n === undefined ? '?' : `${Math.round(n).toLocaleString()}원`);
   const top = await ctx.db.selectFrom('candidates').innerJoin('source_products', 'source_products.id', 'candidates.source_product_id')
-    .select(['source_products.title', 'source_products.source', 'candidates.score', 'candidates.est_profit', 'candidates.target_price', 'candidates.market_lowest'])
+    .select(['source_products.title', 'source_products.source', 'candidates.score', 'candidates.est_profit', 'candidates.target_price', 'candidates.market_lowest', 'candidates.signals'])
     .where('run_id', '=', runId).where('passed', '=', true).orderBy('score', 'desc').limit(s.selection.topNotify).execute();
   const lines: string[] = [`키워드 ${result.keywords}개 · 검토 ${result.evaluated}개 · 통과 ${result.passed}개`];
   if (auto?.listed.length) {
     const dry = auto.listed.some((x) => x.dryRun);
     lines.push('', `✅ ${dry ? '모의 등록(실제 쿠팡엔 안 올라감)' : '쿠팡 등록 요청'} ${auto.listed.length}개`);
-    for (const x of auto.listed) lines.push(`• ${x.title.slice(0, 30)} — ${won(x.price)} (예상 이익 ${won(x.profit)})`);
+    for (const x of auto.listed) lines.push(`• ${x.title.slice(0, 30)} — ${won(x.price)} (개당 이익 ${won(x.profit)}${x.monthly !== undefined ? `, 기대 월이익 ${won(x.monthly)}` : ''})`);
   } else if (auto) {
     lines.push('', '등록한 상품 없음');
   }
@@ -336,7 +429,10 @@ async function notifySelectionSummary(ctx: AppContext, runId: string, result: Se
   if (skipped.length) lines.push(`등록 안 한 이유: ${skipped.map(([k, n]) => `${k} ${n}개`).join(' · ')}`);
   if (top.length) {
     lines.push('', '상위 후보');
-    top.forEach((t, i) => lines.push(`${i + 1}. ${t.title.slice(0, 30)} [${t.source}] 판매가 ${won(t.target_price)}~ · 이익 ${won(t.est_profit)}${t.market_lowest ? ` · 시장 최저 ${won(t.market_lowest)}` : ''}`));
+    top.forEach((t, i) => {
+      const dm = demandOf(t.signals);
+      lines.push(`${i + 1}. ${t.title.slice(0, 30)} [${t.source}] 판매가 ${won(t.target_price)}~ · 개당 이익 ${won(t.est_profit)}${dm ? ` · 기대 월 ${dm.sales}개/${won(dm.profit)}` : ''}${t.market_lowest ? ` · 시장 최저 ${won(t.market_lowest)}` : ''}`);
+    });
   }
   if (result.errors.length) lines.push('', `오류 ${result.errors.length}건(예: ${result.errors[0]!.slice(0, 80)})`);
   if (!auto) lines.push('', '수동 승인 모드: 관리 화면 [후보]에서 승인하면 등록됩니다.');
