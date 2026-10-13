@@ -319,7 +319,8 @@ export async function buildServer(ctx: AppContext, scheduler: Scheduler | null, 
   });
 
   // ── 관리자 웹(SPA) 정적 서빙 ──
-  const webDir = opts.webDir ?? resolve(process.cwd(), '../web/dist');
+  // 상대경로로 줘도 동작하도록 항상 절대경로로 변환
+  const webDir = resolve(opts.webDir ?? '../web/dist');
   if (existsSync(webDir)) {
     await app.register(fastifyStatic, { root: webDir, prefix: '/', wildcard: false });
     app.setNotFoundHandler((req, reply) => {
