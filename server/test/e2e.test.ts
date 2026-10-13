@@ -473,4 +473,32 @@ describe('CS·리포트·감시', () => {
     expect(h.notifier.titles()).toContain('공인 IP 변경: 1.2.3.4 → 5.6.7.8');
     expect(await checkPublicIp(h.ctx)).toBe(0);
   });
+
+  it('첫 상품 수동 등록 지원: 견적 → 쿠팡 기존 상품 연결 → 주문 자동 발주', async () => {
+    h = await makeHarness({ live: true });
+    const { quoteSourceItem, linkExistingListing } = await import('../src/modules/listing/service.js');
+    h.apiSource.add({ sourceItemId: 'Q1', title: '[무료배송] 스텐 수납 정리함 특가', price: 15000 });
+    const q = await quoteSourceItem(h.ctx, 'mockapi', 'Q1');
+    expect(q.suggestedTitle).toBe('스텐 수납 정리함');
+    expect(q.salePrice).toBeGreaterThan(15000);
+    expect(q.profit!.profit).toBeGreaterThanOrEqual(2000);
+    expect(q.images.length).toBe(1);
+    expect(q.apiOrder).toBe(true);
+    await expect(quoteSourceItem(h.ctx, 'nope', 'Q1')).rejects.toThrow(/등록되지 않은 공급처/);
+
+    // 판매가가 기준보다 낮으면 경고
+    const low = await linkExistingListing(h.ctx, { vendorItemId: '70001', salePrice: 10000, source: 'mockapi', sourceItemId: 'Q1' }, 'admin');
+    expect(low.warning).toMatch(/낮습니다/);
+    await expect(linkExistingListing(h.ctx, { vendorItemId: '70001', salePrice: q.salePrice!, source: 'mockapi', sourceItemId: 'Q1' }, 'admin')).rejects.toThrow(/이미 연결/);
+    await h.ctx.db.updateTable('listings').set({ status: 'stopped' }).where('id', '=', low.listing.id).execute();
+
+    const { listing, warning } = await linkExistingListing(h.ctx, { vendorItemId: '70002', sellerProductId: '9001', salePrice: q.salePrice!, source: 'mockapi', sourceItemId: 'Q1' }, 'admin');
+    expect(warning).toBeNull();
+    expect(listing.status).toBe('active');
+    const line = h.market.seedOrder({ vendorItemId: '70002', paidAmount: q.salePrice!, orderedAt: h.clock.now() });
+    await cycle();
+    const o = await orderByBox(h, line.shipmentBoxId);
+    expect(o.listing_id).toBe(listing.id);
+    expect(o.status).toBe('PURCHASED');
+  });
 });

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { api, dt, won } from '../api';
 import { Badge, Loading, Msg, statusTone, useAction, useLoad } from '../ui';
+import { LinkTool } from './LinkTool';
 
 interface Listing {
   id: number; title: string; status: string; status_reason: string | null; sale_price: number; floor_price: number; images: string[];
@@ -20,6 +21,7 @@ export function Listings() {
   const act = useAction();
   return (
     <div className="stack">
+      <LinkTool onLinked={reload} />
       <Msg msg={act.msg} />
       <div className="tabs scroll">
         {FILTERS.map((f) => <button key={f} className={filter === f ? 'on' : ''} onClick={() => setFilter(f)}>{f ? STATUS_LABEL[f] : '전체'}</button>)}

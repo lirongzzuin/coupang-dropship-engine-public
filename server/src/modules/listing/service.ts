@@ -183,3 +183,92 @@ export async function refreshListingStatuses(ctx: AppContext): Promise<{ approve
   }
   return { approved, rejected };
 }
+
+/**
+ * 공급처 상품 견적: 쿠팡에 직접(수동) 등록할 때 쓸 상품명·판매가·이미지·고시정보를 계산.
+ * (쿠팡 API 키 발급 전 첫 상품을 Wing에서 등록할 때 사용)
+ */
+export async function quoteSourceItem(ctx: AppContext, source: string, sourceItemId: string) {
+  const s = await ctx.settings.get();
+  const src = ctx.sources.get(source);
+  if (!src) throw new ListingError(`등록되지 않은 공급처: ${source} (.env 에 해당 공급처 키를 넣었는지 확인)`);
+  const d = await src.getProduct(sourceItemId.trim());
+  if (!d) throw new ListingError('공급처에서 상품을 찾을 수 없습니다(상품코드 확인)');
+  const { upsertSourceProduct } = await import('../catalog.js');
+  await upsertSourceProduct(ctx, source, d);
+  const tp = targetPrice(s, { cost: d.price, shipping: d.shippingFee, categoryPath: d.categoryPath, inputVatDeductible: d.taxInvoice, minResalePrice: d.minResalePrice });
+  const title = sanitizeTitle(d.title, s.listing.bannedTerms, s.listing.maxTitleLength);
+  return {
+    source,
+    sourceItemId: d.sourceItemId,
+    sourceUrl: d.url,
+    status: d.status,
+    stock: d.stock,
+    supplyPrice: d.price,
+    shippingFee: d.shippingFee,
+    minResalePrice: d.minResalePrice ?? null,
+    suggestedTitle: title,
+    suggestedTags: buildTags(title, '', s.listing.bannedTerms, s.listing.maxTags),
+    salePrice: tp.feasible ? tp.price : null,
+    profit: tp.breakdown,
+    images: d.imageReuseAllowed ? d.images : [],
+    imageReuseAllowed: d.imageReuseAllowed,
+    prepDays: (d.prepDays ?? 1) + s.listing.shippingBufferDays,
+    notice: d.notice ?? null,
+    kc: d.kc ?? null,
+    apiOrder: src.capabilities.apiOrder,
+  };
+}
+
+/**
+ * 쿠팡에 이미 등록된 상품(Wing에서 직접 등록한 것 포함)을 공급처 상품과 연결.
+ * 연결 후에는 주문 자동 처리·가격/재고 동기화가 똑같이 적용된다.
+ */
+export async function linkExistingListing(
+  ctx: AppContext,
+  input: { vendorItemId: string; sellerProductId?: string; salePrice: number; source: string; sourceItemId: string; title?: string },
+  actor: string,
+): Promise<{ listing: ListingRow; warning: string | null }> {
+  const s = await ctx.settings.get();
+  const vendorItemId = input.vendorItemId.trim();
+  if (!/^\d+$/.test(vendorItemId) && !ctx.env.DEMO_MODE && ctx.env.MARKET_ADAPTER === 'coupang') throw new ListingError('옵션ID(vendorItemId)는 숫자입니다. Wing > 상품조회/수정에서 확인하세요');
+  const dup = await ctx.db.selectFrom('listings').select('id').where('vendor_item_id', '=', vendorItemId).where('status', 'not in', ['stopped', 'rejected']).executeTakeFirst();
+  if (dup) throw new ListingError(`이미 연결된 옵션ID입니다(상품 #${dup.id})`);
+  const src = ctx.sources.get(input.source);
+  if (!src) throw new ListingError(`등록되지 않은 공급처: ${input.source}`);
+  const d = await src.getProduct(input.sourceItemId.trim());
+  if (!d) throw new ListingError('공급처에서 상품을 찾을 수 없습니다');
+  const { upsertSourceProduct } = await import('../catalog.js');
+  const sp = await upsertSourceProduct(ctx, input.source, d);
+  const tp = targetPrice(s, { cost: d.price, shipping: d.shippingFee, categoryPath: d.categoryPath, inputVatDeductible: d.taxInvoice, minResalePrice: d.minResalePrice });
+  const floor = tp.feasible ? tp.floor : input.salePrice;
+  const now = ctx.clock.now();
+  const listing = await ctx.db
+    .insertInto('listings')
+    .values({
+      source_product_id: sp.id,
+      market: ctx.market.name,
+      seller_product_id: input.sellerProductId?.trim() || null,
+      vendor_item_id: vendorItemId,
+      title: input.title?.trim() || d.title,
+      search_tags: JSON.stringify([]),
+      sale_price: input.salePrice,
+      floor_price: floor,
+      images: JSON.stringify(d.imageReuseAllowed ? d.images : []),
+      status: 'active',
+      status_reason: '기존 쿠팡 상품 연결',
+      dry_run: false,
+      created_at: now,
+      updated_at: now,
+      listed_at: now,
+    })
+    .returningAll()
+    .executeTakeFirstOrThrow();
+  await audit(ctx, actor, 'listing.link', String(listing.id), input);
+  const warning = !tp.feasible
+    ? '이 상품은 설정한 최소 이익 기준을 맞출 수 없습니다. 주문이 들어오면 손익을 확인하세요.'
+    : input.salePrice < tp.floor
+      ? `현재 판매가(${input.salePrice.toLocaleString()}원)가 최소 이익 기준 판매가(${tp.floor.toLocaleString()}원)보다 낮습니다. 가격 동기화(LIVE_PRICING)를 켜면 자동으로 올립니다.`
+      : null;
+  return { listing, warning };
+}

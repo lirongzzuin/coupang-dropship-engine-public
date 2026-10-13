@@ -16,7 +16,7 @@ import { errMessage } from '../lib/util.js';
 import { answerInquiry } from '../modules/cs/service.js';
 import { monthlyCsv } from '../modules/finance/service.js';
 import { pauseListing, resumeListing } from '../modules/listing/control.js';
-import { ListingError, registerListing, updateDraft, validateListing } from '../modules/listing/service.js';
+import { linkExistingListing, ListingError, quoteSourceItem, registerListing, updateDraft, validateListing } from '../modules/listing/service.js';
 import { importCoupangSalesCsv } from '../modules/marketdata/csvImport.js';
 import { confirmPurchase, decryptReceiver, OrderError, overrideAndProcess, submitTracking, transition } from '../modules/orders/service.js';
 import { ACTION_STATUSES, EXCEPTION_STATUSES, ORDER_STATUSES, type OrderStatus, STATUS_LABEL } from '../modules/orders/stateMachine.js';
@@ -218,6 +218,18 @@ export async function buildServer(ctx: AppContext, scheduler: Scheduler | null, 
     api.get('/api/listings/:id/validate', async (req) => {
       const l = await ctx.db.selectFrom('listings').selectAll().where('id', '=', idParam(req)).executeTakeFirstOrThrow();
       return { problems: await validateListing(ctx, l) };
+    });
+    // 쿠팡에 직접 등록할 상품의 견적(상품명·판매가·이미지) / 이미 등록된 쿠팡 상품 연결
+    api.post('/api/tools/quote', async (req) => {
+      const b = z.object({ source: z.string().min(1), sourceItemId: z.string().min(1) }).parse(req.body);
+      return quoteSourceItem(ctx, b.source, b.sourceItemId);
+    });
+    api.post('/api/listings/link', async (req) => {
+      const b = z.object({
+        vendorItemId: z.string().min(1), sellerProductId: z.string().optional(), salePrice: z.coerce.number().int().positive(),
+        source: z.string().min(1), sourceItemId: z.string().min(1), title: z.string().optional(),
+      }).parse(req.body);
+      return linkExistingListing(ctx, b, actor(req));
     });
     api.post('/api/listings/:id/register', async (req) => registerListing(ctx, idParam(req), actor(req)));
     api.post('/api/listings/:id/pause', async (req) => {
