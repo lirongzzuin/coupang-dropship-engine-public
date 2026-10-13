@@ -138,7 +138,7 @@
 
 | 소스 | 사양 | 한도 | 시스템에서의 역할 | 신뢰도 / 출처 |
 |---|---|---|---|---|
-| **네이버 검색광고 키워드도구** | `GET https://api.searchad.naver.com/keywordstool` (HMAC). 입력 키워드와 **연관 키워드 목록**, 월간 PC/모바일 조회수(절대값, 적으면 "< 10"), 경쟁도 `compIdx`(낮음/중간/높음) | 공식 수치 미공개 → 1 req/s | **핵심 수요 지표.** ① 월간 검색량 ② 시드별 연관 키워드 자동 확장(검색량 범위·경쟁도 필터) ③ **매일 저장한 검색량으로 월별 추이를 계산해 데이터랩 대체** | 계정·에러코드 [공식] https://github.com/naver/searchad-apidoc / 필드명 [2차] |
+| **네이버 검색광고 키워드도구** | `GET https://api.searchad.naver.com/keywordstool` (HMAC). 입력 키워드와 **연관 키워드 목록**, 월간 PC/모바일 조회수(절대값, 적으면 "< 10"), 경쟁도 `compIdx`(낮음/중간/높음). **2025-09 광고계정 통합 → API 키는 '네이버 광고주센터'(ads.naver.com)에서 발급·확인**(릴리스노트 2025-08-12·2026-07-02, API는 2026-09에도 공지 갱신 중) | 다른 API 대비 1/5~1/6, IP 단위 제한. 429면 **5분 이상 전체 중단**(공식 가이드 2020-12-18) → 2초 간격 + 5분 차단기 | **핵심 수요 지표.** ① 월간 검색량 ② 시드별 연관 키워드 자동 확장(검색량 범위·경쟁도 필터) ③ **매일 저장한 검색량으로 월별 추이를 계산해 데이터랩 대체** | [공식] 릴리스노트 https://naver.github.io/searchad-apidoc/feed.xml (확인 2026-10-13), 에러코드 https://github.com/naver/searchad-apidoc / 필드명 [2차] |
 | 네이버 쇼핑 검색 | `GET /v1/search/shop.json` display≤100 | 25,000회/일 | 시장 최저가·상품 수·판매처 수 | [공식] https://developers.naver.com/docs/serviceapi/search/shopping/shopping.md |
 | 네이버 데이터랩(검색어트렌드·쇼핑인사이트) | `POST /v1/datalab/search` 등 | 1,000회/일 | **사용자 앱에서 제공되지 않음(사용자 확인 2026-10-13)** → 기본 off(`NAVER_DATALAB_ENABLED`), 권한이 있으면 켜서 사용 | [공식] 문서 / 사용자 확인 |
 | **구글 트렌드** | 공식 API는 신청자 대상 알파(5년치, 일·주·월). 시스템은 trends.google.com 공개 웹 데이터(explore → widgetdata/multiline) 사용, 12개월 주간 값 | 비공식 → 8초 간격, 키워드당 하루 1회 캐시, 429면 1시간 휴식 | **보조 추세**(가중치 0.05). **실측: 한국 쇼핑 키워드 일부는 희소(0이 대부분)** → 0이 아닌 값이 30% 미만이면 무시. 이 Mac(가정용 IP)에서 정상 응답 확인 | [공식] https://developers.google.com/search/apis/trends (알파) / 실측 2026-10-13 |

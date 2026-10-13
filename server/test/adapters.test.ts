@@ -223,6 +223,7 @@ describe('Naver', () => {
       return jsonRes({}, 404);
     }) as unknown as typeof fetch;
     const n = new NaverClient({ clientId: 'id', clientSecret: 'sec', searchAd: { customerId: 'C', apiKey: 'K', secret: 'S' }, datalabEnabled: true, logger: log, fetchImpl });
+    (n as any).adLimiter.setRate(1000);
     expect(await new NaverClient({ clientId: 'id', clientSecret: 'sec', logger: log, fetchImpl }).weeklyTrend('x', 12)).toBeNull(); // 데이터랩 권한 없으면 호출 안 함
     const r = await n.shoppingSearch('정리함');
     expect(r).toEqual({ total: 345, items: [{ title: '정리함', price: 15900, mall: 'A몰', productId: '9001', link: 'https://l', image: 'https://i', productType: 2 }] });
@@ -240,6 +241,21 @@ describe('Naver', () => {
     await src.search('정리함');
     const d = await src.getProduct('9001');
     expect(d).toMatchObject({ price: 15900, imageReuseAllowed: false, taxInvoice: false });
+  });
+
+  it('키워드도구 429 → 5분간 호출 중단(공식 가이드), 401 → 재발급 안내', async () => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls++;
+      return new Response('{}', { status: calls === 1 ? 429 : 401 });
+    }) as unknown as typeof fetch;
+    const n = new NaverClient({ searchAd: { customerId: 'C', apiKey: 'K', secret: 'S' }, logger: log, fetchImpl });
+    (n as any).adLimiter.setRate(1000);
+    await expect(n.monthlySearchVolume(['a'])).rejects.toThrow(/429/);
+    await expect(n.monthlySearchVolume(['a'])).rejects.toThrow(/5분/);
+    expect(calls).toBe(1); // 차단 중엔 실제 호출 안 함
+    (n as any).adBlockedUntil = 0;
+    await expect(n.relatedKeywords('a')).rejects.toThrow(/광고주센터/);
   });
 
   it('키 미설정 시 신호 없음(null)', async () => {

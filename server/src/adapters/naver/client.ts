@@ -9,6 +9,7 @@ import type { SourceAdapter, SourceProductDetail, SourceProductSummary } from '.
  * - 쇼핑 검색: GET https://openapi.naver.com/v1/search/shop.json (25,000회/일, display≤100)
  * - 데이터랩 통합검색어 트렌드: POST /v1/datalab/search (1,000회/일, 상대값)
  * - 검색광고 키워드도구: GET https://api.searchad.naver.com/keywordstool (HMAC)
+ *   2025-09 광고계정 통합 이후 키는 '네이버 광고주센터(ads.naver.com)'에서 발급·확인 (릴리스노트 2026-07-02, 확인 2026-10-13)
  */
 export interface NaverOptions {
   clientId?: string;
@@ -22,7 +23,12 @@ export interface NaverOptions {
 
 export class NaverClient implements MarketDataProvider {
   private readonly limiter = new RateLimiter(5);
-  private readonly adLimiter = new RateLimiter(1);
+  /**
+   * 키워드도구(RelKwdStat)는 다른 API 대비 1/5~1/6 속도 제한, IP 단위로도 제한.
+   * 429 를 받으면 최소 5분 모든 호출 중단(공식 가이드 2020-12-18, 2026-10-13 재확인) → 2초 간격 + 5분 차단기
+   */
+  private readonly adLimiter = new RateLimiter(0.5);
+  private adBlockedUntil = 0;
   private readonly fetchImpl: typeof fetch;
   constructor(private readonly opts: NaverOptions) {
     this.fetchImpl = opts.fetchImpl ?? fetch;
@@ -93,11 +99,17 @@ export class NaverClient implements MarketDataProvider {
     const path = '/keywordstool';
     const ts = String(Date.now());
     const sig = createHmac('sha256', ad.secret).update(`${ts}.GET.${path}`).digest('base64');
+    if (Date.now() < this.adBlockedUntil) throw new HttpError(429, '검색광고 키워드도구 호출 일시 중단(429 후 5분 대기)');
     await this.adLimiter.take();
     const res = await this.fetchImpl(`https://api.searchad.naver.com${path}?${new URLSearchParams({ hintKeywords: hints.map((k) => k.replace(/\s+/g, '')).join(','), showDetail: '1' })}`, {
       headers: { 'X-Timestamp': ts, 'X-API-KEY': ad.apiKey, 'X-Customer': ad.customerId, 'X-Signature': sig },
       signal: AbortSignal.timeout(15_000),
     });
+    if (res.status === 429) {
+      this.adBlockedUntil = Date.now() + 5 * 60_000;
+      throw new HttpError(429, '검색광고 키워드도구 429 — 5분간 호출 중단');
+    }
+    if (res.status === 401 || res.status === 403) throw new HttpError(res.status, '검색광고 API 인증 실패 — 네이버 광고주센터(ads.naver.com)에서 API 키(비밀키) 확인·재발급 필요');
     if (!res.ok) throw new HttpError(res.status, `searchad keywordstool ${res.status}`);
     const d: any = await res.json();
     // 검색량이 적으면 "< 10" 문자열로 옴
