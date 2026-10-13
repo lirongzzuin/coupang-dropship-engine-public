@@ -234,65 +234,111 @@ export async function runSelection(ctx: AppContext, opts: { keywords?: string[] 
   // 이전 실행의 미결정 후보는 만료
   await ctx.db.updateTable('candidates').set({ status: 'expired' }).where('status', '=', 'new').where('run_id', '!=', runId).execute();
 
+  let auto: AutoListOutcome | null = null;
   if (s.selection.mode === 'auto' && !s.killSwitch) {
-    const listedKws = await autoList(ctx, runId);
+    auto = await autoList(ctx, runId);
+    const listedKws = auto.listed.map((x) => x.keyword);
     result.autoListed = listedKws.length;
     for (const k of listedKws) {
       const ks = kwStats.get(k);
       if (ks) ks.listed++;
     }
-  } else {
-    const top = await ctx.db.selectFrom('candidates').innerJoin('source_products', 'source_products.id', 'candidates.source_product_id')
-      .select(['candidates.id', 'source_products.title', 'candidates.score', 'candidates.est_profit'])
-      .where('run_id', '=', runId).where('passed', '=', true).orderBy('score', 'desc').limit(s.selection.topNotify).execute();
-    if (top.length) {
-      await ctx.notifications.notify('action', `상품 후보 ${result.passed}개`, top.map((t, i) => `${i + 1}. ${t.title} (점수 ${t.score}, 이익 ${t.est_profit?.toLocaleString()}원)`).join('\n'), { path: '/candidates' });
-    }
   }
+  await notifySelectionSummary(ctx, runId, result, auto);
   await recordKeywordResults(ctx, kwStats);
   return result;
 }
 
+interface AutoListOutcome {
+  listed: Array<{ keyword: string; title: string; price: number; profit: number | null; dryRun: boolean }>;
+  /** 등록하지 않은 이유별 개수 */
+  skipped: Record<string, number>;
+  stopReason?: string;
+}
+
 /** auto 모드: 무인 운영 조건을 만족하는 상위 후보만 자동 등록 */
-async function autoList(ctx: AppContext, runId: string): Promise<string[]> {
+async function autoList(ctx: AppContext, runId: string): Promise<AutoListOutcome> {
   const s = await ctx.settings.get();
+  const out: AutoListOutcome = { listed: [], skipped: {} };
+  const skip = (why: string) => (out.skipped[why] = (out.skipped[why] ?? 0) + 1);
   const rows = await ctx.db
     .selectFrom('candidates')
     .innerJoin('source_products', 'source_products.id', 'candidates.source_product_id')
-    .select(['candidates.id', 'candidates.score', 'candidates.keyword', 'source_products.source', 'source_products.image_reuse_allowed', 'source_products.title'])
+    .select(['candidates.id', 'candidates.score', 'candidates.keyword', 'candidates.est_profit', 'source_products.source', 'source_products.image_reuse_allowed', 'source_products.title'])
     .where('run_id', '=', runId)
     .where('passed', '=', true)
     .where('candidates.status', '=', 'new')
-    .where('score', '>=', s.selection.autoListMinScore)
     .orderBy('score', 'desc')
     .execute();
-  let listed = 0;
-  const listedKeywords: string[] = [];
   const seenProducts = new Set<string>();
   for (const r of rows) {
-    if (listed >= s.selection.autoListPerRun) break;
-    if (!r.image_reuse_allowed) continue; // 이미지 직접 제작 필요 → 사람 몫
+    if (out.listed.length >= s.selection.autoListPerRun) {
+      skip(`1회 등록 한도(${s.selection.autoListPerRun}개) 초과`);
+      continue;
+    }
+    if (r.score < s.selection.autoListMinScore) {
+      skip(`점수 ${s.selection.autoListMinScore} 미만`);
+      continue;
+    }
+    if (!r.image_reuse_allowed) {
+      skip('공급처 이미지 재사용 불가');
+      continue;
+    }
     const src = ctx.sources.get(r.source);
-    if (s.selection.autoListRequiresApiOrder && !src?.capabilities.apiOrder) continue;
+    if (s.selection.autoListRequiresApiOrder && !src?.capabilities.apiOrder) {
+      skip(`${src?.displayName ?? r.source}: 자동 발주 불가 공급처`);
+      continue;
+    }
     if (seenProducts.has(r.title)) continue;
     seenProducts.add(r.title);
     try {
       const draft = await createDraftFromCandidate(ctx, r.id, 'auto');
-      await registerListing(ctx, draft.id, 'auto');
-      listed++;
-      listedKeywords.push(r.keyword);
+      const l = await registerListing(ctx, draft.id, 'auto');
+      out.listed.push({ keyword: r.keyword, title: r.title, price: l.sale_price, profit: r.est_profit, dryRun: !!l.dry_run });
     } catch (e) {
       const msg = errMessage(e);
       ctx.log.warn({ candidate: r.id, err: msg }, '자동 등록 실패');
       if (msg.includes('쿠팡 정보 미입력')) {
+        out.stopReason = msg;
         await ctx.notifications.notify('error', '자동 등록 중단: 설정 필요', `${msg}\n설정 화면에서 쿠팡 판매자 정보를 입력하면 다음 선정 주기에 자동 등록됩니다.`, { path: '/settings', dedupeKey: 'autolist-settings', dedupeMinutes: 24 * 60 });
         break;
       }
-      if (msg.includes('상한')) break;
+      if (msg.includes('상한')) {
+        out.stopReason = msg;
+        break;
+      }
+      skip(`등록 실패: ${msg.slice(0, 40)}`);
     }
   }
-  if (listed) await ctx.notifications.notify('info', `상품 ${listed}개 자동 등록`, '쿠팡 승인 후 판매가 시작됩니다.', { path: '/listings' });
-  return listedKeywords;
+  return out;
+}
+
+/** 선정 1회 결과를 텔레그램으로: 무엇을 골랐고, 무엇을 등록했고, 왜 등록 안 했는지 */
+async function notifySelectionSummary(ctx: AppContext, runId: string, result: SelectionResult, auto: AutoListOutcome | null): Promise<void> {
+  const s = await ctx.settings.get();
+  if (!result.evaluated && !result.errors.length) return;
+  const won = (n: number | null | undefined) => (n === null || n === undefined ? '?' : `${Math.round(n).toLocaleString()}원`);
+  const top = await ctx.db.selectFrom('candidates').innerJoin('source_products', 'source_products.id', 'candidates.source_product_id')
+    .select(['source_products.title', 'source_products.source', 'candidates.score', 'candidates.est_profit', 'candidates.target_price', 'candidates.market_lowest'])
+    .where('run_id', '=', runId).where('passed', '=', true).orderBy('score', 'desc').limit(s.selection.topNotify).execute();
+  const lines: string[] = [`키워드 ${result.keywords}개 · 검토 ${result.evaluated}개 · 통과 ${result.passed}개`];
+  if (auto?.listed.length) {
+    const dry = auto.listed.some((x) => x.dryRun);
+    lines.push('', `✅ ${dry ? '모의 등록(실제 쿠팡엔 안 올라감)' : '쿠팡 등록 요청'} ${auto.listed.length}개`);
+    for (const x of auto.listed) lines.push(`• ${x.title.slice(0, 30)} — ${won(x.price)} (예상 이익 ${won(x.profit)})`);
+  } else if (auto) {
+    lines.push('', '등록한 상품 없음');
+  }
+  if (auto?.stopReason) lines.push(`⛔ 중단: ${auto.stopReason.slice(0, 120)}`);
+  const skipped = Object.entries(auto?.skipped ?? {}).sort((a, b) => b[1] - a[1]).slice(0, 4);
+  if (skipped.length) lines.push(`등록 안 한 이유: ${skipped.map(([k, n]) => `${k} ${n}개`).join(' · ')}`);
+  if (top.length) {
+    lines.push('', '상위 후보');
+    top.forEach((t, i) => lines.push(`${i + 1}. ${t.title.slice(0, 30)} [${t.source}] 판매가 ${won(t.target_price)}~ · 이익 ${won(t.est_profit)}${t.market_lowest ? ` · 시장 최저 ${won(t.market_lowest)}` : ''}`));
+  }
+  if (result.errors.length) lines.push('', `오류 ${result.errors.length}건(예: ${result.errors[0]!.slice(0, 80)})`);
+  if (!auto) lines.push('', '수동 승인 모드: 관리 화면 [후보]에서 승인하면 등록됩니다.');
+  await ctx.notifications.notify(auto?.listed.length ? 'info' : 'action', `상품 선정 결과${ctx.env.DRY_RUN ? ' (모의 실행)' : ''}`, lines.join('\n'), { path: '/candidates' });
 }
 
 export async function decideCandidate(ctx: AppContext, id: number, approve: boolean, actor: string): Promise<{ listingId?: number }> {

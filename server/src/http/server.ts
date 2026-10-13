@@ -71,13 +71,22 @@ export async function buildServer(ctx: AppContext, scheduler: Scheduler | null, 
   // 이 Mac 안에서만(status.sh): 자동 작업별 마지막 실행 결과
   app.get('/healthz/jobs', async (req, reply) => {
     if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.ip) || req.headers['x-forwarded-for'] || req.headers['tailscale-user-login']) return reply.code(404).send();
-    const { JOBS } = await import('../jobs/scheduler.js');
     const out = [];
     for (const j of JOBS) {
-      const r = await ctx.db.selectFrom('job_runs').select(['started_at', 'finished_at', 'ok', 'error']).where('job', '=', j.name).orderBy('started_at', 'desc').executeTakeFirst();
-      out.push({ job: j.name, label: j.label, at: r?.finished_at ?? r?.started_at ?? null, ok: r ? r.ok : null, error: r?.error?.slice(0, 120) ?? null });
+      const r = await ctx.db.selectFrom('job_runs').select(['started_at', 'finished_at', 'ok', 'error', 'stats']).where('job', '=', j.name).orderBy('started_at', 'desc').executeTakeFirst();
+      out.push({ job: j.name, label: j.label, at: r?.finished_at ?? r?.started_at ?? null, ok: r ? r.ok : null, error: r?.error?.slice(0, 120) ?? null, stats: r?.stats ?? null });
     }
     return out;
+  });
+
+  // 이 Mac 안에서만(run-job.sh): 작업 즉시 실행. 브라우저 위조 요청 방지용 헤더 필수
+  app.post('/healthz/jobs/:name/run', async (req, reply) => {
+    if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.ip) || req.headers['x-forwarded-for'] || req.headers['tailscale-user-login'] || req.headers['x-requested-with'] !== 'app') return reply.code(404).send();
+    const { name } = req.params as { name: string };
+    if (!JOBS.some((j) => j.name === name)) return reply.code(404).send({ error: '없는 작업' });
+    if (!scheduler) return reply.code(503).send({ error: "스케줄러 없음" });
+    void scheduler.runJob(name).catch(() => undefined); // 오래 걸리는 작업도 있어 결과는 텔레그램·status 로 확인
+    return { started: name };
   });
 
   app.get('/media/:key', async (req, reply) => {

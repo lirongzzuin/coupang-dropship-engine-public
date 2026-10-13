@@ -333,6 +333,11 @@ describe('DRY_RUN 기본 모드', () => {
     expect(l.dry_run).toBe(true);
     expect(l.vendor_item_id).toMatch(/^DRYVI-/);
     expect(h.market.products.size).toBe(0);
+    // 텔레그램 요약: 모의 등록 상품·가격·이익
+    const m = h.notifier.sent.find((x) => x.title.startsWith('상품 선정 결과'))!;
+    expect(m.title).toContain('모의 실행');
+    expect(m.body).toContain('모의 등록(실제 쿠팡엔 안 올라감) 1개');
+    expect(m.body).toMatch(/원목 수납 정리함 — [\d,]+원 \(예상 이익 [\d,]+원\)/);
   });
 });
 
@@ -344,7 +349,7 @@ describe('선정 모드', () => {
     h.marketData.lowest.set('정리함', 40000);
     const r = await runSelection(h.ctx, { keywords: ['정리함'] });
     expect(r.autoListed).toBe(0);
-    expect(h.notifier.titles().some((t) => t.startsWith('상품 후보'))).toBe(true);
+    expect(h.notifier.titles().some((t) => t.startsWith('상품 선정 결과'))).toBe(true);
     const c = await h.ctx.db.selectFrom('candidates').selectAll().where('passed', '=', true).executeTakeFirstOrThrow();
     const { listingId } = await decideCandidate(h.ctx, c.id, true, 'admin');
     const l = await h.ctx.db.selectFrom('listings').selectAll().where('id', '=', listingId!).executeTakeFirstOrThrow();
@@ -359,6 +364,11 @@ describe('선정 모드', () => {
     const r = await runSelection(h.ctx, { keywords: ['정리함'] });
     expect(r.passed).toBe(2);
     expect(r.autoListed).toBe(0);
+    // 등록 안 한 이유가 알림에 표시
+    const m = h.notifier.sent.find((x) => x.title.startsWith('상품 선정 결과'))!;
+    expect(m.body).toContain('등록한 상품 없음');
+    expect(m.body).toContain('자동 발주 불가 공급처 1개');
+    expect(m.body).toContain('공급처 이미지 재사용 불가 1개');
   });
 
   it('이미지 없는 초안은 등록 차단, 이미지 업로드 후 등록', async () => {

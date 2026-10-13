@@ -40,6 +40,9 @@ describe('HTTP API', () => {
     expect(jobs.json().map((j: any) => j.job)).toContain('orders.poll');
     expect((await app.inject({ url: '/healthz/jobs', remoteAddress: '127.0.0.1', headers: { 'x-forwarded-for': '100.64.0.2' } })).statusCode).toBe(404);
     expect((await app.inject({ url: '/healthz/jobs', remoteAddress: '100.64.0.2' })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'POST', url: '/healthz/jobs/watchdog/run', remoteAddress: '127.0.0.1' })).statusCode).toBe(404); // 헤더 없으면 거부
+    const run = await app.inject({ method: 'POST', url: '/healthz/jobs/watchdog/run', remoteAddress: '127.0.0.1', headers: { 'x-requested-with': 'app' } });
+    expect(run.json()).toEqual({ started: 'watchdog' });
     expect((await app.inject({ url: '/api/dashboard' })).statusCode).toBe(401);
     const st = await app.inject({ url: '/api/auth/status' });
     expect(st.json()).toMatchObject({ setupRequired: false, user: null });
