@@ -88,6 +88,8 @@ export interface AppContext {
   notifications: NotificationService;
   storage: ObjectStorage;
   pii: PiiCipher;
+  /** 현재 공인 IP 조회(없으면 IP 감시 생략) */
+  publicIp?: () => Promise<string | null>;
 }
 
 export async function audit(ctx: Pick<AppContext, 'db' | 'clock'>, actor: string, action: string, target?: string, detail?: unknown): Promise<void> {

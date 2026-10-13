@@ -13,6 +13,7 @@ export interface DashboardSummary {
   candidatesNew: number;
   inquiriesOpen: number;
   lastOrderPollAt: string | null;
+  publicIp: string | null;
   keyExpiresInDays: number | null;
   killSwitch: boolean;
   dryRun: boolean;
@@ -70,6 +71,7 @@ export async function dashboard(ctx: AppContext): Promise<DashboardSummary> {
     candidatesNew: Number(cand?.n ?? 0),
     inquiriesOpen: Number(inq?.n ?? 0),
     lastOrderPollAt: (await ctx.kv.get<string>('orders.lastPollOkAt')) ?? null,
+    publicIp: (await ctx.kv.get<string>('net.publicIp')) ?? null,
     keyExpiresInDays: await keyExpiresInDays(ctx),
     killSwitch: s.killSwitch,
     dryRun: ctx.env.DRY_RUN,
@@ -102,7 +104,7 @@ export async function sendDailyReport(ctx: AppContext): Promise<string> {
   return body;
 }
 
-/** 감시: 주문 폴링 정지, 키 만료 임박 */
+/** 감시: 주문 폴링 정지, 키 만료 임박, 공인 IP 변경 */
 export async function watchdog(ctx: AppContext): Promise<{ alerts: number }> {
   const s = await ctx.settings.get();
   let alerts = 0;
@@ -120,5 +122,31 @@ export async function watchdog(ctx: AppContext): Promise<{ alerts: number }> {
     alerts++;
     await ctx.notifications.notify(days <= 3 ? 'error' : 'warn', `쿠팡 API 키 만료 D-${days}`, 'Wing > 판매자정보 > 추가판매정보 > OPEN API 키 재발급 후 서버 환경변수를 교체하세요.', { dedupeKey: `key-expiry-${days}`, dedupeMinutes: 24 * 60 });
   }
+  alerts += await checkPublicIp(ctx);
   return { alerts };
+}
+
+/**
+ * 공인 IP 변경 감지(집/사무실 PC 운영 대비). 쿠팡 OPEN API는 등록된 IP(최대 10개)에서만 호출 가능하므로
+ * IP가 바뀌면 Wing에 새 IP를 등록해야 한다(반영 최대 30분, 공식 확인 2026-10-13).
+ */
+export async function checkPublicIp(ctx: AppContext): Promise<number> {
+  if (!ctx.publicIp) return 0;
+  let ip: string | null = null;
+  try {
+    ip = await ctx.publicIp();
+  } catch {
+    return 0;
+  }
+  if (!ip) return 0;
+  const prev = await ctx.kv.get<string>('net.publicIp');
+  if (prev === ip) return 0;
+  await ctx.kv.set('net.publicIp', ip);
+  await ctx.kv.set('net.publicIpChangedAt', ctx.clock.now().toISOString());
+  if (!prev) {
+    await ctx.notifications.notify('info', `서버 공인 IP: ${ip}`, '이 IP를 쿠팡 Wing > OPEN API 키 > 허용 IP에 등록하세요(최대 10개).', { dedupeKey: `ip-${ip}`, dedupeMinutes: 24 * 60 });
+    return 0;
+  }
+  await ctx.notifications.notify('error', `공인 IP 변경: ${prev} → ${ip}`, '쿠팡 API 호출이 차단될 수 있습니다. Wing > 판매자정보 > 추가판매정보 > OPEN API 키에서 새 IP를 추가하세요(최대 30분 후 반영). 예전 IP는 그대로 두어도 됩니다(최대 10개).', { path: '/', dedupeKey: `ip-${ip}`, dedupeMinutes: 24 * 60 });
+  return 1;
 }

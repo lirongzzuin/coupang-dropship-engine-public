@@ -33,6 +33,7 @@ export interface BuildOverrides {
   /** true면 DryRunMarket 래퍼를 씌우지 않음(테스트에서 실제 동작 검증용) */
   rawMarket?: boolean;
   storage?: ObjectStorage;
+  publicIp?: (() => Promise<string | null>) | null;
 }
 
 export async function buildContext(env: Env, o: BuildOverrides = {}): Promise<AppContext> {
@@ -99,6 +100,7 @@ export async function buildContext(env: Env, o: BuildOverrides = {}): Promise<Ap
     notifications: new NotificationService(db, notifier, env.PUBLIC_BASE_URL, clock),
     storage: o.storage ?? new LocalStorage(join(env.DATA_DIR, 'media'), env.PUBLIC_BASE_URL),
     pii: new PiiCipher(env.PII_KEY),
+    publicIp: o.publicIp === null ? undefined : (o.publicIp ?? (env.PUBLIC_IP_CHECK ? lookupPublicIp : undefined)),
   };
   await ctx.kv.set('app.startedAt', clock.now().toISOString());
   if (demo && !(await ctx.db.selectFrom('settings').select('key').where('key', '=', 'app').executeTakeFirst())) {
@@ -108,4 +110,16 @@ export async function buildContext(env: Env, o: BuildOverrides = {}): Promise<Ap
     });
   }
   return ctx;
+}
+
+/** 공인 IP 조회(여러 서비스 중 먼저 응답한 값) */
+async function lookupPublicIp(): Promise<string | null> {
+  for (const url of ['https://api.ipify.org', 'https://ifconfig.me/ip', 'https://icanhazip.com']) {
+    try {
+      const r = await fetch(url, { signal: AbortSignal.timeout(5000) });
+      const t = (await r.text()).trim();
+      if (r.ok && /^[0-9a-fA-F:.]{7,45}$/.test(t)) return t;
+    } catch { /* 다음 서비스 */ }
+  }
+  return null;
 }

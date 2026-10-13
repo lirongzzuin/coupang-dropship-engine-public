@@ -62,6 +62,8 @@ export const envSchema = z.object({
   TELEGRAM_BOT_TOKEN: optStr,
   TELEGRAM_CHAT_ID: optStr,
 
+  /** 공인 IP 변경 감시(집 PC 운영 시 필수). 쿠팡 허용 IP 갱신 알림 */
+  PUBLIC_IP_CHECK: bool(true),
   /** 내장 스케줄러 실행 여부(테스트·일회성 CLI에서는 false) */
   SCHEDULER_ENABLED: bool(true),
   /** mock 공급처를 소스 목록에 노출(데모/테스트) */

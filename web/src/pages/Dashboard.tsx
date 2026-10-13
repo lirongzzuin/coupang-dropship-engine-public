@@ -12,6 +12,7 @@ interface Dash {
   candidatesNew: number;
   inquiriesOpen: number;
   lastOrderPollAt: string | null;
+  publicIp: string | null;
   keyExpiresInDays: number | null;
   killSwitch: boolean;
   dryRun: boolean;
@@ -54,6 +55,7 @@ export function Dashboard() {
               <tbody>
                 <tr><th>판매중 상품</th><td>{x.listings.active ?? 0} (심사중 {x.listings.pending_approval ?? 0} · 중지 {x.listings.paused ?? 0} · 초안 {x.listings.draft ?? 0})</td></tr>
                 <tr><th>마지막 주문 수집</th><td>{dt(x.lastOrderPollAt)}</td></tr>
+                <tr><th>서버 공인 IP</th><td>{x.publicIp ?? '확인 중'} <span className="muted small">(쿠팡 Wing 허용 IP와 같아야 함)</span></td></tr>
                 <tr><th>쿠팡 API 키</th><td>{x.keyExpiresInDays === null ? '발급일 미입력(설정)' : <>만료까지 {x.keyExpiresInDays}일 {x.keyExpiresInDays <= 14 && <Badge tone="red">재발급 필요</Badge>}</>}</td></tr>
               </tbody>
             </table>

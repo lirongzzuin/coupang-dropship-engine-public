@@ -460,4 +460,17 @@ describe('CS·리포트·감시', () => {
     await watchdog(h.ctx);
     expect(h.notifier.titles()).not.toContain('주문 수집이 멈췄습니다');
   });
+
+  it('공인 IP 감시: 최초 안내 → 변경 시 경고(중복 없이)', async () => {
+    let ip = '1.2.3.4';
+    h = await makeHarness({ live: true, publicIp: async () => ip });
+    const { checkPublicIp } = await import('../src/modules/reports/service.js');
+    expect(await checkPublicIp(h.ctx)).toBe(0);
+    expect(h.notifier.titles()).toContain('서버 공인 IP: 1.2.3.4');
+    expect(await checkPublicIp(h.ctx)).toBe(0);
+    ip = '5.6.7.8';
+    expect(await checkPublicIp(h.ctx)).toBe(1);
+    expect(h.notifier.titles()).toContain('공인 IP 변경: 1.2.3.4 → 5.6.7.8');
+    expect(await checkPublicIp(h.ctx)).toBe(0);
+  });
 });

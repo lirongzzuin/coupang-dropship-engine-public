@@ -64,7 +64,7 @@ export const TEST_ENV_BASE: Record<string, string> = {
  * live=true  → DRY_RUN=false + 모든 LIVE 플래그 on, FakeMarket 직접 사용(실제 부작용 경로 검증)
  * live=false → 기본값(DRY_RUN=true), DryRunMarket 래퍼 사용
  */
-export async function makeHarness(opts: { live?: boolean; env?: Record<string, string>; start?: Date } = {}): Promise<TestHarness> {
+export async function makeHarness(opts: { live?: boolean; env?: Record<string, string>; start?: Date; publicIp?: () => Promise<string | null> } = {}): Promise<TestHarness> {
   const live = opts.live ?? true;
   const env: Env = loadEnv({
     ...TEST_ENV_BASE,
@@ -87,6 +87,7 @@ export async function makeHarness(opts: { live?: boolean; env?: Record<string, s
     notifier,
     clock,
     storage: new LocalStorage(storageDir, env.PUBLIC_BASE_URL),
+    publicIp: opts.publicIp ?? null,
   });
   await ctx.settings.update({
     fees: { monthlyServiceFee: 0 },
