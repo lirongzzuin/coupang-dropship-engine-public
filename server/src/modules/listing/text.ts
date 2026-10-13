@@ -62,3 +62,9 @@ export function buildDetailHtml(opts: {
 function stripScripts(html: string): string {
   return html.replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<iframe[\s\S]*?<\/iframe>/gi, '').replace(/\son\w+="[^"]*"/gi, '');
 }
+
+/** 상세 HTML 안의 이미지 src 목록(중복 제거, 순서 유지) */
+export function extractImageUrls(html: string): string[] {
+  const urls = [...html.matchAll(/<img\b[^>]*?\bsrc\s*=\s*["']?([^"'\s>]+)/gi)].map((m) => m[1]!.replace(/&amp;/g, '&'));
+  return [...new Set(urls.map((u) => (u.startsWith('//') ? `https:${u}` : u)).filter((u) => /^https?:\/\//i.test(u)))];
+}

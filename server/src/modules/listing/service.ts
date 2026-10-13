@@ -6,6 +6,7 @@ import { detailOf } from '../catalog.js';
 import { initialMarkup, targetMarkup, targetPrice } from '../pricing/pricing.js';
 import { getItems, planItems, saveItems } from './items.js';
 import { buildCoupangPayload } from './payload.js';
+import { hostDetailHtml, prepareMainImages } from './media.js';
 import { buildDetailHtml, buildTags, findBannedTerms, sanitizeTitle } from './text.js';
 
 export class ListingError extends Error {}
@@ -126,7 +127,14 @@ export async function registerListing(ctx: AppContext, id: number, actor = 'syst
     categoryName = pred.name;
   }
   const meta = await ctx.market.getCategoryMeta(categoryCode);
-  const images = l.images as string[];
+  let images = l.images as string[];
+  let sourceHtml = d?.detailHtml;
+  if (s.listing.convertImages) {
+    // 확장자 없는 URL·GIF·PNG → 흰 배경 .jpg(우리 서버 /media). 상세 이미지는 재사용 허용 상품만
+    images = await prepareMainImages(ctx, images);
+    if (!images.length) throw new ListingError('대표 이미지를 .jpg로 변환하지 못했습니다(공급처 이미지 확인 또는 직접 업로드)');
+    if (sp.image_reuse_allowed && sourceHtml) sourceHtml = (await hostDetailHtml(ctx, sourceHtml)).html;
+  }
   const detailHtml = buildDetailHtml({
     title: l.title,
     images,
@@ -135,7 +143,7 @@ export async function registerListing(ctx: AppContext, id: number, actor = 'syst
       { name: '제조사', value: d?.manufacturer ?? '' },
       ...(d?.kc?.certNo ? [{ name: 'KC 인증', value: d.kc.certNo }] : []),
     ],
-    sourceHtml: d?.detailHtml,
+    sourceHtml,
     reuseAllowed: sp.image_reuse_allowed,
   });
   // 옵션명은 현재 상품명 기준으로 다시 맞춘다(초안 수정 반영)

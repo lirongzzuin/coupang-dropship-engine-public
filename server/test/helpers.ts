@@ -111,6 +111,7 @@ export async function makeHarness(opts: { live?: boolean; env?: Record<string, s
   await ctx.settings.update({
     fees: { monthlyServiceFee: 0 },
     selection: { sources: ['mockapi', 'mockmanual'], minSupplyPrice: 5000, minStock: 1 },
+    listing: { convertImages: false }, // 테스트는 외부 이미지 다운로드 안 함(media.test 에서 따로 검증)
   });
   return { ctx, market, apiSource, manualSource, marketData, notifier, clock, close: () => ctx.db.destroy() };
 }

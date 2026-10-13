@@ -260,6 +260,8 @@ export const settingsSchema = z.object({
         .array(z.string())
         .default(['무료배송', '할인', '세일', '최저가', '특가', '특별가', '한정수량', '신상', '인기상품', '1+1', '당일출고', '당일발송', '국내발송', '묶음배송', '고급', '고품질', '본사정품', '최신', '지금구매', '이벤트']),
       maxTitleLength: z.number().int().default(100),
+      /** 공급처 이미지를 .jpg로 변환해 우리 서버(/media)에서 제공(쿠팡은 확장자 없는 URL·GIF 거부) */
+      convertImages: z.boolean().default(true),
       maxTags: z.number().int().default(20),
       /** 출고소요일 = 소스 준비기간 + 버퍼 */
       shippingBufferDays: z.number().int().default(1),

@@ -21,6 +21,8 @@ export const envSchema = z.object({
   HOST: z.string().default('0.0.0.0'),
   /** 외부에서 접근하는 주소. 텔레그램 링크·이미지 공개 URL 생성에 사용 */
   PUBLIC_BASE_URL: z.string().default('http://localhost:8080'),
+  /** 쿠팡이 이미지를 내려받을 공개 주소(/media 만 인터넷에 공개). 비우면 PUBLIC_BASE_URL */
+  MEDIA_PUBLIC_BASE_URL: optStr,
 
   /** postgres://... 가 있으면 PostgreSQL, 없으면 PGlite(DATA_DIR/pglite) */
   DATABASE_URL: optStr,

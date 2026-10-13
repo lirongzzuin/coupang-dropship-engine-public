@@ -107,7 +107,8 @@ export class DomeggookSource implements SourceAdapter {
     const status: SourceProductDetail['status'] = statusText.includes('판매중') ? (stock === 0 ? 'soldout' : 'active') : 'ended';
     const sellerType = String(d.seller?.type ?? '');
     const kc = d.detail?.safetyCert;
-    const images = [d.thumb?.original, d.thumb?.large].filter(Boolean) as string[];
+    // original(760)과 large(330)는 같은 사진의 크기만 다름 → 큰 것 하나만
+    const images = [d.thumb?.original ?? d.thumb?.large].filter(Boolean) as string[];
     return {
       sourceItemId: String(no),
       title: String(d.basis.title ?? ''),

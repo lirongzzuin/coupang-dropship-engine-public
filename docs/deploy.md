@@ -95,3 +95,14 @@ main에 push하거나 PR을 만들면 GitHub Actions(`.github/workflows/ci-cd.ym
 - Docker 이미지 빌드와 컨테이너 스모크 테스트
 
 **Mac 홈서버의 자동 업데이트는 이 CI를 통과한 커밋만 받아 갑니다.**
+
+## 상품 이미지 공개(쿠팡 이미지 다운로드용)
+- 쿠팡은 상품 등록 시 이미지 URL(.jpg/.png)을 직접 내려받습니다.
+- 공급처 이미지는 확장자가 없거나(도매꾹 `…_img_760?hash=`) GIF·PNG인 경우가 많습니다. 그래서 등록할 때 `.jpg`로 변환해 `/media/img-….jpg`로 제공합니다(`modules/listing/media.ts`).
+  - 대표 이미지: 흰 배경 1000×1000
+  - 상세 이미지: 가로 860, 세로가 길면 같은 높이로 나눔. 아이콘·구분선은 제외
+  - 상세 이미지는 공급처가 재사용을 허용한 상품만 씁니다.
+- Mac 서버는 관리 화면이 tailnet 전용입니다. `bash ~/dropship/bin/media-public.sh`를 실행하면 `/media`만 Tailscale Funnel(포트 8443)로 인터넷에 공개하고, `.env`의 `MEDIA_PUBLIC_BASE_URL`을 설정합니다.
+- 끄려면 `bash ~/dropship/bin/media-public.sh off`를 실행합니다.
+- 미확인: 쿠팡이 포트가 붙은 이미지 URL(`:8443`)을 받는지는 첫 실제 등록에서 확인해야 합니다. 거부되면 R2 같은 외부 저장소 어댑터로 바꿉니다(`ObjectStorage` 포트).
+- `.env`를 고친 뒤에는 `bash ~/dropship/bin/restart.sh`를 실행합니다.

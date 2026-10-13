@@ -1,3 +1,4 @@
+import { extractImageUrls } from '../listing/text.js';
 import type { Settings } from '../../config/settings.js';
 import type { SourceProductDetail } from '../../ports/source.js';
 import type { TargetPrice } from '../pricing/pricing.js';
@@ -148,7 +149,8 @@ export function scoreCandidate(
   if (sig.coupangSalesEst !== undefined) parts.coupangSales = clamp(Math.log10(sig.coupangSalesEst + 1) / 4);
   // 상품성(살 만한 상품인가)
   if (d.prepDays !== undefined) parts.fastShipping = d.prepDays <= 1 ? 1 : d.prepDays === 2 ? 0.6 : d.prepDays === 3 ? 0.3 : 0;
-  parts.imageRichness = clamp((d.images?.length ?? 0) / 5);
+  // 대표·추가 이미지 + 상세 이미지(공급처 상세 HTML) — 상세가 풍부할수록 구매 전환 유리
+  parts.imageRichness = clamp(((d.images?.length ?? 0) + (d.detailHtml ? extractImageUrls(d.detailHtml).length : 0)) / 6);
   if (d.returnable !== undefined) parts.returnable = d.returnable ? 1 : 0;
   if (sig.coupangReviews !== undefined) parts.entryBarrier = 1 - clamp(Math.log10(sig.coupangReviews + 1) / 4);
   // 계산 불가(NaN·무한대) 신호는 제외 — 외부 데이터 이상이 점수 전체를 망치지 않도록

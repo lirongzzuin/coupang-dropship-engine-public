@@ -63,7 +63,7 @@ export class OwnerclanSource implements SourceAdapter {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ service: 'ownerclan', userType, username: this.opts.username, password: this.opts.password }),
-        signal: AbortSignal.timeout(20_000),
+        signal: AbortSignal.timeout(60_000),
       });
       text = (await res.text()).trim();
       if (res.ok) {
@@ -99,7 +99,7 @@ export class OwnerclanSource implements SourceAdapter {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
             body: JSON.stringify({ query, variables }),
-            signal: AbortSignal.timeout(90_000), // 검색은 30초 가까이 걸리기도 함(실측 28초)
+            signal: AbortSignal.timeout(150_000), // 검색이 느림(실측 13~40초+)
           });
           if (res.status === 401 && attempt === 0) {
             attempt++;
@@ -114,7 +114,7 @@ export class OwnerclanSource implements SourceAdapter {
           return json.data as T;
         }
       },
-      { attempts: 3, baseMs: 1000, retryable: (e) => e instanceof HttpError && (e.status === 429 || e.status >= 500) },
+      { attempts: 3, baseMs: 1000, retryable: (e) => (e instanceof HttpError && (e.status === 429 || e.status >= 500)) || (e as Error)?.name === 'TimeoutError' },
     );
   }
 

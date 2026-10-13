@@ -111,7 +111,7 @@ export async function buildContext(env: Env, o: BuildOverrides = {}): Promise<Ap
     sources,
     marketData: o.marketData ?? (demo ? new DemoMarketData() : marketData),
     notifications: new NotificationService(db, notifier, env.PUBLIC_BASE_URL, clock),
-    storage: o.storage ?? new LocalStorage(join(env.DATA_DIR, 'media'), env.PUBLIC_BASE_URL),
+    storage: o.storage ?? new LocalStorage(join(env.DATA_DIR, 'media'), env.MEDIA_PUBLIC_BASE_URL || env.PUBLIC_BASE_URL),
     pii: new PiiCipher(env.PII_KEY),
     publicIp: o.publicIp === null ? undefined : (o.publicIp ?? (env.PUBLIC_IP_CHECK ? lookupPublicIp : undefined)),
   };
