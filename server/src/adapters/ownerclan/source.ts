@@ -47,23 +47,37 @@ export class OwnerclanSource implements SourceAdapter {
     return this.opts.sandbox ? 'https://auth-sandbox.ownerclan.com/auth' : 'https://auth.ownerclan.com/auth';
   }
 
+  /** 인증에 성공한 계정 유형(seller/vendor) */
+  private userType: string | null = null;
+
   private async getToken(force = false): Promise<string> {
     // JWT 만료 시간은 매뉴얼에 명시 없음 → 6시간마다 재발급, 401이면 즉시 재발급
     if (!force && this.token && Date.now() - this.token.at < 6 * 3600_000) return this.token.value;
-    await this.limiter.take();
-    const res = await this.fetchImpl(this.authUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ service: 'ownerclan', userType: 'seller', username: this.opts.username, password: this.opts.password }),
-      signal: AbortSignal.timeout(20_000),
-    });
-    const text = (await res.text()).trim();
-    if (!res.ok) {
+    // 계정 유형: 판매사(seller)로 먼저 시도, 아이디 없음이면 vendor 유형으로 재시도(계정마다 다름)
+    const types = this.userType ? [this.userType] : ['seller', 'vendor'];
+    let res: Response | undefined;
+    let text = '';
+    for (const userType of types) {
+      await this.limiter.take();
+      res = await this.fetchImpl(this.authUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ service: 'ownerclan', userType, username: this.opts.username, password: this.opts.password }),
+        signal: AbortSignal.timeout(20_000),
+      });
+      text = (await res.text()).trim();
+      if (res.ok) {
+        this.userType = userType;
+        break;
+      }
+      if (!/IDNotFound/.test(text)) break;
+    }
+    if (!res!.ok) {
       let why = text;
       try {
         why = JSON.parse(text).message ?? text;
       } catch { /* 원문 사용 */ }
-      throw new HttpError(res.status, `오너클랜 인증 실패(${res.status}): ${why.slice(0, 80)} — OWNERCLAN_USERNAME 은 오너클랜 판매사 로그인 아이디`);
+      throw new HttpError(res!.status, `오너클랜 인증 실패(${res!.status}): ${why.slice(0, 80)} — OWNERCLAN_USERNAME·PASSWORD 는 오너클랜 사이트 로그인 아이디·비밀번호`);
     }
     let token = text;
     try {
@@ -93,6 +107,9 @@ export class OwnerclanSource implements SourceAdapter {
           }
           const json: any = await res.json().catch(() => ({}));
           if (!res.ok) throw new HttpError(res.status, `오너클랜 API ${res.status}`, json);
+          if (json.errors?.some((e: any) => /Not authorized to use API/i.test(e.detail ?? ''))) {
+            throw new HttpError(403, '오너클랜 API 사용 권한 없음 — 오너클랜 고객센터에 "API 사용 승인"을 요청하세요(로그인은 정상)', json);
+          }
           if (json.errors?.length) throw new HttpError(400, `오너클랜 GraphQL 오류: ${json.errors.map((e: any) => e.message).join('; ')}`, json);
           return json.data as T;
         }

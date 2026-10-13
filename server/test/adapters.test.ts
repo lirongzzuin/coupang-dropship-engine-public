@@ -185,6 +185,23 @@ describe('OwnerclanSource', () => {
   });
 });
 
+describe('OwnerclanSource 계정 유형·권한', () => {
+  it('seller 아이디 없음이면 vendor 로 재시도, API 미승인은 명확한 안내', async () => {
+    const types: string[] = [];
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      if (url.includes('/auth')) {
+        const b = JSON.parse(String(init?.body));
+        types.push(b.userType);
+        return b.userType === 'vendor' ? new Response('jwt', { status: 200 }) : new Response('{"name":"IDNotFound","message":"존재하지 않는 아이디입니다."}', { status: 401 });
+      }
+      return jsonRes({ errors: [{ message: 'Access denied', detail: 'Not authorized to use API. Please contact administrator.' }], data: null });
+    }) as unknown as typeof fetch;
+    const oc = new OwnerclanSource({ username: 'u', password: 'p', logger: log, fetchImpl, requestsPerSecond: 100 });
+    await expect(oc.search('x')).rejects.toThrow(/API 사용 권한 없음/);
+    expect(types).toEqual(['seller', 'vendor']);
+  });
+});
+
 describe('DomeggookSource', () => {
   const urls: string[] = [];
   const fetchImpl = (async (url: string) => {
