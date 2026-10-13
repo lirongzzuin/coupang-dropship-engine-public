@@ -10,6 +10,8 @@ describe('키워드 추출(순수 함수)', () => {
   });
   it('여러 상품명에서 반복되는 1~2어절 표현을 빈도순으로(2어절 우선)', () => {
     const titles = ['접이식 수납 정리함 3단', '원목 수납 정리함 서랍형', '수납 정리함 대형 블랙', '캠핑 의자 경량', '패브릭 수납 정리함'];
+    // 판매자 상호 접두어("스토어 연 …")는 키워드가 아님
+    expect(extractPhrases(['스토어 연 샤워헤드 교체', '스토어 연 이동식행거', '스토어 연 철제책장'], { minDf: 2 }).map((x) => x.phrase)).not.toContain('스토어');
     const p = extractPhrases(titles, { limit: 3, minDf: 2 });
     expect(p[0]).toEqual({ phrase: '수납 정리함', df: 4 });
     expect(p.map((x) => x.phrase)).toContain('정리함');

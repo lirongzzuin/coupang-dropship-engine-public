@@ -22,6 +22,8 @@ export interface KeywordSignals {
   coupangLowest?: number;
   coupangRocketRatio?: number;
   coupangSalesEst?: number;
+  /** 상위 경쟁 상품 리뷰 수(쿠팡 리뷰 CSV) — 많을수록 신규 진입 어려움 */
+  coupangReviews?: number;
 }
 
 /** 가격 경쟁 기준가: 쿠팡 판매이므로 쿠팡 최저가 우선, 없으면 오픈마켓(11번가) 최저가 */
@@ -89,6 +91,11 @@ export function evaluateGates(
     g.push({ name: 'allowedCategory', hard: true, pass: ok, detail: ok ? top || '미상' : `허용 안 된 분류: ${top}` });
   }
   g.push({ name: 'moq', hard: true, pass: (d.minOrderQty ?? 1) <= 1, detail: `최소주문 ${d.minOrderQty ?? 1}개` });
+  // 상품성: 출고가 늦으면 도착예정일이 늦어 전환·판매자점수에 불리
+  if (d.prepDays !== undefined && Number.isFinite(d.prepDays)) g.push({ name: 'prepDays', hard: true, pass: d.prepDays <= sel.maxPrepDays, detail: `출고 준비 ${d.prepDays}일` });
+  if (d.sellerScore !== undefined && Number.isFinite(d.sellerScore) && (d.sellerReviews ?? 0) >= 10) {
+    g.push({ name: 'sellerQuality', hard: true, pass: d.sellerScore >= sel.minSellerScore, detail: `판매자 만족도 ${d.sellerScore}%` });
+  }
   g.push({ name: 'stock', hard: true, pass: d.stock === null || d.stock >= sel.minStock, detail: `재고 ${d.stock ?? '미상'}` });
   g.push({ name: 'supplyPrice', hard: true, pass: d.price >= sel.minSupplyPrice && d.price <= sel.maxSupplyPrice, detail: `공급가 ${d.price}` });
   const blocked = sel.blockedKeywords.filter((k) => k && text.includes(k));
@@ -139,6 +146,11 @@ export function scoreCandidate(
   }
   parts.supplier = clamp((d.sellerScore !== undefined ? d.sellerScore / 100 : 0.7) * 0.7 + (opts.apiOrder ? 0.3 : 0));
   if (sig.coupangSalesEst !== undefined) parts.coupangSales = clamp(Math.log10(sig.coupangSalesEst + 1) / 4);
+  // 상품성(살 만한 상품인가)
+  if (d.prepDays !== undefined) parts.fastShipping = d.prepDays <= 1 ? 1 : d.prepDays === 2 ? 0.6 : d.prepDays === 3 ? 0.3 : 0;
+  parts.imageRichness = clamp((d.images?.length ?? 0) / 5);
+  if (d.returnable !== undefined) parts.returnable = d.returnable ? 1 : 0;
+  if (sig.coupangReviews !== undefined) parts.entryBarrier = 1 - clamp(Math.log10(sig.coupangReviews + 1) / 4);
   // 계산 불가(NaN·무한대) 신호는 제외 — 외부 데이터 이상이 점수 전체를 망치지 않도록
   for (const k of Object.keys(parts)) if (!Number.isFinite(parts[k]!)) delete parts[k];
   let num = 0, den = 0;

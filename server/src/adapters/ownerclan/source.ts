@@ -58,7 +58,13 @@ export class OwnerclanSource implements SourceAdapter {
       signal: AbortSignal.timeout(20_000),
     });
     const text = (await res.text()).trim();
-    if (!res.ok) throw new HttpError(res.status, `오너클랜 인증 실패(${res.status})`);
+    if (!res.ok) {
+      let why = text;
+      try {
+        why = JSON.parse(text).message ?? text;
+      } catch { /* 원문 사용 */ }
+      throw new HttpError(res.status, `오너클랜 인증 실패(${res.status}): ${why.slice(0, 80)} — OWNERCLAN_USERNAME 은 오너클랜 판매사 로그인 아이디`);
+    }
     let token = text;
     try {
       const j = JSON.parse(text);
@@ -120,6 +126,7 @@ export class OwnerclanSource implements SourceAdapter {
       minResalePrice: it.pricePolicy === 'fixed' && it.fixedPrice ? Math.round(it.fixedPrice) : undefined,
       // 오너클랜: boxQuantity = 1박스 최대 묶음배송 수량(매뉴얼 v0.11.0)
       shippingPerUnit: false,
+      returnable: it.returnable === undefined ? undefined : !!it.returnable,
       maxPerBox: it.boxQuantity ? Number(it.boxQuantity) : null,
       // 위탁 판매용 상품 이미지 제공이 오너클랜 서비스 전제. 단 openmarketSellable=false 는 검색에서 제외
       imageReuseAllowed: it.openmarketSellable !== false,

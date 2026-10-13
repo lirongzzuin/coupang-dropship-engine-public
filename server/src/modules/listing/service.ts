@@ -3,7 +3,7 @@ import { type AppContext, audit } from '../../context.js';
 import type { ListingRow } from '../../db/schema.js';
 import { errMessage } from '../../lib/util.js';
 import { detailOf } from '../catalog.js';
-import { initialMarkup, priceFromMarkup, targetPrice } from '../pricing/pricing.js';
+import { initialMarkup, targetMarkup, targetPrice } from '../pricing/pricing.js';
 import { getItems, planItems, saveItems } from './items.js';
 import { buildCoupangPayload } from './payload.js';
 import { buildDetailHtml, buildTags, findBannedTerms, sanitizeTitle } from './text.js';
@@ -23,8 +23,9 @@ export async function createDraftFromCandidate(ctx: AppContext, candidateId: num
   const tp = targetPrice(s, { cost: sp.price, shipping: sp.shipping_fee, categoryPath: sp.category_path, inputVatDeductible: sp.tax_invoice, minResalePrice: sp.min_resale_price });
   if (!tp.feasible) throw new ListingError('수익 가능한 판매가를 만들 수 없음');
   const images = sp.image_reuse_allowed ? (d?.images?.length ? d.images : sp.image_url ? [sp.image_url] : []) : [];
-  // 시작 마크업: 경쟁 최저가를 알면 그보다 살짝 낮게, 모르면 기본값 → 이후 가격 최적화가 조정
+  // 출시 기간엔 낮은 가격(초기 판매·리뷰 확보), 이후 목표(하한가와 경쟁가의 중간 지점)로 → 최적화가 조정
   const markup = initialMarkup(s, tp.floor, cand.market_lowest);
+  const target = targetMarkup(s, tp.floor, cand.market_lowest);
   const plans = await planItems(ctx, sp, title, markup);
   if (!plans.length) throw new ListingError('수익 가능한 판매가를 만들 수 없음');
   const now = ctx.clock.now();
@@ -39,6 +40,7 @@ export async function createDraftFromCandidate(ctx: AppContext, candidateId: num
       sale_price: plans[0]!.salePrice,
       floor_price: plans[0]!.floor,
       markup,
+      target_markup: target,
       images: JSON.stringify(images),
       status: 'draft',
       status_reason: images.length ? null : '이미지 필요(공급처 이미지 재사용 불가 → 직접 촬영/제작 이미지 업로드)',

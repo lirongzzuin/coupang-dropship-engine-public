@@ -3,8 +3,11 @@ import { api, dt, won } from '../api';
 import { Badge, Loading, Msg, statusTone, useAction, useLoad } from '../ui';
 import { LinkTool } from './LinkTool';
 
+/** 출시 기간(설정 pricing.launchDays 기본값) — 표시용 */
+const LAUNCH_DAYS = 10;
+
 interface Listing {
-  id: number; title: string; status: string; status_reason: string | null; sale_price: number; floor_price: number; markup: number; fee_rate_actual: number | null; images: string[];
+  id: number; title: string; status: string; status_reason: string | null; sale_price: number; floor_price: number; markup: number; target_markup: number | null; fee_rate_actual: number | null; images: string[];
   vendor_item_id: string | null; seller_product_id: string | null; category_code: string | null; category_name: string | null; search_tags: string[];
   dry_run: boolean; listed_at: string | null; source: string; source_price: number; source_shipping: number; source_stock: number | null;
   source_url: string; image_reuse_allowed: boolean;
@@ -33,10 +36,11 @@ export function Listings() {
           <div className="item-head" onClick={() => setOpen(open === l.id ? null : l.id)}>
             <Badge tone={statusTone(l.status)}>{STATUS_LABEL[l.status] ?? l.status}</Badge>
             {l.dry_run && l.status !== 'draft' && <Badge tone="amber">모의</Badge>}
+            {l.status === 'active' && l.listed_at && Date.now() - new Date(l.listed_at).getTime() < LAUNCH_DAYS * 86400_000 && <Badge tone="blue">출시 가격</Badge>}
             <span className="muted">{l.source}</span>
           </div>
           <div className="item-title" onClick={() => setOpen(open === l.id ? null : l.id)}>{l.title}</div>
-          <div className="item-sub">판매가 {won(l.sale_price)} (하한 {won(l.floor_price)}, 마크업 {Math.round(l.markup * 100)}%) · 공급가 {won(l.source_price)}+{won(l.source_shipping)} · 재고 {l.source_stock ?? '?'}{l.fee_rate_actual ? ` · 실수수료 ${(l.fee_rate_actual * 100).toFixed(1)}%` : ''}</div>
+          <div className="item-sub">판매가 {won(l.sale_price)} (하한 {won(l.floor_price)}, 마크업 {Math.round(l.markup * 100)}%{l.target_markup !== null && l.markup < l.target_markup ? ` → 목표 ${Math.round(l.target_markup * 100)}%` : ''}) · 공급가 {won(l.source_price)}+{won(l.source_shipping)} · 재고 {l.source_stock ?? '?'}{l.fee_rate_actual ? ` · 실수수료 ${(l.fee_rate_actual * 100).toFixed(1)}%` : ''}</div>
           {l.status_reason && <div className="item-reason">{l.status_reason}</div>}
           {open === l.id && <ListingEditor l={l} act={act} onChange={reload} />}
         </div>

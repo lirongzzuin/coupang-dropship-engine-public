@@ -7,6 +7,7 @@ import pg from 'pg';
 import * as m001 from './migrations/001_init.js';
 import * as m002 from './migrations/002_keywords.js';
 import * as m003 from './migrations/003_profit.js';
+import * as m004 from './migrations/004_balance.js';
 import type { DB } from './schema.js';
 
 export type Database = Kysely<DB>;
@@ -16,6 +17,7 @@ const MIGRATIONS: Record<string, Migration> = {
   '001_init': m001,
   '002_keywords': m002,
   '003_profit': m003,
+  '004_balance': m004,
 };
 
 class StaticProvider implements MigrationProvider {

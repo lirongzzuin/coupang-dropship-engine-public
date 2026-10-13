@@ -78,6 +78,9 @@ export async function optimizePrices(ctx: AppContext): Promise<{ checked: number
   for (const l of listings) {
     const since = new Date(l.price_set_at ?? l.listed_at ?? l.created_at);
     const days = (now.getTime() - since.getTime()) / 86400_000;
+    const listedDays = (now.getTime() - new Date(l.listed_at ?? l.created_at).getTime()) / 86400_000;
+    // 출시 기간: 낮은 가격 유지(초기 판매·리뷰가 쿠팡 노출을 좌우)
+    if (listedDays < s.pricing.launchDays) continue;
     if (days < o.observeDays) continue;
     out.checked++;
     const agg = await ctx.db
@@ -94,7 +97,21 @@ export async function optimizePrices(ctx: AppContext): Promise<{ checked: number
     const best = l.best_daily_profit ?? 0;
     let next: number | null = null;
     let reason = '';
-    if (n >= o.raiseMinOrders) {
+    // 출시 직후 첫 판단: 출시 가격에서 팔렸으면 목표(중간 지점)로 바로 이동
+    const launchEnded = l.target_markup !== null && l.markup < l.target_markup && l.best_markup === null;
+    // 판매 속도 보호: 직전 같은 길이 기간보다 판매가 줄고 있으면 인상 보류
+    const prev = await ctx.db.selectFrom('orders').select((eb) => eb.fn.countAll<number>().as('n')).where('listing_id', '=', l.id)
+      .where('ordered_at', '>=', new Date(since.getTime() - days * 86400_000)).where('ordered_at', '<', since).where('status', 'not in', ['CANCELLED']).executeTakeFirst();
+    const prevN = Number(prev?.n ?? 0);
+    const slowing = prevN > 0 && n < prevN * o.velocityGuard;
+    if (launchEnded && n > 0) {
+      await ctx.db.updateTable('listings').set({ best_markup: l.markup, best_daily_profit: dailyProfit }).where('id', '=', l.id).execute();
+      next = Math.min(cap, l.target_markup!);
+      reason = `출시 기간 판매 ${n}건 → 목표 가격(경쟁가와의 중간 지점)`;
+      out.raised++;
+    } else if (n >= o.raiseMinOrders && slowing) {
+      // 팔리긴 하지만 속도가 줄고 있음 → 유지
+    } else if (n >= o.raiseMinOrders) {
       if (dailyProfit >= best) await ctx.db.updateTable('listings').set({ best_markup: l.markup, best_daily_profit: dailyProfit }).where('id', '=', l.id).execute();
       if (l.markup < cap) {
         next = Math.min(cap, l.markup + o.stepUp);

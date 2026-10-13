@@ -71,8 +71,17 @@ export const settingsSchema = z.object({
       charmEnding: z.enum(['900', 'none']).default('900'),
       /** 경쟁가 정보가 없을 때 시작 마크업(하한가 대비) */
       defaultMarkup: z.number().default(0.08),
-      /** 마크업 상한(하한가 대비) */
-      maxMarkup: z.number().default(0.5),
+      /** 마크업 상한(하한가 대비) — 경쟁가를 모를 때 상품성을 지키는 상한 */
+      maxMarkup: z.number().default(0.3),
+      /**
+       * 경쟁가와의 간격 중 가져올 비율(0~1). 목표가 = 하한가 + 비율 × (경쟁가×(1−undercut) − 하한가).
+       * 0.5 = 중간 지점: 경쟁가보다 확실히 싸면서(아이템위너) 마진도 확보
+       */
+      gapCapture: z.number().min(0).max(1).default(0.5),
+      /** 출시 기간(일): 신상품은 초기 판매·리뷰가 노출을 좌우 → 낮은 가격으로 시작 */
+      launchDays: z.number().default(10),
+      /** 출시 기간 마크업(하한가 대비) */
+      launchMarkup: z.number().default(0.02),
       /** 경쟁 최저가가 있으면 그보다 이만큼 낮게 시작(아이템위너는 판매가+배송비 최저 우선) */
       undercutRate: z.number().default(0.01),
       /**
@@ -91,7 +100,9 @@ export const settingsSchema = z.object({
       observeDays: z.number().default(3),
       /** 관찰 기간 주문이 이 건수 이상이면 가격 인상 시도 */
       raiseMinOrders: z.number().int().default(2),
-      stepUp: z.number().default(0.04),
+      stepUp: z.number().default(0.03),
+      /** 인상 조건: 이번 기간 판매 속도가 직전 기간의 이 비율 이상(판매가 줄고 있으면 인상 보류) */
+      velocityGuard: z.number().default(0.8),
       stepDown: z.number().default(0.04),
       /** 인상 후 하루 이익이 최고 기록의 이 비율 미만이면 최고 가격으로 되돌림 */
       revertRatio: z.number().default(0.6),
@@ -141,6 +152,10 @@ export const settingsSchema = z.object({
       minSupplyPrice: z.number().int().default(15000),
       maxSupplyPrice: z.number().int().default(200000),
       minStock: z.number().int().default(10),
+      /** 상품성: 공급처 출고 준비일 상한(쿠팡 도착예정일·정시출고에 직결). 초과 시 탈락 */
+      maxPrepDays: z.number().int().default(3),
+      /** 상품성: 공급처 판매자 만족도(%) 하한 — 후기 10건 이상일 때만 적용 */
+      minSellerScore: z.number().default(85),
       /** 시장가(네이버 최저가) 대비 허용 초과율. 0 = 최저가 이하여야 통과 */
       competitiveTolerance: z.number().default(0),
       /** 시장가를 모를 때 탈락시킬지 */
@@ -180,6 +195,14 @@ export const settingsSchema = z.object({
           rocketCompetition: z.number().default(0.05),
           /** 개당 이익 × 수요(검색량) — 실제로 돈이 되는 상품 우선 */
           profitPotential: z.number().default(0.2),
+          /** 상품성: 빠른 출고(1일 이하 1.0 / 2일 0.6 / 3일 0.3) */
+          fastShipping: z.number().default(0.1),
+          /** 상품성: 상품 이미지 수(많을수록 상세 신뢰) */
+          imageRichness: z.number().default(0.05),
+          /** 상품성: 반품 가능 여부 */
+          returnable: z.number().default(0.03),
+          /** 진입 장벽: 상위 경쟁 상품 리뷰 수가 많을수록 불리(쿠팡 리뷰 CSV) */
+          entryBarrier: z.number().default(0.05),
         })
         .default({}),
     })

@@ -128,6 +128,8 @@ export interface ListingsTable {
   /** 정산에서 학습한 실제 수수료율(VAT 별도) */
   fee_rate_actual: number | null;
   cost_scouted_at: TsNull;
+  /** 출시 기간 후 목표 마크업(하한가와 경쟁가 사이 중간 지점) */
+  target_markup: number | null;
 }
 
 export interface ListingItemsTable {

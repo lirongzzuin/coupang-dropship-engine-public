@@ -120,13 +120,14 @@ export class DomeggookSource implements SourceAdapter {
       images,
       // 일반과세자·법인만 세금계산서 → 매입세액 공제
       taxInvoice: sellerType.includes('일반과세') || sellerType.includes('법인'),
-      prepDays: d.deli?.periodDeli !== undefined ? Number(d.deli.periodDeli) : undefined,
+      prepDays: Number.isFinite(parseFloat(d.deli?.periodDeli)) ? parseFloat(d.deli.periodDeli) : undefined,
       notice: d.detail?.infoDuty
         ? { type: d.detail.infoDuty.type, items: toArray(d.detail.infoDuty.item).map((x: any) => ({ name: String(x.name ?? ''), value: String(x.desc ?? '') })) }
         : undefined,
       kc: kc ? { certified: kc.cert === 'Y' || kc.useNo === 'Y', exempt: kc.exem === 'Y', certNo: kc.no || undefined, certType: kc.certType || undefined } : undefined,
       manufacturer: d.detail?.manufacturer || undefined,
       origin: d.detail?.country || undefined,
+      sellerReviews: Number(d.seller?.score?.cnt) || 0,
       sellerScore: Number.isFinite(Number.parseFloat(String(d.seller?.score?.avg))) ? Number.parseFloat(String(d.seller.score.avg)) : undefined,
       // 도매매(supply)는 낱개 위탁 판매 단위(supplyUnit), 도매꾹은 최소구매수량(domeMoq)
       minOrderQty: this.market === 'supply' ? Number(d.qty?.supplyUnit ?? 1) || 1 : Number(d.qty?.domeMoq ?? 1) || 1,

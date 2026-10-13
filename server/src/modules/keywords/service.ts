@@ -145,6 +145,11 @@ export async function discoverKeywords(ctx: AppContext): Promise<DiscoveryResult
     // 검색량 이력(월별 추이 계산용)
     await ctx.db.insertInto('market_signals').values({ keyword: k.keyword, kind: 'search_volume', value: k.volume, meta: null, at: now }).execute();
   }
+  // 필터 규칙이 바뀐 뒤에도 남아 있는 자동 키워드 정리(고정 키워드는 유지)
+  const stale = (await ctx.db.selectFrom('keywords').select('keyword').where('status', '!=', 'pinned').execute())
+    .map((r) => r.keyword)
+    .filter((kw) => stop.includes(kw) || blockedWords.some((b) => b && norm(kw).includes(norm(b))) || d.noiseWords.some((w) => w && norm(kw).includes(norm(w))));
+  if (stale.length) await ctx.db.deleteFrom('keywords').where('keyword', 'in', stale).execute();
   await prunePool(ctx);
   return res;
 }

@@ -146,13 +146,19 @@ export function priceFromMarkup(settings: Settings, floor: number, markup: numbe
 }
 
 /**
- * 시작 마크업: 경쟁 최저가를 알면 그보다 undercutRate 낮은 가격이 되도록(하한 미만이면 0),
- * 모르면 defaultMarkup.
+ * 목표 마크업(출시 기간 이후): 경쟁 최저가를 알면 하한가와 (경쟁가×(1−undercut)) 사이의 gapCapture 지점,
+ * 모르면 defaultMarkup. 항상 0~maxMarkup.
  */
-export function initialMarkup(settings: Settings, floor: number, marketLowest?: number | null): number {
-  if (!marketLowest || marketLowest <= 0) return settings.pricing.defaultMarkup;
-  const m = (marketLowest * (1 - settings.pricing.undercutRate)) / floor - 1;
+export function targetMarkup(settings: Settings, floor: number, marketLowest?: number | null): number {
+  if (!marketLowest || marketLowest <= 0) return Math.min(settings.pricing.defaultMarkup, settings.pricing.maxMarkup);
+  const gap = (marketLowest * (1 - settings.pricing.undercutRate)) / floor - 1;
+  const m = gap * settings.pricing.gapCapture;
   return Math.max(0, Math.min(settings.pricing.maxMarkup, Math.round(m * 1000) / 1000));
+}
+
+/** 시작 마크업 = 출시 기간 낮은 가격(목표보다 높지 않게) */
+export function initialMarkup(settings: Settings, floor: number, marketLowest?: number | null): number {
+  return Math.min(targetMarkup(settings, floor, marketLowest), settings.pricing.launchMarkup);
 }
 
 /** 경쟁가 상한을 넘지 않는 최대 마크업 */

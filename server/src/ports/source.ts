@@ -51,6 +51,10 @@ export interface SourceProductDetail extends SourceProductSummary {
   manufacturer?: string;
   origin?: string;
   sellerScore?: number;
+  /** 판매자 후기 수(만족도 신뢰도) */
+  sellerReviews?: number;
+  /** 반품 가능 여부(모르면 undefined) */
+  returnable?: boolean;
   /** 최소 주문 수량(위탁은 1이어야 함) */
   minOrderQty?: number;
   /** 배송비가 수량만큼 늘어나는지(true면 묶음 옵션 이점 없음) */

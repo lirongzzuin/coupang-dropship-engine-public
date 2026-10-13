@@ -38,12 +38,14 @@
 | relevance | 상품명에 키워드(또는 키워드의 모든 단어) 포함 |
 | allowedCategory | (도매꾹) 상품 대분류가 허용 목록 안 |
 | moq | 최소 주문 수량 1개(위탁은 낱개 발주) |
+| prepDays | 출고 준비일 ≤ `maxPrepDays`(3일). 도착이 늦으면 전환율·판매자 점수 하락 |
+| sellerQuality | (도매꾹) 판매자 만족도 ≥ `minSellerScore`(85%). 후기 10건 이상일 때만 판단 |
 | supplyPrice | `minSupplyPrice` ≤ 공급가 ≤ `maxSupplyPrice` (기본 하한 15,000원 — feasibility §2-3) |
 | trademark | 상품명·카테고리에 `blockedKeywords`(브랜드·"정품" 등) 없음 |
 | category | `blockedCategoryKeywords`(의약·건강기능식품·주류 등 인증/금지) 없음 |
 | kc | `kcSensitiveKeywords`(전기·충전·어린이…)에 해당하면 KC 인증번호 또는 면제 정보 필수 |
 | profit | 목표가에서 순이익 ≥ `minProfitKrw` 그리고 순이익률 ≥ `minMarginRate` |
-| competitive | 목표가 ≤ 기준 최저가 × (1 + `competitiveTolerance`). 기준은 **쿠팡 최저가(파트너스) 우선, 없으면 네이버 최저가**. 둘 다 모르면 `requireMarketPrice`에 따름 |
+| competitive | 목표가 ≤ 기준 최저가 × (1 + `competitiveTolerance`). 기준은 **쿠팡 최저가(파트너스) 우선, 없으면 11번가 최저가**. 둘 다 모르면 `requireMarketPrice`에 따름 |
 
 소프트 게이트(표시만): 이미지 재사용 허용, 고시정보 보유, API 자동 발주 가능 여부.
 
@@ -62,6 +64,10 @@
 | supplier | 공급처 평점(없으면 0.7) × 0.7 + (자동 발주 가능 ? 0.3 : 0) |
 | coupangSales | log10(추정판매량+1) / 4 (기본 가중치 0 — 추정치라 신뢰도 낮음) |
 | profitPotential | log10(개당 이익 × 월 검색량 / 1000) / 6 (가중치 0.2) — `docs/profit.md` |
+| fastShipping | 출고 1일 이하 1.0 / 2일 0.6 / 3일 0.3 (가중치 0.1) |
+| imageRichness | 이미지 수 / 5 (가중치 0.05) — 이미지가 많을수록 구매 전환 유리 |
+| returnable | 반품 가능 1 / 불가 0 (가중치 0.03, 오너클랜) |
+| entryBarrier | 1 − log10(상위 경쟁 상품 쿠팡 리뷰 수+1)/4 (가중치 0.05, 리뷰 CSV가 있을 때) |
 
 ## 4. 운영 루프(`modules/sync`)
 - 등록 후 `zeroSaleDays`(14일) 동안 판매 0건 → 하한가로 1회 인하 → 다시 14일 0건 → 판매종료. 다음 선정 주기에 새 후보로 교체됩니다.

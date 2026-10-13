@@ -97,6 +97,8 @@ export async function collectSignals(ctx: AppContext, keywords: string[]): Promi
     // 수동 임포트한 쿠팡 판매량 추정치(최근 30일 내)
     const est = await ctx.db.selectFrom('market_signals').select('value').where('keyword', '=', kw).where('kind', '=', 'coupang_sales_est').where('at', '>=', addDays(now, -30)).orderBy('at', 'desc').executeTakeFirst();
     if (est) sig.coupangSalesEst = est.value;
+    const rv = await ctx.db.selectFrom('market_signals').select('value').where('keyword', '=', kw).where('kind', '=', 'coupang_reviews').where('at', '>=', addDays(now, -30)).orderBy('at', 'desc').executeTakeFirst();
+    if (rv) sig.coupangReviews = rv.value;
     out[kw] = sig;
   }
   return out;
