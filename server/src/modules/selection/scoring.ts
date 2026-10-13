@@ -73,7 +73,8 @@ export function evaluateGates(
   d: SourceProductDetail,
   tp: TargetPrice,
   sig: KeywordSignals,
-  opts: { apiOrder: boolean; keyword?: string; enforceCategory?: boolean },
+  /** marketPriceAvailable=false: 시장가 공급원(11번가·파트너스)이 하나도 동작하지 않음 → 시장가 필수 조건을 적용하지 않음 */
+  opts: { apiOrder: boolean; keyword?: string; enforceCategory?: boolean; marketPriceAvailable?: boolean },
 ): GateResult[] {
   const sel = s.selection;
   const text = `${d.title} ${d.categoryPath ?? ''}`;
@@ -112,7 +113,8 @@ export function evaluateGates(
     const limit = ref.price * (1 + sel.competitiveTolerance);
     g.push({ name: 'competitive', hard: true, pass: tp.price <= limit, detail: `목표가 ${tp.price} / ${ref.source} 최저 ${ref.price}` });
   } else {
-    g.push({ name: 'competitive', hard: sel.requireMarketPrice, pass: !sel.requireMarketPrice, detail: '시장가 정보 없음' });
+    const required = sel.requireMarketPrice && opts.marketPriceAvailable !== false;
+    g.push({ name: 'competitive', hard: required, pass: !required, detail: opts.marketPriceAvailable === false ? '시장가 공급원 없음(11번가·쿠팡 파트너스 키 미설정) — 가격 최적화가 판매 결과로 조정' : '시장가 정보 없음' });
   }
   g.push({ name: 'images', hard: false, pass: d.imageReuseAllowed, detail: d.imageReuseAllowed ? '공급처 이미지 사용 가능' : '직접 이미지 필요' });
   g.push({ name: 'notice', hard: false, pass: !!d.notice?.items?.length, detail: d.notice?.items?.length ? '고시정보 있음' : '고시정보 없음(상세페이지 참조로 채움)' });

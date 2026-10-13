@@ -307,3 +307,40 @@ describe('기타', () => {
     expect(() => new SourceRegistry().register(new MockSource('coupang'))).toThrow(/금지/);
   });
 });
+
+describe('설정 저장', () => {
+  it('바꾼 값만 저장 → 기본값 개선이 자동 적용, 예전 전체 저장분의 옛 기본값은 정리', async () => {
+    const { makeHarness } = await import('./helpers.js');
+    const h = await makeHarness();
+    try {
+      await h.ctx.settings.update({ pricing: { minProfitKrw: 4000 } });
+      const row = await h.ctx.db.selectFrom('settings').select('value').where('key', '=', 'app').executeTakeFirstOrThrow();
+      const stored = typeof row.value === 'string' ? JSON.parse(row.value) : row.value;
+      expect(stored.pricing).toEqual({ minProfitKrw: 4000 }); // 기본값은 저장 안 함
+      expect(stored.orders).toBeUndefined();
+      // 예전 형식: 전체 + 옛 기본값(2000원, 10%)
+      const old = { ...S0(), pricing: { ...S0().pricing, minProfitKrw: 2000, minMarginRate: 0.1, maxMarkup: 0.25 } };
+      await h.ctx.db.updateTable('settings').set({ value: JSON.stringify(old) }).where('key', '=', 'app').execute();
+      h.ctx.settings.invalidate();
+      const s = await h.ctx.settings.get();
+      expect(s.pricing.minProfitKrw).toBe(S0().pricing.minProfitKrw); // 옛 기본값 → 새 기본값
+      expect(s.pricing.minMarginRate).toBe(S0().pricing.minMarginRate);
+      expect(s.pricing.maxMarkup).toBe(0.25); // 사람이 바꾼 값은 유지
+      const row2 = await h.ctx.db.selectFrom('settings').select('value').where('key', '=', 'app').executeTakeFirstOrThrow();
+      const slim = typeof row2.value === 'string' ? JSON.parse(row2.value) : row2.value;
+      expect(slim.pricing).toEqual({ maxMarkup: 0.25 });
+    } finally {
+      await h.close();
+    }
+  });
+
+  it('시장가 공급원이 하나도 없으면 시장가 필수 조건으로 전부 탈락시키지 않음', () => {
+    const s = mergeSettings(S0(), { selection: { requireMarketPrice: true } });
+    const d = { sourceItemId: '1', title: '수납 정리함', url: '', price: 20000, shippingFee: 3000, status: 'active', stock: 100, imageReuseAllowed: true, images: [], taxInvoice: true } as any;
+    const tp = targetPrice(s, { cost: 20000, shipping: 3000 });
+    const strict = evaluateGates(s, d, tp, {}, { apiOrder: true, marketPriceAvailable: true }).find((g) => g.name === 'competitive')!;
+    expect(strict.hard && !strict.pass).toBe(true);
+    const none = evaluateGates(s, d, tp, {}, { apiOrder: true, marketPriceAvailable: false }).find((g) => g.name === 'competitive')!;
+    expect(none.hard).toBe(false);
+  });
+});

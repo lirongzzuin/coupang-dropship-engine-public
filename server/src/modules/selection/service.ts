@@ -173,6 +173,8 @@ export async function runSelection(ctx: AppContext, opts: { keywords?: string[] 
   const result: SelectionResult = { runId, keywords: keywords.length, evaluated: 0, passed: 0, autoListed: 0, errors: [] };
   if (!keywords.length) return result;
   const signals = await collectSignals(ctx, keywords);
+  // 이번 실행에서 어떤 키워드도 시장가를 못 받았으면 공급원이 없는 것으로 판단(전부 탈락 방지)
+  const marketPriceAvailable = keywords.some((k) => signals[k] && marketReference(signals[k]!) !== null);
   const kwStats = new Map<string, { passed: number; listed: number }>(keywords.map((k) => [k, { passed: 0, listed: 0 }]));
   const seenTitles = new Set<string>();
   const sources = s.selection.sources.map((id) => ctx.sources.get(id)).filter((x): x is NonNullable<typeof x> => !!x && x.capabilities.search);
@@ -201,7 +203,7 @@ export async function runSelection(ctx: AppContext, opts: { keywords?: string[] 
           const dupKey = `${kw}|${d.title.replace(/\s+/g, '')}`;
           if (seenTitles.has(dupKey)) continue;
           seenTitles.add(dupKey);
-          const gates = evaluateGates(s, d, tp, sig, { apiOrder, keyword: kw, enforceCategory: s.discovery.enforceCategoryForSources.includes(src.id) });
+          const gates = evaluateGates(s, d, tp, sig, { apiOrder, keyword: kw, enforceCategory: s.discovery.enforceCategoryForSources.includes(src.id), marketPriceAvailable });
           const passed = gates.every((g) => !g.hard || g.pass);
           const { score, parts } = scoreCandidate(s, d, tp, sig, { apiOrder });
           result.evaluated++;

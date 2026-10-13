@@ -369,6 +369,45 @@ export function defaultSettings(): Settings {
 }
 
 /** 부분 업데이트를 깊게 병합한 뒤 검증 */
+/**
+ * 저장용: 기본값과 다른 값만 남긴다(사람이 바꾼 값만 DB에 → 이후 기본값 개선이 자동 적용).
+ * 배열은 통째로 비교.
+ */
+export function diffSettings(value: unknown, base: unknown): unknown {
+  if (Array.isArray(value) || value === null || typeof value !== 'object' || base === null || typeof base !== 'object' || Array.isArray(base)) {
+    return JSON.stringify(value) === JSON.stringify(base) ? undefined : value;
+  }
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    const d = diffSettings(v, (base as Record<string, unknown>)[k]);
+    if (d !== undefined) out[k] = d;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+/**
+ * 예전 버전은 설정 전체(당시 기본값 포함)를 저장했다. 사람이 고른 값이 아니라 옛 기본값이 남은 것으로 보고 지운다.
+ * [경로, 옛 기본값]
+ */
+export const STALE_DEFAULTS: Array<[string, unknown]> = [
+  ['pricing.minProfitKrw', 2000],
+  ['pricing.minMarginRate', 0.1],
+  ['pricing.defaultMarkup', 0.08],
+  ['pricing.maxMarkup', 0.5],
+  ['pricing.launchMarkup', 0.02],
+  ['optimizer.stepUp', 0.04],
+];
+
+export function dropStaleDefaults(stored: unknown): unknown {
+  if (!stored || typeof stored !== 'object') return stored;
+  const copy = JSON.parse(JSON.stringify(stored)) as Record<string, any>;
+  for (const [path, old] of STALE_DEFAULTS) {
+    const [sec, key] = path.split('.') as [string, string];
+    if (copy[sec] && typeof copy[sec] === 'object' && JSON.stringify(copy[sec][key]) === JSON.stringify(old)) delete copy[sec][key];
+  }
+  return copy;
+}
+
 export function mergeSettings(current: Settings, patch: unknown): Settings {
   return settingsSchema.parse(deepMerge(current, patch));
 }

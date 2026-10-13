@@ -1,6 +1,6 @@
 import type { SourceRegistry } from './adapters/registry.js';
 import type { Env } from './config/env.js';
-import { defaultSettings, mergeSettings, type Settings } from './config/settings.js';
+import { defaultSettings, diffSettings, dropStaleDefaults, mergeSettings, type Settings } from './config/settings.js';
 import type { Database } from './db/index.js';
 import type { PiiCipher } from './lib/crypto.js';
 import type { Logger } from './lib/logger.js';
@@ -16,19 +16,29 @@ export class SettingsService {
   async get(): Promise<Settings> {
     if (this.cache) return this.cache;
     const row = await this.db.selectFrom('settings').select('value').where('key', '=', 'app').executeTakeFirst();
-    this.cache = row ? mergeSettings(defaultSettings(), row.value) : defaultSettings();
+    if (!row) return (this.cache = defaultSettings());
+    const stored = typeof row.value === 'string' ? JSON.parse(row.value) : row.value;
+    this.cache = mergeSettings(defaultSettings(), dropStaleDefaults(stored));
+    // 예전 형식(전체 저장)이면 바꾼 값만 남기도록 정리
+    const slim = diffSettings(this.cache, defaultSettings()) ?? {};
+    if (JSON.stringify(slim) !== JSON.stringify(stored)) await this.save(slim);
     return this.cache;
   }
 
   async update(patch: unknown): Promise<Settings> {
     const next = mergeSettings(await this.get(), patch);
-    await this.db
-      .insertInto('settings')
-      .values({ key: 'app', value: JSON.stringify(next), updated_at: new Date() })
-      .onConflict((oc) => oc.column('key').doUpdateSet({ value: JSON.stringify(next), updated_at: new Date() }))
-      .execute();
+    await this.save(diffSettings(next, defaultSettings()) ?? {});
     this.cache = next;
     return next;
+  }
+
+  private async save(value: unknown): Promise<void> {
+    const json = JSON.stringify(value);
+    await this.db
+      .insertInto('settings')
+      .values({ key: 'app', value: json, updated_at: new Date() })
+      .onConflict((oc) => oc.column('key').doUpdateSet({ value: json, updated_at: new Date() }))
+      .execute();
   }
 
   invalidate(): void {
