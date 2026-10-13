@@ -36,7 +36,7 @@ export class OwnerclanSource implements SourceAdapter {
   private readonly fetchImpl: typeof fetch;
 
   constructor(private readonly opts: OwnerclanOptions) {
-    this.limiter = new RateLimiter(opts.requestsPerSecond ?? 2);
+    this.limiter = new RateLimiter(opts.requestsPerSecond ?? 1); // 실측: 2/s 에서 'Too many requests'
     this.fetchImpl = opts.fetchImpl ?? fetch;
   }
 
@@ -110,11 +110,13 @@ export class OwnerclanSource implements SourceAdapter {
           if (json.errors?.some((e: any) => /Not authorized to use API/i.test(e.detail ?? ''))) {
             throw new HttpError(403, '오너클랜 API 사용 권한 없음 — 오너클랜 고객센터에 "API 사용 승인"을 요청하세요(로그인은 정상)', json);
           }
+          // 호출 한도 초과는 HTTP 200 + GraphQL 오류로 옴 → 429로 보고 쉬었다가 재시도
+          if (json.errors?.some((e: any) => /too many requests/i.test(e.message ?? ''))) throw new HttpError(429, '오너클랜 호출 한도 초과', json);
           if (json.errors?.length) throw new HttpError(400, `오너클랜 GraphQL 오류: ${json.errors.map((e: any) => e.message).join('; ')}`, json);
           return json.data as T;
         }
       },
-      { attempts: 3, baseMs: 1000, retryable: (e) => (e instanceof HttpError && (e.status === 429 || e.status >= 500)) || (e as Error)?.name === 'TimeoutError' },
+      { attempts: 4, baseMs: 3000, retryable: (e) => (e instanceof HttpError && (e.status === 429 || e.status >= 500)) || (e as Error)?.name === 'TimeoutError' },
     );
   }
 

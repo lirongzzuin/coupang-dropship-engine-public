@@ -79,6 +79,21 @@ export async function buildServer(ctx: AppContext, scheduler: Scheduler | null, 
     return out;
   });
 
+  // 이 Mac 안에서만(diagnose.sh): 최근 선정의 탈락 사유 집계 + 주요 설정값
+  app.get('/healthz/selection', async (req, reply) => {
+    if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.ip) || req.headers['x-forwarded-for'] || req.headers['tailscale-user-login']) return reply.code(404).send();
+    const last = await ctx.db.selectFrom('candidates').select('run_id').orderBy('id', 'desc').executeTakeFirst();
+    const rows = last ? await ctx.db.selectFrom('candidates').select(['gates', 'passed']).where('run_id', '=', last.run_id).execute() : [];
+    const fails: Record<string, number> = {};
+    const samples: Record<string, string> = {};
+    for (const r of rows) {
+      const gates = (typeof r.gates === 'string' ? JSON.parse(r.gates) : r.gates) as Array<{ name: string; hard: boolean; pass: boolean; detail?: string }>;
+      for (const g of gates) if (g.hard && !g.pass) { fails[g.name] = (fails[g.name] ?? 0) + 1; samples[g.name] ??= g.detail ?? ''; }
+    }
+    const st = await ctx.settings.get();
+    return { runId: last?.run_id ?? null, total: rows.length, passed: rows.filter((r) => r.passed).length, fails, samples, pricing: st.pricing, selection: { ...st.selection, seedKeywords: st.selection.seedKeywords.length }, mode: st.selection.mode, killSwitch: st.killSwitch };
+  });
+
   // 이 Mac 안에서만(run-job.sh): 작업 즉시 실행. 브라우저 위조 요청 방지용 헤더 필수
   app.post('/healthz/jobs/:name/run', async (req, reply) => {
     if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.ip) || req.headers['x-forwarded-for'] || req.headers['tailscale-user-login'] || req.headers['x-requested-with'] !== 'app') return reply.code(404).send();
