@@ -150,8 +150,8 @@ export const settingsSchema = z.object({
       topNotify: z.number().int().default(5),
       /** 같은 키워드로 동시에 운영할 최대 상품 수(분산) */
       maxPerKeyword: z.number().int().default(2),
-      /** 최종 점수 = 기대 월이익 점수 × blend + 품질 점수 × (1 − blend) */
-      demandBlend: z.number().min(0).max(1).default(0.6),
+      /** 최종 우선순위 비중: 기대 월이익 · 기대 월판매(잘 팔리는 상품) · 품질 */
+      rankWeights: z.object({ profit: z.number().default(0.5), sales: z.number().default(0.2), quality: z.number().default(0.3) }).default({}),
       /** 수요 모델 계수(docs/selection-model.md) */
       model: z
         .object({
@@ -159,11 +159,14 @@ export const settingsSchema = z.object({
           volumeExponent: z.number().default(0.6),
           brandFactor: z.number().default(0.6),
           bulkFactor: z.number().default(0.5),
+          refPrice: z.number().default(15000),
+          priceElasticity: z.number().default(0.8),
         })
         .default({}),
       /** 공급가 하한(저가 상품은 배송비 고정비로 불리 — feasibility.md 2-3) */
-      minSupplyPrice: z.number().int().default(15000),
-      maxSupplyPrice: z.number().int().default(200000),
+      /** 1만원대 이하 생활용품까지 후보에 포함(배송비 포함 판매가 약 1.1만원~) */
+      minSupplyPrice: z.number().int().default(2000),
+      maxSupplyPrice: z.number().int().default(100000),
       minStock: z.number().int().default(10),
       /** 상품성: 공급처 출고 준비일 상한(쿠팡 도착예정일·정시출고에 직결). 초과 시 탈락 */
       maxPrepDays: z.number().int().default(3),
@@ -411,6 +414,8 @@ export const STALE_DEFAULTS: Array<[string, unknown]> = [
   ['pricing.maxMarkup', 0.5],
   ['pricing.launchMarkup', 0.02],
   ['optimizer.stepUp', 0.04],
+  ['selection.minSupplyPrice', 15000],
+  ['selection.maxSupplyPrice', 200000],
 ];
 
 export function dropStaleDefaults(stored: unknown): unknown {

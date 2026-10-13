@@ -228,3 +228,37 @@ describe('등록 사전 점검', () => {
     expect(c.status).toBe('new');
   });
 });
+
+describe('가격대 우선순위(가볍게 사는 1만원대 우선, 데이터가 받쳐주면 고가도)', () => {
+  it('같은 수요면 1만원대가 8~9만원대보다 앞', async () => {
+    const { priceAppealFactor, rankScore } = await import('../src/modules/selection/demandModel.js');
+    expect(priceAppealFactor(9900)).toBeGreaterThan(1.3);
+    expect(priceAppealFactor(89000)).toBeLessThan(0.3);
+    const cheap = expectedMonthly({ searchVolume: 18000, competition: '중간', priceRatio: 1, conversion: 0.8, unitProfit: 3000, salePrice: 12900 });
+    const pricey = expectedMonthly({ searchVolume: 18000, competition: '중간', priceRatio: 1, conversion: 0.8, unitProfit: 11000, salePrice: 89900 });
+    const w = { profit: 0.5, sales: 0.2, quality: 0.3 };
+    expect(rankScore(cheap, 0.7, w)).toBeGreaterThan(rankScore(pricey, 0.7, w));
+    // 고가 상품이 실제로 잘 팔린 기록(학습계수 3)이 있으면 고가가 앞
+    const proven = expectedMonthly({ searchVolume: 18000, competition: '중간', priceRatio: 1, conversion: 0.8, unitProfit: 11000, salePrice: 89900, learned: 3 });
+    expect(rankScore(proven, 0.7, w)).toBeGreaterThan(rankScore(cheap, 0.7, w));
+    // 검색량이 훨씬 큰 고가 키워드도 앞설 수 있음
+    const bigDemand = expectedMonthly({ searchVolume: 400000, competition: '낮음', priceRatio: 1, conversion: 0.8, unitProfit: 11000, salePrice: 89900 });
+    expect(rankScore(bigDemand, 0.7, w)).toBeGreaterThan(rankScore(cheap, 0.7, w));
+  });
+
+  it('통합: 저가 공급 상품도 후보에 들어오고 같은 키워드에서 저가가 먼저 등록', async () => {
+    h = await makeHarness({ live: true });
+    await h.ctx.settings.update({
+      selection: { minSupplyPrice: 2000, autoListPerRun: 1 },
+      coupang: { vendorUserId: 'w', outboundShippingPlaceCode: '1', returnCenterCode: '1', companyContactNumber: '1588', returnZipCode: '1', returnAddress: '서울' },
+    });
+    h.marketData.volume.set('정리함', 18000);
+    h.apiSource.add({ sourceItemId: 'C1', title: '투명 서랍 정리함', price: 4500 });
+    h.apiSource.add({ sourceItemId: 'C2', title: '원목 대형 정리함', price: 62000 });
+    const r = await runSelection(h.ctx, { keywords: ['정리함'] });
+    expect(r.passed).toBe(2);
+    const l = await h.ctx.db.selectFrom('listings').select(['title', 'sale_price']).executeTakeFirstOrThrow();
+    expect(l.title).toContain('투명');
+    expect(l.sale_price).toBeLessThan(20000);
+  });
+});

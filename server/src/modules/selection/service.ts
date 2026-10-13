@@ -4,7 +4,7 @@ import { upsertSourceProduct } from '../catalog.js';
 import { createDraftFromCandidate, registerListing } from '../listing/service.js';
 import { pickKeywordsForRun, recordKeywordResults } from '../keywords/service.js';
 import { targetPrice } from '../pricing/pricing.js';
-import { DEFAULT_MODEL, expectedMonthly, keywordMatches, learnedFactor, looksBranded, looksBulk, median, productFamily, profitScore } from './demandModel.js';
+import { DEFAULT_MODEL, expectedMonthly, keywordMatches, learnedFactor, looksBranded, looksBulk, median, productFamily, profitScore, rankScore, salesScore } from './demandModel.js';
 import { evaluateGates, type KeywordSignals, marketReference, monthlySlope, scoreCandidate, trendSlope } from './scoring.js';
 
 /**
@@ -263,10 +263,10 @@ export async function runSelection(ctx: AppContext, opts: { keywords?: string[] 
             bulk: looksBulk(d.title),
             learned: Math.sqrt(learnedKw * learnedCat),
             unitProfit: tp.breakdown?.profit ?? 0,
+            salePrice: tp.feasible ? tp.price : undefined,
           }, model);
-          const blend = s.selection.demandBlend;
-          const score = Math.round((profitScore(demand.profit) * blend + quality.score * (1 - blend)) * 1000) / 1000;
-          const parts = { ...quality.parts, expectedProfit: profitScore(demand.profit) };
+          const score = rankScore(demand, quality.score, s.selection.rankWeights);
+          const parts = { ...quality.parts, expectedProfit: profitScore(demand.profit), expectedSales: salesScore(demand.sales) };
           result.evaluated++;
           if (passed) result.passed++;
           const ks = kwStats.get(kw) ?? { passed: 0, listed: 0 };
@@ -311,7 +311,7 @@ export async function runSelection(ctx: AppContext, opts: { keywords?: string[] 
   // 개선용 기록(1회 1행): 어떤 조건에서 몇 개가 왜 탈락·등록됐는지
   await ctx.db.insertInto('selection_runs').values({
     run_id: runId, at: ctx.clock.now(), keywords: result.keywords, evaluated: result.evaluated, passed: result.passed, listed: result.autoListed,
-    fails: JSON.stringify(failCounts), skipped: JSON.stringify(auto?.skipped ?? {}), model: JSON.stringify({ ...model, blend: s.selection.demandBlend }),
+    fails: JSON.stringify(failCounts), skipped: JSON.stringify(auto?.skipped ?? {}), model: JSON.stringify({ ...model, rankWeights: s.selection.rankWeights }),
   }).onConflict((oc) => oc.column('run_id').doNothing()).execute();
   await recordKeywordResults(ctx, kwStats);
   return result;

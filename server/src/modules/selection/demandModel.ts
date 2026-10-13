@@ -26,6 +26,8 @@ export interface DemandInput {
   learned?: number;
   /** 개당 예상 이익(원) */
   unitProfit: number;
+  /** 소비자 판매가(원) — 가격이 낮을수록 가볍게 구매(충동구매·비교 부담↓) */
+  salePrice?: number;
 }
 
 export interface DemandModelParams {
@@ -34,9 +36,19 @@ export interface DemandModelParams {
   volumeExponent: number;
   brandFactor: number;
   bulkFactor: number;
+  /** 가격 매력의 기준가(이 가격에서 1.0) */
+  refPrice: number;
+  /** 가격 탄력: 클수록 비싼 상품의 구매 확률이 빠르게 감소 */
+  priceElasticity: number;
 }
 
-export const DEFAULT_MODEL: DemandModelParams = { baseSalesPer10k: 1.5, volumeExponent: 0.6, brandFactor: 0.6, bulkFactor: 0.5 };
+export const DEFAULT_MODEL: DemandModelParams = { baseSalesPer10k: 1.5, volumeExponent: 0.6, brandFactor: 0.6, bulkFactor: 0.5, refPrice: 15000, priceElasticity: 0.8 };
+
+/** 가격 매력: (기준가/판매가)^탄력. 9,900원≈1.4, 15,000원=1, 30,000원≈0.57, 89,000원≈0.24 */
+export function priceAppealFactor(salePrice: number | undefined, p: Pick<DemandModelParams, 'refPrice' | 'priceElasticity'> = DEFAULT_MODEL): number {
+  if (!salePrice || salePrice <= 0) return 1;
+  return clamp(Math.pow(p.refPrice / salePrice, p.priceElasticity), 0.1, 1.8);
+}
 
 const clamp = (x: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, x));
 
@@ -56,6 +68,7 @@ export function expectedMonthly(input: DemandInput, p: DemandModelParams = DEFAU
     // 검색량을 못 받았으면(외부 API 장애) 0이 아니라 중립값 — 장애가 선정 전체를 멈추지 않게
     volume: input.searchVolume === undefined ? 0.5 : Math.pow(Math.max(0, input.searchVolume) / 10000, p.volumeExponent),
     priceBand: priceBandFactor(input.priceRatio),
+    priceAppeal: priceAppealFactor(input.salePrice, p),
     competition: competitionFactor(input.competition),
     conversion: 0.6 + 0.4 * clamp(input.conversion ?? 0.5, 0, 1),
     brand: input.brand ? p.brandFactor : 1,
@@ -65,6 +78,17 @@ export function expectedMonthly(input: DemandInput, p: DemandModelParams = DEFAU
   };
   const sales = p.baseSalesPer10k * Object.values(factors).reduce((a, b) => a * b, 1);
   return { sales: Math.round(sales * 100) / 100, profit: Math.round(sales * Math.max(0, input.unitProfit)), factors };
+}
+
+/** 기대 월판매(개) → 0~1 점수. 월 1개≈0.5, 3개≈0.75, 10개≈1 */
+export function salesScore(monthlySales: number): number {
+  return clamp(Math.log10(Math.max(0, monthlySales) * 10 + 1) / 2, 0, 1);
+}
+
+/** 최종 우선순위: 기대 월이익 + 기대 월판매(잘 팔리는 상품 가점) + 품질 */
+export function rankScore(demand: { sales: number; profit: number }, quality: number, w: { profit: number; sales: number; quality: number }): number {
+  const sum = w.profit + w.sales + w.quality || 1;
+  return Math.round(((profitScore(demand.profit) * w.profit + salesScore(demand.sales) * w.sales + quality * w.quality) / sum) * 1000) / 1000;
 }
 
 /** 기대 월이익(원) → 0~1 점수. 월 1만원≈0.4, 5만원≈0.55, 30만원≈0.7 */
