@@ -123,6 +123,15 @@ export async function watchdog(ctx: AppContext): Promise<{ alerts: number }> {
     await ctx.notifications.notify(days <= 3 ? 'error' : 'warn', `쿠팡 API 키 만료 D-${days}`, 'Wing > 판매자정보 > 추가판매정보 > OPEN API 키 재발급 후 서버 환경변수를 교체하세요.', { dedupeKey: `key-expiry-${days}`, dedupeMinutes: 24 * 60 });
   }
   alerts += await checkPublicIp(ctx);
+  // 외부 생존 신호: 주문 수집이 정상일 때만 보냄(멈췄으면 외부 서비스가 알림)
+  const pollOk = !ref || now.getTime() - new Date(ref).getTime() <= staleMs;
+  if (ctx.env.HEARTBEAT_URL && pollOk) {
+    try {
+      await fetch(ctx.env.HEARTBEAT_URL, { signal: AbortSignal.timeout(10_000) });
+    } catch (e) {
+      ctx.log.warn({ err: String(e) }, '하트비트 전송 실패');
+    }
+  }
   return { alerts };
 }
 

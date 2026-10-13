@@ -43,6 +43,14 @@ bash deploy/mac/install.sh
 5. **키 입력**: `~/dropship/.env`에 API 키 입력 → `launchctl kickstart -k gui/$(id -u)/com.dropship.app`
 6. 실운영 전환은 `docs/runbook.md` §3 순서를 따릅니다.
 
+### Mac이 꺼졌을 때 알림 받기(권장, 무료)
+FileVault가 켜져 있으면 자동 로그인이 안 되므로, 정전으로 재부팅되면 로그인할 때까지 앱이 멈춥니다. 앱이 멈추면 텔레그램 알림도 못 보내므로 외부 감시를 붙입니다.
+1. https://healthchecks.io 에 무료 가입 → **Add Check**
+   - Period: 10 minutes, Grace: 20 minutes
+   - Integrations에서 이메일(기본) 또는 Telegram 연결
+2. 체크의 Ping URL(`https://hc-ping.com/…`)을 `~/dropship/.env`의 `HEARTBEAT_URL=`에 넣고 앱 재시작
+3. 앱은 10분마다(주문 수집이 정상일 때만) 신호를 보냅니다. Mac이 꺼지거나 주문 수집이 멈추면 healthchecks.io가 알려 줍니다.
+
 ### 명령 모음
 | 하고 싶은 일 | 명령 |
 |---|---|

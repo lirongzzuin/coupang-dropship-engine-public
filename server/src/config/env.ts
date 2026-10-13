@@ -62,6 +62,11 @@ export const envSchema = z.object({
   TELEGRAM_BOT_TOKEN: optStr,
   TELEGRAM_CHAT_ID: optStr,
 
+  /**
+   * 외부 생존 신호(하트비트) URL. 예: healthchecks.io 무료 체크 주소.
+   * 감시 작업(10분)마다 GET 요청 → 신호가 끊기면 그 서비스가 메일·텔레그램으로 알려 줌(Mac 꺼짐·재부팅 대비)
+   */
+  HEARTBEAT_URL: optStr,
   /** 공인 IP 변경 감시(집 PC 운영 시 필수). 쿠팡 허용 IP 갱신 알림 */
   PUBLIC_IP_CHECK: bool(true),
   /** 내장 스케줄러 실행 여부(테스트·일회성 CLI에서는 false) */

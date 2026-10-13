@@ -75,6 +75,8 @@ NAVER_SEARCHAD_API_KEY=
 NAVER_SEARCHAD_SECRET=
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
+# Mac 꺼짐 감시(healthchecks.io 무료 체크 주소, docs/deploy.md)
+HEARTBEAT_URL=
 LOG_LEVEL=info
 ENVEOF
   umask 022
