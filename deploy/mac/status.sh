@@ -4,7 +4,13 @@
 echo "버전     : $(git -C "$APP" log -1 --format='%h %s (%cr)')"
 for s in app updater backup; do
   st=$(launchctl print "$(svc $s)" 2>/dev/null | awk -F'= ' '/^\tstate/{print $2; exit}')
-  echo "서비스   : $s ${st:-등록 안 됨}"
+  case "$s:${st:-}" in
+    app:running) label="✅ 실행 중" ;;
+    app:*) label="❌ ${st:-등록 안 됨}" ;;
+    *:"") label="❌ 등록 안 됨" ;;
+    *) label="✅ 등록됨(주기 실행 대기)" ;;
+  esac
+  echo "서비스   : $s $label"
 done
 if curl -fs "http://127.0.0.1:$(port)/healthz" >/dev/null; then echo "헬스체크 : ✅ http://127.0.0.1:$(port)"; else echo "헬스체크 : ❌"; fi
 echo "공인 IP  : $(curl -fs -m 5 https://api.ipify.org || echo 확인 실패)  ← 쿠팡 Wing 허용 IP와 같아야 함"

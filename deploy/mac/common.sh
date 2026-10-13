@@ -16,7 +16,7 @@ AGENTS="$HOME/Library/LaunchAgents"
 UID_NUM="$(id -u)"
 # launchd 는 PATH 가 최소라 설치 시 절대경로를 runtime.conf 에 저장해 둔다
 [ -f "$RUNTIME" ] && . "$RUNTIME"
-export PATH="${EXTRA_PATH:-}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export PATH="${EXTRA_PATH:+$EXTRA_PATH:}${PATH:-/usr/bin:/bin}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
@@ -55,6 +55,7 @@ notify() { # 텔레그램 알림(설정돼 있을 때만)
 install_scripts() {
   mkdir -p "$BIN"
   for f in "$APP"/deploy/mac/*.sh; do
+    [ -f "$f" ] || continue
     cp "$f" "$BIN/.$(basename "$f").new" && chmod +x "$BIN/.$(basename "$f").new" && mv -f "$BIN/.$(basename "$f").new" "$BIN/$(basename "$f")"
   done
 }

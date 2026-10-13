@@ -31,7 +31,8 @@
 
 | 증상(알림) | 원인 후보 | 조치 |
 |---|---|---|
-| 주문 수집이 멈췄습니다 | 쿠팡 키 만료, VPS IP 변경, 쿠팡 장애, 서버 다운 | ① `docker compose ps`, `docker compose logs app --tail 100` ② Wing에서 키·IP 확인(IP는 최대 10개) ③ 키 재발급 시 `.env` 교체 후 `docker compose up -d` ④ 수집이 복구되면 겹침 구간(15분)으로 누락 없이 다시 수집됨 |
+| 공인 IP 변경 | 공유기 재부팅·통신사 | Wing > OPEN API 키 > 허용 IP에 새 IP 추가(최대 10개, 30분 내 반영) |
+| 주문 수집이 멈췄습니다 | 쿠팡 키 만료, 공인 IP 변경, 쿠팡 장애, Mac 꺼짐 | ① Mac: `bash ~/dropship/bin/status.sh`, `tail -100 ~/dropship/logs/app.log` (서버: `docker compose logs app --tail 100`) ② Wing에서 키·IP 확인(IP는 최대 10개) ③ 키 재발급 시 `.env` 교체 후 재시작(Mac: `launchctl kickstart -k gui/$(id -u)/com.dropship.app`) ④ 수집이 복구되면 겹침 구간(15분)으로 누락 없이 다시 수집됨 |
 | 쿠팡 API 키 만료 D-n | 180일 유효 | Wing > 판매자정보 > 추가판매정보 > OPEN API 키 재발급(만료 14일 전부터 가능) → `.env`의 `COUPANG_SECRET_KEY` 교체 → 재시작 → 설정 > 키 발급일 갱신 |
 | 작업 실패: … | 외부 API 오류 | 작업 화면에서 오류 메시지 확인 → [지금 실행]으로 재시도. 일시 오류는 다음 주기에 자동 재시도됩니다 |
 | 자동 발주 반복 실패 | 공급처 장애·로그인 실패·예치금 부족 | 공급처 사이트 확인. 장애가 길면 설정 > 발주 모드를 `approve`로 바꾸고 직접 구매 |
@@ -39,7 +40,7 @@
 | 429(호출 제한) 로그 | 쿠팡 초당 호출 초과 | 자동 감속(60초)됩니다. 반복되면 설정 > coupang.requestsPerSecond를 낮춥니다(기본 2) |
 | 품절 주문 발생 | 공급처 재고 소진 | 상품은 자동 중지됩니다. 고객에게 연락하거나 Wing에서 취소합니다(판매자 귀책 취소는 판매자 점수에 영향) |
 | 마진 역전 | 공급가 인상 | 자동 중지됩니다. 손실을 감수하고 보낼지 [강행], 아니면 취소 |
-| 서버 다운 | VPS 장애 | `docker compose up -d`. DB 손상이면 §4 복구 |
+| Mac 꺼짐·재부팅 | 정전·업데이트 | 자동 로그인 + `pmset autorestart`면 켜질 때 자동 시작. 지난 24시간 주문은 자동으로 다시 수집 |
 | 이상 동작·대량 오류 | 모름 | 관리자 홈 **[긴급 정지]**: 등록·가격·발주·송장·답변이 모두 멈추고 주문 감지만 계속됩니다 |
 
 ## 3. 실운영 전환 순서(파일럿)
@@ -52,11 +53,13 @@
 7. 2주 운영 후 지표(자동 처리율, 예외 건수, 출고 지연, 반품률, 실제 이익) 확인 → 한도 상향
 
 ## 4. 백업·복구
-- 백업: `deploy/backup.sh`(cron 매일 04시). DB 덤프와 업로드 이미지를 로컬에 14일 보관하고, `RCLONE_REMOTE`를 설정하면 R2/S3로도 올립니다.
-- 복구: `deploy/restore.sh backups/db-YYYYMMDD-HHMM.sql.gz`
+- **Mac 홈서버**: 매일 04시 자동 백업(`~/dropship/backups` 14일 + iCloud Drive `dropship-backups` 30일)
+  - 복구: `bash ~/dropship/bin/restore.sh <백업파일.tgz>`
+  - Mac 교체: 새 Mac에서 `install.sh` → 예전 `.env` 복사 → `restore.sh`
+- **리눅스 서버**: `deploy/backup.sh`(cron), 복구는 `deploy/restore.sh`
 - **`.env`의 `PII_KEY`를 잃어버리면 저장된 고객 배송정보를 복호화할 수 없습니다.** 비밀번호 관리자에 따로 보관하세요.
-- 복구 리허설(분기 1회): 새 VPS에 restore → 관리자 로그인 → 주문 화면이 열리는지 확인
+- 복구 리허설(분기 1회): 백업 파일로 다른 위치에 복구해 로그인과 주문 화면을 확인합니다.
 
 ## 5. 관리자 계정
-- 생성·재설정: `docker compose exec app node dist/cli/create-admin.js admin '새비밀번호'` (OTP 비밀키가 새로 발급됩니다)
+- 생성·재설정: Mac은 `bash ~/dropship/bin/admin.sh admin '새비밀번호'`, 리눅스 서버는 `docker compose exec app node dist/cli/create-admin.js admin '새비밀번호'` (OTP 비밀키가 새로 발급됩니다)
 - 로그인 5회 실패 시 15분 잠금. 고객 배송지 원문 열람은 감사로그(audit_log)에 남습니다.
