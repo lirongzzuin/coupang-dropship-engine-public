@@ -173,8 +173,10 @@ export async function processOrder(ctx: AppContext, orderId: number, opts: { ove
   }
 
   const cost = price * units;
-  const perUnitShipping = (sp.detail as { shippingPerUnit?: boolean } | null)?.shippingPerUnit;
-  if (perUnitShipping) shipping *= units;
+  const det = sp.detail as { shippingPerUnit?: boolean; maxPerBox?: number | null } | null;
+  // 배송비: 개당이면 수량만큼, 상자당 수량 한도가 있으면 상자 수만큼
+  if (det?.shippingPerUnit) shipping *= units;
+  else if (det?.maxPerBox && units > det.maxPerBox) shipping *= Math.ceil(units / det.maxPerBox);
   const breakdown = computeProfit(s, o.sale_amount, { cost, shipping, categoryPath: sp.category_path, inputVatDeductible: sp.tax_invoice, feeRate: listing.fee_rate_actual });
   o = await ctx.db.updateTable('orders').set({ expected_cost: cost + shipping, expected_profit: breakdown.profit }).where('id', '=', o.id).returningAll().executeTakeFirstOrThrow();
 

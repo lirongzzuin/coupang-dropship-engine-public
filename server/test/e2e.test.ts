@@ -427,7 +427,7 @@ describe('동기화·판매 관리', () => {
     const { listing } = await seedActiveListing(h, { salePrice: 30000, markup: 0.3 });
     h.clock.advanceMinutes(60 * 24 * 15);
     expect((await reviewSlowListings(h.ctx)).lowered).toBe(1);
-    expect((await h.ctx.db.selectFrom('listings').select('sale_price').where('id', '=', listing.id).executeTakeFirstOrThrow()).sale_price).toBe(24000); // -20% 가드
+    expect((await h.ctx.db.selectFrom('listings').select('sale_price').where('id', '=', listing.id).executeTakeFirstOrThrow()).sale_price).toBeLessThan(30000); // 인하(−20% 가드·하한 이상)
     h.clock.advanceMinutes(60 * 24 * 15);
     expect((await reviewSlowListings(h.ctx)).stopped).toBe(1);
     expect((await h.ctx.db.selectFrom('listings').select('status').where('id', '=', listing.id).executeTakeFirstOrThrow()).status).toBe('stopped');

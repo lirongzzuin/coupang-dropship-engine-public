@@ -97,7 +97,11 @@ export class DomeggookSource implements SourceAdapter {
     if (!d?.basis) return null;
     const unitPrice = parseTierPrice(this.market === 'supply' ? d.price?.supply ?? d.price?.dome : d.price?.dome);
     const deli = this.market === 'supply' ? (d.deli?.supply?.fee !== undefined ? d.deli.supply : d.deli?.dome) : d.deli?.dome;
-    const free = String(d.deli?.pay ?? '').includes('무료');
+    const free = String(d.deli?.pay ?? '').includes('무료') && !String(d.deli?.pay ?? '').includes('조건');
+    // 수량별비례 "10+3000|10+3000" = 10개까지 한 상자 3,000원(fee 필드 없음) → 보수적으로 최소 수량·최대 금액
+    const tiers = String(deli?.tbl ?? '').split('|').map((x) => x.split('+').map(Number)).filter((x) => x.length === 2 && x.every(Number.isFinite));
+    const tblFee = tiers.length ? Math.max(...tiers.map((x) => x[1]!)) : 0;
+    const perBox = tiers.length ? Math.max(1, Math.min(...tiers.map((x) => x[0]!))) : null;
     const statusText = String(d.basis.status ?? '');
     const stock = d.qty?.inventory !== undefined ? Number(d.qty.inventory) : null;
     const status: SourceProductDetail['status'] = statusText.includes('판매중') ? (stock === 0 ? 'soldout' : 'active') : 'ended';
@@ -110,7 +114,7 @@ export class DomeggookSource implements SourceAdapter {
       url: `https://domeggook.com/${no}`,
       imageUrl: images[0],
       price: unitPrice,
-      shippingFee: free ? 0 : Number(deli?.fee) || 0,
+      shippingFee: free ? 0 : Number(deli?.fee) || tblFee,
       status,
       stock,
       categoryPath: (d.category?.parents?.elem ?? []).concat(d.category?.current ? [d.category.current] : []).map((c: any) => c.name).join('>') || undefined,
@@ -132,7 +136,8 @@ export class DomeggookSource implements SourceAdapter {
       // 도매매(supply)는 낱개 위탁 판매 단위(supplyUnit), 도매꾹은 최소구매수량(domeMoq)
       minOrderQty: this.market === 'supply' ? Number(d.qty?.supplyUnit ?? 1) || 1 : Number(d.qty?.domeMoq ?? 1) || 1,
       // 수량별 배송비 구간(tbl)이 있거나 묶음배송 불가면 배송비가 수량만큼 든다고 본다
-      shippingPerUnit: !free && (!!deli?.tbl || String(d.deli?.merge?.enable ?? 'y').toLowerCase() === 'n'),
+      shippingPerUnit: !free && (String(d.deli?.merge?.enable ?? 'y').toLowerCase() === 'n' || perBox === 1),
+      maxPerBox: free ? null : perBox,
     };
   }
 }

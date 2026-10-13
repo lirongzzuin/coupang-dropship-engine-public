@@ -28,11 +28,11 @@ describe('가격 함수', () => {
   });
   it('목표 마크업: 하한가와 경쟁가 사이 중간 지점, 출시 가격은 더 낮게', () => {
     const s = S();
-    expect(targetMarkup(s, 20000, null)).toBe(0.08); // 경쟁가 모르면 기본값
+    expect(targetMarkup(s, 20000, null)).toBe(0.15); // 경쟁가 모르면 기본값
     expect(targetMarkup(s, 20000, 25000)).toBeCloseTo(0.119, 3); // (25000×0.99/20000 − 1) × 0.5
     expect(targetMarkup(s, 20000, 18000)).toBe(0); // 경쟁가가 하한보다 낮으면 하한가
     expect(targetMarkup(s, 10000, 30000)).toBe(0.3); // 상한 30%
-    expect(initialMarkup(s, 20000, 25000)).toBe(0.02); // 출시 가격
+    expect(initialMarkup(s, 20000, 25000)).toBe(0.05); // 출시 가격
     expect(initialMarkup(s, 20000, 18000)).toBe(0);
     expect(markupCapForMarket(s, 20000, 22000)).toBeCloseTo(0.089, 3);
   });

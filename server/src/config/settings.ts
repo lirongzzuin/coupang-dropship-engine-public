@@ -50,8 +50,8 @@ export const settingsSchema = z.object({
 
   pricing: z
     .object({
-      minProfitKrw: z.number().int().default(2000),
-      minMarginRate: z.number().default(0.1),
+      minProfitKrw: z.number().int().default(3000),
+      minMarginRate: z.number().default(0.12),
       /** 반품 충당률(판매가 대비) */
       returnReserveRate: z.number().default(0.03),
       /** 매입 세금계산서로 매입세액 공제 가능 여부 기본값(소스 판매자 유형으로 덮어씀) */
@@ -70,7 +70,7 @@ export const settingsSchema = z.object({
       /** 가격 끝자리: '900' = 1만원 이상은 ○,900원 / 미만은 ○○90원(예: 22,400 → 22,900), 'none' = roundUnit 올림 */
       charmEnding: z.enum(['900', 'none']).default('900'),
       /** 경쟁가 정보가 없을 때 시작 마크업(하한가 대비) */
-      defaultMarkup: z.number().default(0.08),
+      defaultMarkup: z.number().default(0.15),
       /** 마크업 상한(하한가 대비) — 경쟁가를 모를 때 상품성을 지키는 상한 */
       maxMarkup: z.number().default(0.3),
       /**
@@ -81,7 +81,7 @@ export const settingsSchema = z.object({
       /** 출시 기간(일): 신상품은 초기 판매·리뷰가 노출을 좌우 → 낮은 가격으로 시작 */
       launchDays: z.number().default(10),
       /** 출시 기간 마크업(하한가 대비) */
-      launchMarkup: z.number().default(0.02),
+      launchMarkup: z.number().default(0.05),
       /** 경쟁 최저가가 있으면 그보다 이만큼 낮게 시작(아이템위너는 판매가+배송비 최저 우선) */
       undercutRate: z.number().default(0.01),
       /**

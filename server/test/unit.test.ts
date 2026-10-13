@@ -91,7 +91,7 @@ describe('env / settings', () => {
   it('설정 깊은 병합 + 검증', () => {
     const s = mergeSettings(defaultSettings(), { pricing: { minProfitKrw: 3000 } });
     expect(s.pricing.minProfitKrw).toBe(3000);
-    expect(s.pricing.minMarginRate).toBe(0.1);
+    expect(s.pricing.minMarginRate).toBe(0.12);
     expect(() => mergeSettings(defaultSettings(), { pricing: { minProfitKrw: 'x' } })).toThrow();
     expect(s.orders.mode).toBe('auto');
     expect(s.selection.mode).toBe('auto');
