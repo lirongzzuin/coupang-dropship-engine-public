@@ -98,7 +98,7 @@ export async function buildServer(ctx: AppContext, scheduler: Scheduler | null, 
     const c = st.coupang;
     const env = { DRY_RUN: ctx.env.DRY_RUN, LIVE_LISTING: ctx.env.LIVE_LISTING, MEDIA_PUBLIC: !!ctx.env.MEDIA_PUBLIC_BASE_URL, market: ctx.env.MARKET_ADAPTER };
     const coupangSet = Object.fromEntries((['vendorUserId', 'outboundShippingPlaceCode', 'returnCenterCode', 'companyContactNumber', 'returnZipCode', 'returnAddress', 'keyIssuedAt'] as const).map((k) => [k, !!c[k]]));
-    return { env, coupangSet, top, listings, runId: last?.run_id ?? null, total: rows.length, passed: rows.filter((r) => r.passed).length, fails, samples, pricing: st.pricing, selection: { ...st.selection, seedKeywords: st.selection.seedKeywords.length }, mode: st.selection.mode, killSwitch: st.killSwitch };
+    return { env, coupangSet, coupang: { vendorUserId: c.vendorUserId, outboundShippingPlaceCode: c.outboundShippingPlaceCode, returnCenterCode: c.returnCenterCode, companyContactNumber: c.companyContactNumber, returnZipCode: c.returnZipCode, returnAddress: c.returnAddress, returnAddressDetail: c.returnAddressDetail, returnChargeName: c.returnChargeName }, top, listings, runId: last?.run_id ?? null, total: rows.length, passed: rows.filter((r) => r.passed).length, fails, samples, pricing: st.pricing, selection: { ...st.selection, seedKeywords: st.selection.seedKeywords.length }, mode: st.selection.mode, killSwitch: st.killSwitch };
   });
 
   // 이 Mac 안에서만(verify-listing.sh): 쿠팡 등록 사전 점검(임시저장 후 삭제)
