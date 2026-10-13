@@ -1,6 +1,7 @@
 import { isLive } from '../../config/env.js';
+import type { MarketPort } from '../../ports/market.js';
 import { type AppContext, audit } from '../../context.js';
-import type { ListingRow } from '../../db/schema.js';
+import type { ListingRow, SourceProductRow } from '../../db/schema.js';
 import { errMessage } from '../../lib/util.js';
 import { detailOf } from '../catalog.js';
 import { initialMarkup, targetMarkup, targetPrice } from '../pricing/pricing.js';
@@ -116,57 +117,7 @@ export async function registerListing(ctx: AppContext, id: number, actor = 'syst
   const problems = await validateListing(ctx, l);
   if (problems.length) throw new ListingError(problems.join(' / '));
   const sp = await ctx.db.selectFrom('source_products').selectAll().where('id', '=', l.source_product_id).executeTakeFirstOrThrow();
-  const d = detailOf(sp);
-
-  let categoryCode = l.category_code;
-  let categoryName = l.category_name;
-  if (!categoryCode) {
-    const pred = await ctx.market.predictCategory(l.title);
-    if (!pred) throw new ListingError('카테고리 추천 실패 — 카테고리 코드를 직접 입력하세요');
-    categoryCode = pred.code;
-    categoryName = pred.name;
-  }
-  const meta = await ctx.market.getCategoryMeta(categoryCode);
-  let images = l.images as string[];
-  let sourceHtml = d?.detailHtml;
-  if (s.listing.convertImages && isLive(ctx.env, 'LIVE_LISTING') && !ctx.env.MEDIA_PUBLIC_BASE_URL) {
-    throw new ListingError('이미지 공개 주소 미설정 — 쿠팡이 상품 이미지를 가져갈 수 없습니다. 터미널에서 bash ~/dropship/bin/media-public.sh 를 실행하세요');
-  }
-  if (s.listing.convertImages) {
-    // 확장자 없는 URL·GIF·PNG → 흰 배경 .jpg(우리 서버 /media). 상세 이미지는 재사용 허용 상품만
-    images = await prepareMainImages(ctx, images);
-    if (!images.length) throw new ListingError('대표 이미지를 .jpg로 변환하지 못했습니다(공급처 이미지 확인 또는 직접 업로드)');
-    if (sp.image_reuse_allowed && sourceHtml) sourceHtml = (await hostDetailHtml(ctx, sourceHtml)).html;
-  }
-  const detailHtml = buildDetailHtml({
-    title: l.title,
-    images,
-    facts: [
-      { name: '원산지', value: d?.origin ?? '' },
-      { name: '제조사', value: d?.manufacturer ?? '' },
-      ...(d?.kc?.certNo ? [{ name: 'KC 인증', value: d.kc.certNo }] : []),
-    ],
-    sourceHtml,
-    reuseAllowed: sp.image_reuse_allowed,
-  });
-  // 옵션명은 현재 상품명 기준으로 다시 맞춘다(초안 수정 반영)
-  const items = await getItems(ctx, l);
-  const options = items.map((it) => ({ units: it.unit_qty, salePrice: it.sale_price, itemName: `${l!.title} ${it.unit_qty}개` }));
-  for (const it of items) if (it.id) await ctx.db.updateTable('listing_items').set({ item_name: `${l.title} ${it.unit_qty}개` }).where('id', '=', it.id).execute();
-  const payload = buildCoupangPayload(s, {
-    vendorId: ctx.env.COUPANG_VENDOR_ID ?? 'A00000000',
-    title: l.title,
-    categoryCode,
-    options,
-    stock: Math.min(sp.stock ?? 999, 999),
-    images,
-    detailHtml,
-    tags: l.search_tags as string[],
-    meta,
-    detail: d,
-    sourceProductId: sp.id,
-    now: ctx.clock.now(),
-  });
+  const { payload, categoryCode, categoryName, detailHtml } = await prepareRegistration(ctx, l, sp);
   try {
     const res = await ctx.market.createProduct(payload);
     l = await ctx.db
@@ -328,4 +279,96 @@ export async function linkExistingListing(
       ? `현재 판매가(${input.salePrice.toLocaleString()}원)가 최소 이익 기준 판매가(${tp.floor.toLocaleString()}원)보다 낮습니다. 가격 동기화(LIVE_PRICING)를 켜면 자동으로 올립니다.`
       : null;
   return { listing, warning };
+}
+
+/** 쿠팡 등록 요청 만들기(카테고리 추천·필수 정보·이미지 변환·상세·옵션) — 실제 등록과 사전 점검이 같이 사용 */
+async function prepareRegistration(ctx: AppContext, l: ListingRow, sp: SourceProductRow) {
+  const s = await ctx.settings.get();
+  const d = detailOf(sp);
+  let categoryCode = l.category_code;
+  let categoryName = l.category_name;
+  if (!categoryCode) {
+    const pred = await ctx.market.predictCategory(l.title);
+    if (!pred) throw new ListingError('카테고리 추천 실패 — 카테고리 코드를 직접 입력하세요');
+    categoryCode = pred.code;
+    categoryName = pred.name;
+  }
+  const meta = await ctx.market.getCategoryMeta(categoryCode);
+  let images = l.images as string[];
+  let sourceHtml = d?.detailHtml;
+  if (s.listing.convertImages && isLive(ctx.env, 'LIVE_LISTING') && !ctx.env.MEDIA_PUBLIC_BASE_URL) {
+    throw new ListingError('이미지 공개 주소 미설정 — 쿠팡이 상품 이미지를 가져갈 수 없습니다. 터미널에서 bash ~/dropship/bin/media-public.sh 를 실행하세요');
+  }
+  if (s.listing.convertImages) {
+    // 확장자 없는 URL·GIF·PNG → 흰 배경 .jpg(우리 서버 /media). 상세 이미지는 재사용 허용 상품만
+    images = await prepareMainImages(ctx, images);
+    if (!images.length) throw new ListingError('대표 이미지를 .jpg로 변환하지 못했습니다(공급처 이미지 확인 또는 직접 업로드)');
+    if (sp.image_reuse_allowed && sourceHtml) sourceHtml = (await hostDetailHtml(ctx, sourceHtml)).html;
+  }
+  const detailHtml = buildDetailHtml({
+    title: l.title,
+    images,
+    facts: [
+      { name: '원산지', value: d?.origin ?? '' },
+      { name: '제조사', value: d?.manufacturer ?? '' },
+      ...(d?.kc?.certNo ? [{ name: 'KC 인증', value: d.kc.certNo }] : []),
+    ],
+    sourceHtml,
+    reuseAllowed: sp.image_reuse_allowed,
+  });
+  // 옵션명은 현재 상품명 기준으로 다시 맞춘다(초안 수정 반영)
+  const items = await getItems(ctx, l);
+  const options = items.map((it) => ({ units: it.unit_qty, salePrice: it.sale_price, itemName: `${l!.title} ${it.unit_qty}개` }));
+  for (const it of items) if (it.id) await ctx.db.updateTable('listing_items').set({ item_name: `${l.title} ${it.unit_qty}개` }).where('id', '=', it.id).execute();
+  const payload = buildCoupangPayload(s, {
+    vendorId: ctx.env.COUPANG_VENDOR_ID ?? 'A00000000',
+    title: l.title,
+    categoryCode,
+    options,
+    stock: Math.min(sp.stock ?? 999, 999),
+    images,
+    detailHtml,
+    tags: l.search_tags as string[],
+    meta,
+    detail: d,
+    sourceProductId: sp.id,
+    now: ctx.clock.now(),
+  });
+  return { payload, categoryCode, categoryName, detailHtml };
+}
+
+/**
+ * 등록 사전 점검: 실제 쿠팡에 "임시저장"(승인 요청 안 함, 고객에게 안 보임)으로 보내 쿠팡이 받아주는지 확인하고 바로 삭제.
+ * 카테고리 필수 속성·고시정보·이미지 주소 문제를 실등록 전에 잡는다. 사람이 명시적으로 실행할 때만 사용.
+ */
+export async function verifyRegistration(ctx: AppContext, candidateId?: number): Promise<{ ok: boolean; title?: string; category?: string; sellerProductId?: string; deleted?: boolean; message: string; attributes?: unknown }> {
+  const market = (ctx.market as { raw?: () => MarketPort }).raw?.() ?? ctx.market;
+  if (!market.deleteProduct) return { ok: false, message: '판매채널이 삭제를 지원하지 않아 점검 불가' };
+  const cand = candidateId
+    ? await ctx.db.selectFrom('candidates').select(['id']).where('id', '=', candidateId).executeTakeFirst()
+    : await ctx.db.selectFrom('candidates').select(['id']).where('status', '=', 'new').where('passed', '=', true).orderBy('score', 'desc').executeTakeFirst();
+  if (!cand) return { ok: false, message: '점검할 후보가 없습니다(상품 선정 후 다시 실행)' };
+  const before = await ctx.db.selectFrom('listings').select('id').where('candidate_id', '=', cand.id).executeTakeFirst();
+  const l = await createDraftFromCandidate(ctx, cand.id, 'verify');
+  const cleanup = async () => {
+    if (before) return;
+    await ctx.db.deleteFrom('listing_items').where('listing_id', '=', l.id).execute();
+    await ctx.db.deleteFrom('listings').where('id', '=', l.id).execute();
+    await ctx.db.updateTable('candidates').set({ status: 'new' }).where('id', '=', cand.id).execute();
+  };
+  try {
+    const sp = await ctx.db.selectFrom('source_products').selectAll().where('id', '=', l.source_product_id).executeTakeFirstOrThrow();
+    const { payload, categoryName } = await prepareRegistration(ctx, l, sp);
+    (payload as { requested: boolean }).requested = false; // 임시저장: 심사 요청 안 함
+    const res = await market.createProduct(payload);
+    const del = await market.deleteProduct(res.sellerProductId);
+    const attrs = ((payload as { items?: Array<{ attributes: unknown }> }).items ?? [])[0]?.attributes;
+    await audit(ctx, 'verify', 'listing.verify', String(l.id), { sellerProductId: res.sellerProductId, deleted: del.ok });
+    return { ok: true, title: l.title, category: categoryName ?? undefined, sellerProductId: res.sellerProductId, deleted: del.ok, attributes: attrs,
+      message: del.ok ? '쿠팡이 등록 요청을 받아들였습니다(임시저장 후 삭제 완료)' : `쿠팡이 받아들였지만 임시저장 삭제 실패(${del.message ?? ''}) — Wing 상품관리에서 임시저장 상품을 지워주세요` };
+  } catch (e) {
+    return { ok: false, title: l.title, message: errMessage(e) };
+  } finally {
+    await cleanup();
+  }
 }

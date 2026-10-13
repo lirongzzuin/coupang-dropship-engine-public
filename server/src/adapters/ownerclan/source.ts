@@ -129,7 +129,14 @@ export class OwnerclanSource implements SourceAdapter {
   }
 
   async getProduct(key: string): Promise<SourceProductDetail | null> {
-    const data = await this.gql(`query($key:ID!){ item(key:$key){ ${ITEM_FIELDS} } }`, { key });
+    let data: any;
+    try {
+      data = await this.gql(`query($key:ID!){ item(key:$key){ ${ITEM_FIELDS} } }`, { key });
+    } catch (e) {
+      // 검색 직후 내려간(판매종료·삭제) 상품 → 없음으로 처리
+      if (/No information found|key index not found/i.test(e instanceof Error ? e.message : '')) return null;
+      throw e;
+    }
     const it = data?.item;
     if (!it) return null;
     const s = toSummary(it);

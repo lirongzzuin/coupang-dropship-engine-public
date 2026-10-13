@@ -127,6 +127,8 @@ export interface MarketPort {
   /** Wing에 등록된 출고지·반품지(읽기 전용) */
   listShippingPlaces?(): Promise<ShippingPlaces>;
   createProduct(payload: unknown): Promise<{ sellerProductId: string; dryRun?: boolean }>;
+  /** 승인 전(임시저장) 상품 삭제 — 등록 사전 점검 정리용 */
+  deleteProduct?(sellerProductId: string): Promise<MarketResult>;
   getProductStatus(sellerProductId: string): Promise<MarketProductStatus>;
   updatePrice(vendorItemId: string, price: number): Promise<MarketResult>;
   updateQuantity(vendorItemId: string, qty: number): Promise<MarketResult>;

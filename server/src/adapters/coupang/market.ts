@@ -161,6 +161,15 @@ export class CoupangMarket implements MarketPort {
     return { sellerProductId: String(res.data) };
   }
 
+  async deleteProduct(sellerProductId: string): Promise<MarketResult> {
+    try {
+      const res = await this.client.request('DELETE', `${SELLER}/seller-products/${sellerProductId}`);
+      return { ok: res?.code === 'SUCCESS', retryable: false, message: String(res?.message ?? '') };
+    } catch (e) {
+      return { ok: false, retryable: false, message: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
   async getProductStatus(sellerProductId: string): Promise<MarketProductStatus> {
     const res = await this.client.request('GET', `${SELLER}/seller-products/${sellerProductId}`);
     const d = res?.data ?? {};

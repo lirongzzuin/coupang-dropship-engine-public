@@ -141,6 +141,10 @@ export class FakeMarket implements MarketPort {
     return { sellerProductId: id };
   }
 
+  async deleteProduct(sellerProductId: string): Promise<MarketResult> {
+    return { ok: this.products.delete(sellerProductId), retryable: false, message: '' };
+  }
+
   /** 테스트: 심사 승인 처리 */
   /** 승인: 옵션마다 옵션ID 발급. 반환값은 첫 옵션(1개) ID */
   approve(sellerProductId: string): string {

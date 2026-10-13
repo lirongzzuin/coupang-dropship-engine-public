@@ -211,3 +211,20 @@ describe('아침 브리핑·개선 데이터', () => {
     expect(model.baseSalesPer10k).toBe(1.5);
   });
 });
+
+describe('등록 사전 점검', () => {
+  it('상위 후보를 임시저장으로 보내 확인하고 삭제, 초안·후보 상태는 원래대로', async () => {
+    const { verifyRegistration } = await import('../src/modules/listing/service.js');
+    h = await makeHarness({ live: true });
+    await h.ctx.settings.update({ selection: { mode: 'manual_approve' } });
+    h.marketData.volume.set('정리함', 20000);
+    h.apiSource.add({ sourceItemId: 'V1', title: '원목 수납 정리함 화이트', price: 16000 });
+    await runSelection(h.ctx, { keywords: ['정리함'] });
+    const r = await verifyRegistration(h.ctx);
+    expect(r).toMatchObject({ ok: true, deleted: true });
+    expect(h.market.products.size).toBe(0); // 쿠팡 쪽 정리됨
+    expect(await h.ctx.db.selectFrom('listings').selectAll().execute()).toHaveLength(0);
+    const c = await h.ctx.db.selectFrom('candidates').select('status').executeTakeFirstOrThrow();
+    expect(c.status).toBe('new');
+  });
+});

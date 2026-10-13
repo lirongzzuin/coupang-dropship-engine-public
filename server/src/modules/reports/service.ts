@@ -158,6 +158,9 @@ export async function sendDailyReport(ctx: AppContext): Promise<string> {
   const missing = (['vendorUserId', 'outboundShippingPlaceCode', 'returnCenterCode', 'companyContactNumber'] as const).filter((k) => !c[k]);
   if (missing.length) todo.push(`설정 > 쿠팡 정보 입력(${missing.join(', ')})`);
   if (!ctx.env.MEDIA_PUBLIC_BASE_URL && s.listing.convertImages) todo.push('이미지 공개 켜기: bash ~/dropship/bin/media-public.sh');
+  // 시장가(경쟁가) 공급원이 없으면 가격 경쟁력 판단이 약함 → 11번가 키 권장
+  const recentLowest = await ctx.db.selectFrom('market_signals').select('id').where('kind', 'in', ['market_lowest', 'coupang_lowest']).where('at', '>=', addDays(now, -7)).executeTakeFirst();
+  if (!recentLowest) todo.push('(권장) 11번가 키 입력 → 경쟁가 비교로 가격·선정 정확도 향상(ELEVENST_API_KEY)');
   if (d.keyExpiresInDays !== null && d.keyExpiresInDays <= 14) todo.push(`쿠팡 API 키 재발급(D-${d.keyExpiresInDays})`);
   if (d.keyExpiresInDays === null) todo.push('설정 > 쿠팡 API 키 발급일 입력(만료 알림용)');
   if (d.killSwitch) todo.push('🛑 긴급 정지 해제 여부 확인');

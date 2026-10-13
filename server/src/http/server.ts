@@ -101,6 +101,13 @@ export async function buildServer(ctx: AppContext, scheduler: Scheduler | null, 
     return { env, coupangSet, top, listings, runId: last?.run_id ?? null, total: rows.length, passed: rows.filter((r) => r.passed).length, fails, samples, pricing: st.pricing, selection: { ...st.selection, seedKeywords: st.selection.seedKeywords.length }, mode: st.selection.mode, killSwitch: st.killSwitch };
   });
 
+  // 이 Mac 안에서만(verify-listing.sh): 쿠팡 등록 사전 점검(임시저장 후 삭제)
+  app.post('/healthz/verify-listing', async (req, reply) => {
+    if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.ip) || req.headers['x-forwarded-for'] || req.headers['tailscale-user-login'] || req.headers['x-requested-with'] !== 'app') return reply.code(404).send();
+    const { verifyRegistration } = await import('../modules/listing/service.js');
+    return verifyRegistration(ctx);
+  });
+
   // 이 Mac 안에서만(run-job.sh): 작업 즉시 실행. 브라우저 위조 요청 방지용 헤더 필수
   app.post('/healthz/jobs/:name/run', async (req, reply) => {
     if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.ip) || req.headers['x-forwarded-for'] || req.headers['tailscale-user-login'] || req.headers['x-requested-with'] !== 'app') return reply.code(404).send();

@@ -19,6 +19,11 @@ export class DryRunMarket implements MarketPort {
     this.name = inner.name;
   }
 
+  /** 실제 판매채널(등록 사전 점검처럼 사람이 명시적으로 요청한 경우에만 사용) */
+  raw(): MarketPort {
+    return this.inner;
+  }
+
   /** 체험 모드에서 내부 가짜 쿠팡 접근 */
   innerFake(): FakeMarket | undefined {
     return this.inner instanceof FakeMarket ? this.inner : undefined;
