@@ -7,6 +7,7 @@ import { refreshListingStatuses } from '../modules/listing/service.js';
 import { checkDelays, pollClaims, pollFulfillment, pollNewOrders, processPending, purgePii } from '../modules/orders/service.js';
 import { sendDailyReport, watchdog } from '../modules/reports/service.js';
 import { runSelection } from '../modules/selection/service.js';
+import { syncShippingPlaces } from '../modules/setup/coupangPlaces.js';
 import { discoverKeywords } from '../modules/keywords/service.js';
 import { optimizePrices, reviewSlowListings, scoutCheaperSources, syncListings } from '../modules/sync/service.js';
 
@@ -62,6 +63,7 @@ export const JOBS: JobDef[] = [
     },
     run: sendDailyReport,
   },
+  { name: 'setup.coupangPlaces', label: '쿠팡 출고지·반품지 자동 설정', intervalMs: () => 6 * 3600_000, run: syncShippingPlaces },
   { name: 'watchdog', label: '감시(폴링 정지·키 만료)', intervalMs: (s) => min(s.schedule.watchdogMinutes), run: watchdog },
 ];
 

@@ -68,6 +68,18 @@ export async function buildServer(ctx: AppContext, scheduler: Scheduler | null, 
     return { ok: true, lastOrderPollAt: last ?? null, dryRun: ctx.env.DRY_RUN };
   });
 
+  // 이 Mac 안에서만(status.sh): 자동 작업별 마지막 실행 결과
+  app.get('/healthz/jobs', async (req, reply) => {
+    if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.ip) || req.headers['x-forwarded-for'] || req.headers['tailscale-user-login']) return reply.code(404).send();
+    const { JOBS } = await import('../jobs/scheduler.js');
+    const out = [];
+    for (const j of JOBS) {
+      const r = await ctx.db.selectFrom('job_runs').select(['started_at', 'finished_at', 'ok', 'error']).where('job', '=', j.name).orderBy('started_at', 'desc').executeTakeFirst();
+      out.push({ job: j.name, label: j.label, at: r?.finished_at ?? r?.started_at ?? null, ok: r ? r.ok : null, error: r?.error?.slice(0, 120) ?? null });
+    }
+    return out;
+  });
+
   app.get('/media/:key', async (req, reply) => {
     const { key } = req.params as { key: string };
     const f = await ctx.storage.get(key);

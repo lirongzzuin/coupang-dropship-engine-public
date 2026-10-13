@@ -38,6 +38,8 @@ export class DryRunMarket implements MarketPort {
   listClaims: MarketPort['listClaims'] = (a, b) => this.inner.listClaims(a, b);
   predictCategory: MarketPort['predictCategory'] = (n) => this.inner.predictCategory(n);
   getCategoryMeta: MarketPort['getCategoryMeta'] = (c) => this.inner.getCategoryMeta(c);
+  // 조회 전용 → 모의 실행에서도 실제 호출
+  listShippingPlaces = async () => (this.inner.listShippingPlaces ? this.inner.listShippingPlaces() : { outbound: [], returns: [] });
   listRevenue: MarketPort['listRevenue'] = (a, b) => this.inner.listRevenue(a, b);
   listInquiries: MarketPort['listInquiries'] = (a, b) => this.inner.listInquiries(a, b);
 

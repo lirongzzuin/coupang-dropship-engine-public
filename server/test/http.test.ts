@@ -34,6 +34,12 @@ describe('HTTP API', () => {
   it('인증: 미로그인 401, 잘못된 OTP 거부, 5회 실패 잠금, 로그인·로그아웃', async () => {
     const { totpSecret } = await setup();
     expect((await app.inject({ url: '/healthz' })).statusCode).toBe(200);
+    // 작업 현황: Mac 안(로컬)만, Tailscale 프록시 경유(헤더 있음)는 숨김
+    const jobs = await app.inject({ url: '/healthz/jobs', remoteAddress: '127.0.0.1' });
+    expect(jobs.statusCode).toBe(200);
+    expect(jobs.json().map((j: any) => j.job)).toContain('orders.poll');
+    expect((await app.inject({ url: '/healthz/jobs', remoteAddress: '127.0.0.1', headers: { 'x-forwarded-for': '100.64.0.2' } })).statusCode).toBe(404);
+    expect((await app.inject({ url: '/healthz/jobs', remoteAddress: '100.64.0.2' })).statusCode).toBe(404);
     expect((await app.inject({ url: '/api/dashboard' })).statusCode).toBe(401);
     const st = await app.inject({ url: '/api/auth/status' });
     expect(st.json()).toMatchObject({ setupRequired: false, user: null });

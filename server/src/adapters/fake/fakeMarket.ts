@@ -107,6 +107,14 @@ export class FakeMarket implements MarketPort {
     return productName ? { code: '63950', name: '생활용품>수납/정리' } : null;
   }
 
+  shippingPlaces = {
+    outbound: [{ code: '10000001', name: '출고지', usable: true }],
+    returns: [{ code: '2000000001', name: '반품지', usable: true, zip: '04524', address: '서울특별시 중구 세종대로 110', addressDetail: '101호', phone: '010-1234-5678' }],
+  };
+  async listShippingPlaces() {
+    return this.shippingPlaces;
+  }
+
   async getCategoryMeta(code: string): Promise<CategoryMeta> {
     return {
       code,

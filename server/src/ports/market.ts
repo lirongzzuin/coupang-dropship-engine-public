@@ -114,6 +114,8 @@ export interface MarketPort {
   // ── 상품 ──
   predictCategory(productName: string): Promise<{ code: string; name: string } | null>;
   getCategoryMeta(code: string): Promise<CategoryMeta>;
+  /** Wing에 등록된 출고지·반품지(읽기 전용) */
+  listShippingPlaces?(): Promise<ShippingPlaces>;
   createProduct(payload: unknown): Promise<{ sellerProductId: string; dryRun?: boolean }>;
   getProductStatus(sellerProductId: string): Promise<MarketProductStatus>;
   updatePrice(vendorItemId: string, price: number): Promise<MarketResult>;
@@ -124,4 +126,9 @@ export interface MarketPort {
   listRevenue(fromDate: string, toDate: string): Promise<RevenueLine[]>;
   listInquiries(from: Date, to: Date): Promise<MarketInquiry[]>;
   replyInquiry(inq: { inquiryId: string; kind: 'product' | 'callcenter' }, text: string): Promise<MarketResult>;
+}
+
+export interface ShippingPlaces {
+  outbound: Array<{ code: string; name: string; usable: boolean }>;
+  returns: Array<{ code: string; name: string; usable: boolean; zip: string; address: string; addressDetail: string; phone: string }>;
 }

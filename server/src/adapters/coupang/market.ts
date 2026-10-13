@@ -1,6 +1,6 @@
 import type {
   CategoryMeta, InvoiceInput, MarketClaim, MarketInquiry, MarketOrderLine, MarketOrderStatus, MarketPort,
-  MarketProductStatus, MarketResult, RevenueLine,
+  MarketProductStatus, MarketResult, RevenueLine, ShippingPlaces,
 } from '../../ports/market.js';
 import { HttpError, kstDate, kstIsoMinute } from '../../lib/util.js';
 import { type CoupangClient, money } from './client.js';
@@ -121,6 +121,21 @@ export class CoupangMarket implements MarketPort {
     const d = res?.data;
     if (!d || d.autoCategorizationPredictionResultType !== 'SUCCESS' || !d.predictedCategoryId) return null;
     return { code: String(d.predictedCategoryId), name: String(d.predictedCategoryName ?? '') };
+  }
+
+  async listShippingPlaces(): Promise<ShippingPlaces> {
+    const ob = await this.client.request('GET', '/v2/providers/marketplace_openapi/apis/api/v1/vendor/shipping-place/outbound', { query: { pageNum: 1, pageSize: 50 } });
+    const rc = await this.client.request('GET', `/v2/providers/openapi/apis/api/v4/vendors/${this.client.vendorId}/returnShippingCenters`, { query: { pageNum: 1, pageSize: 50 } });
+    return {
+      outbound: (ob?.content ?? []).map((x: any) => ({ code: String(x.outboundShippingPlaceCode), name: String(x.shippingPlaceName ?? ''), usable: x.usable !== false })),
+      returns: (rc?.data?.content ?? []).map((x: any) => {
+        const a = x.placeAddresses?.[0] ?? {};
+        return {
+          code: String(x.returnCenterCode), name: String(x.shippingPlaceName ?? ''), usable: x.usable !== false,
+          zip: String(a.returnZipCode ?? ''), address: String(a.returnAddress ?? ''), addressDetail: String(a.returnAddressDetail ?? ''), phone: String(a.companyContactNumber ?? ''),
+        };
+      }),
+    };
   }
 
   async getCategoryMeta(code: string): Promise<CategoryMeta> {
