@@ -1,0 +1,13 @@
+{
+  "name": "coupang-dropship-engine",
+  "private": true,
+  "packageManager": "pnpm@10.30.3",
+  "scripts": {
+    "dev": "pnpm --filter server dev",
+    "dev:web": "pnpm --filter web dev",
+    "build": "pnpm --filter web build && pnpm --filter server build",
+    "test": "pnpm --filter server test",
+    "typecheck": "pnpm -r typecheck",
+    "start": "pnpm --filter server start"
+  }
+}

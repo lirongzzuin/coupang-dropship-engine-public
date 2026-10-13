@@ -1,0 +1,11 @@
+**/node_modules
+**/dist
+data
+.env
+.git
+.github
+docs
+backups
+**/*.log
+.DS_Store
+.claude

@@ -1,0 +1,48 @@
+# 서울 리전 VPS 1대(고정 IP)에서 실행: docker compose up -d
+services:
+  db:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: dropship
+      POSTGRES_USER: dropship
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD 필요}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dropship"]
+      interval: 10s
+      retries: 10
+
+  app:
+    # CI/CD가 GHCR에 올린 이미지를 사용(로컬에서는 build 로 직접 빌드 가능)
+    image: ${APP_IMAGE:-ghcr.io/lirongzzuin/coupang-dropship-engine:latest}
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://dropship:${POSTGRES_PASSWORD}@db:5432/dropship
+      DATA_DIR: /data
+    volumes:
+      - appdata:/data
+    ports:
+      - "127.0.0.1:8080:8080"   # 외부 공개는 Caddy(HTTPS)가 담당
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on: [app]
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+
+volumes:
+  pgdata:
+  appdata:
+  caddydata:

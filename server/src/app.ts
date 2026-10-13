@@ -1,0 +1,111 @@
+import { join } from 'node:path';
+import { CoupangClient } from './adapters/coupang/client.js';
+import { CoupangMarket } from './adapters/coupang/market.js';
+import { DomeggookSource } from './adapters/domeggook/source.js';
+import { DryRunMarket } from './adapters/dryRunMarket.js';
+import { FakeMarket } from './adapters/fake/fakeMarket.js';
+import { MockSource } from './adapters/fake/mockSource.js';
+import { DemoMarketData, demoSources } from './adapters/fake/demo.js';
+import { NaverClient, NaverShoppingSource } from './adapters/naver/client.js';
+import { OwnerclanSource } from './adapters/ownerclan/source.js';
+import { SourceRegistry } from './adapters/registry.js';
+import { LocalStorage } from './adapters/storage/localStorage.js';
+import { TelegramNotifier } from './adapters/telegram/notifier.js';
+import type { Env } from './config/env.js';
+import { type AppContext, KvStore, NotificationService, SettingsService } from './context.js';
+import { createDb, migrate } from './db/index.js';
+import { PiiCipher } from './lib/crypto.js';
+import { createLogger } from './lib/logger.js';
+import { type Clock, kstDate, systemClock } from './lib/util.js';
+import type { MarketPort } from './ports/market.js';
+import type { MarketDataProvider, Notifier, ObjectStorage } from './ports/misc.js';
+
+/**
+ * Composition root: 어떤 어댑터를 쓸지는 여기서만 결정한다.
+ * 테스트는 overrides 로 가짜 구현을 주입한다.
+ */
+export interface BuildOverrides {
+  market?: MarketPort;
+  sources?: SourceRegistry;
+  marketData?: MarketDataProvider;
+  notifier?: Notifier;
+  clock?: Clock;
+  /** true면 DryRunMarket 래퍼를 씌우지 않음(테스트에서 실제 동작 검증용) */
+  rawMarket?: boolean;
+  storage?: ObjectStorage;
+}
+
+export async function buildContext(env: Env, o: BuildOverrides = {}): Promise<AppContext> {
+  const log = createLogger(env.LOG_LEVEL);
+  const db = createDb({ databaseUrl: env.DATABASE_URL, dataDir: env.DATA_DIR });
+  await migrate(db);
+  const clock = o.clock ?? systemClock;
+  const settings = new SettingsService(db);
+  const s = await settings.get();
+
+  let inner: MarketPort;
+  if (o.market) inner = o.market;
+  else if (env.MARKET_ADAPTER === 'coupang') {
+    const client = new CoupangClient({
+      baseUrl: env.COUPANG_BASE_URL,
+      vendorId: env.COUPANG_VENDOR_ID!,
+      accessKey: env.COUPANG_ACCESS_KEY!,
+      secretKey: env.COUPANG_SECRET_KEY!,
+      requestsPerSecond: s.coupang.requestsPerSecond,
+      logger: log,
+    });
+    inner = new CoupangMarket(client, async () => (await settings.get()).coupang.vendorUserId);
+  } else {
+    const fake = new FakeMarket();
+    fake.autoApprove = env.DEMO_MODE;
+    inner = fake;
+  }
+  const market = o.rawMarket ? inner : new DryRunMarket(inner, env, log);
+
+  const naver = new NaverClient({
+    clientId: env.NAVER_CLIENT_ID,
+    clientSecret: env.NAVER_CLIENT_SECRET,
+    searchAd: env.NAVER_SEARCHAD_CUSTOMER_ID && env.NAVER_SEARCHAD_API_KEY && env.NAVER_SEARCHAD_SECRET
+      ? { customerId: env.NAVER_SEARCHAD_CUSTOMER_ID, apiKey: env.NAVER_SEARCHAD_API_KEY, secret: env.NAVER_SEARCHAD_SECRET }
+      : undefined,
+    logger: log,
+  });
+
+  const demo = env.DEMO_MODE && env.MARKET_ADAPTER === 'fake';
+  let sources = o.sources;
+  if (!sources) {
+    sources = new SourceRegistry();
+    // 체험 모드에서는 실제 공급처를 등록하지 않음(실수로 실주문 방지)
+    if (!demo && env.OWNERCLAN_USERNAME && env.OWNERCLAN_PASSWORD) {
+      sources.register(new OwnerclanSource({ username: env.OWNERCLAN_USERNAME, password: env.OWNERCLAN_PASSWORD, sandbox: env.OWNERCLAN_SANDBOX, logger: log }));
+    }
+    if (!demo && env.DOMEGGOOK_API_KEY) sources.register(new DomeggookSource({ apiKey: env.DOMEGGOOK_API_KEY, market: env.DOMEGGOOK_MARKET, logger: log }));
+    if (!demo && naver.hasOpenApi) sources.register(new NaverShoppingSource(naver));
+    if (env.ENABLE_MOCK_SOURCE) sources.register(new MockSource('mock'));
+    if (demo) for (const d of demoSources()) sources.register(d);
+  }
+
+  const notifier = o.notifier ?? new TelegramNotifier({ token: env.TELEGRAM_BOT_TOKEN, chatId: env.TELEGRAM_CHAT_ID, logger: log });
+  const ctx: AppContext = {
+    env,
+    db,
+    log,
+    clock,
+    settings,
+    kv: new KvStore(db),
+    market,
+    sources,
+    marketData: o.marketData ?? (demo && !naver.hasOpenApi ? new DemoMarketData() : naver),
+    notifications: new NotificationService(db, notifier, env.PUBLIC_BASE_URL, clock),
+    storage: o.storage ?? new LocalStorage(join(env.DATA_DIR, 'media'), env.PUBLIC_BASE_URL),
+    pii: new PiiCipher(env.PII_KEY),
+  };
+  await ctx.kv.set('app.startedAt', clock.now().toISOString());
+  if (demo && !(await ctx.db.selectFrom('settings').select('key').where('key', '=', 'app').executeTakeFirst())) {
+    await settings.update({
+      selection: { sources: ['demo-auto', 'demo-manual'], seedKeywords: ['수납 정리함', '캠핑 의자'] },
+      coupang: { vendorUserId: 'demo', outboundShippingPlaceCode: 'DEMO', returnCenterCode: 'DEMO', companyContactNumber: '1588-0000', returnChargeName: '데모', returnZipCode: '04524', returnAddress: '서울특별시 중구 세종대로 110', returnAddressDetail: '데모', keyIssuedAt: kstDate(clock.now()) },
+    });
+  }
+  return ctx;
+}
