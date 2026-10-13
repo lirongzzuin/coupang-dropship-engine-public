@@ -25,6 +25,19 @@ env_get() { # .env 에서 값 읽기
   grep -E "^$1=" "$ENV_FILE" | tail -1 | cut -d= -f2- | sed -e 's/^"//' -e 's/"$//'
 }
 
+load_env() { # .env 를 안전하게 읽기: '=' 앞뒤 공백·양끝 따옴표·줄끝 공백(CR) 무시, 명령으로 실행하지 않음
+  [ -f "$ENV_FILE" ] || return 0
+  local line key val
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%$'\r'}"
+    [[ "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=(.*)$ ]] || continue
+    key="${BASH_REMATCH[1]}"; val="${BASH_REMATCH[2]}"
+    val="${val#"${val%%[![:space:]]*}"}"; val="${val%"${val##*[![:space:]]}"}"
+    if [[ "$val" =~ ^\"(.*)\"$ ]] || [[ "$val" =~ ^\'(.*)\'$ ]]; then val="${BASH_REMATCH[1]}"; fi
+    export "$key=$val"
+  done < "$ENV_FILE"
+}
+
 port() { local p; p="$(env_get PORT)"; echo "${p:-8080}"; }
 
 healthy() { # 최대 $1초 동안 /healthz 확인

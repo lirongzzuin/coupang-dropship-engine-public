@@ -4,6 +4,6 @@
 . "$(dirname "$0")/common.sh"
 [ $# -eq 2 ] || { echo "사용법: $0 <아이디> <비밀번호>"; exit 1; }
 app_stop
-( set -a; . "$ENV_FILE"; set +a; export DATA_DIR="$DATA"; cd "$APP/server" && "$NODE_BIN" dist/cli/create-admin.js "$1" "$2" ) || true
+( load_env; export DATA_DIR="$DATA"; cd "$APP/server" && "$NODE_BIN" dist/cli/create-admin.js "$1" "$2" ) || true
 app_start
 healthy 60 >/dev/null || echo "⚠ 앱 재시작 확인 필요"
