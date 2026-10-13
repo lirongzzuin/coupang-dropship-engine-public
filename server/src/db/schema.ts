@@ -71,7 +71,7 @@ export interface SourcePriceHistoryTable {
 export interface MarketSignalsTable {
   id: Generated<number>;
   keyword: string;
-  kind: string; // search_volume | trend_slope_4w | trend_slope_12w | naver_lowest | naver_count | naver_malls | coupang_sales_est
+  kind: string; // search_volume | market_lowest | market_count | google_trend | coupang_lowest | coupang_rocket_ratio | coupang_sales_est | related_of …
   value: number;
   meta: Json | null;
   at: Ts;
@@ -120,6 +120,26 @@ export interface ListingsTable {
   created_at: Ts;
   updated_at: Ts;
   listed_at: TsNull;
+  /** 판매가 = 하한가 × (1 + markup). 가격 최적화가 학습 */
+  markup: Generated<number>;
+  price_set_at: TsNull;
+  best_markup: number | null;
+  best_daily_profit: number | null;
+  /** 정산에서 학습한 실제 수수료율(VAT 별도) */
+  fee_rate_actual: number | null;
+  cost_scouted_at: TsNull;
+}
+
+export interface ListingItemsTable {
+  id: Generated<number>;
+  listing_id: number;
+  /** 이 옵션 1개 주문 시 실제 보내는 수량(묶음 옵션) */
+  unit_qty: number;
+  item_name: string;
+  vendor_item_id: string | null;
+  sale_price: number;
+  floor_price: number;
+  created_at: Ts;
 }
 
 export interface PriceChangesTable {
@@ -243,6 +263,23 @@ export interface MediaTable {
   created_at: Ts;
 }
 
+export interface KeywordsTable {
+  keyword: string;
+  origin: string;
+  status: Generated<string>;
+  category: string | null;
+  volume: number | null;
+  competition: string | null;
+  score: Generated<number>;
+  runs: Generated<number>;
+  passed_total: Generated<number>;
+  listed_total: Generated<number>;
+  note: string | null;
+  discovered_at: Ts;
+  last_checked_at: TsNull;
+  last_used_at: TsNull;
+}
+
 export interface KvTable {
   key: string;
   value: Json;
@@ -268,10 +305,13 @@ export interface DB {
   notifications: NotificationsTable;
   media: MediaTable;
   kv: KvTable;
+  keywords: KeywordsTable;
+  listing_items: ListingItemsTable;
 }
 
 export type OrderRow = Selectable<OrdersTable>;
 export type ListingRow = Selectable<ListingsTable>;
+export type ListingItemRow = Selectable<ListingItemsTable>;
 export type SourceProductRow = Selectable<SourceProductsTable>;
 export type CandidateRow = Selectable<CandidatesTable>;
 export type NewOrder = Insertable<OrdersTable>;

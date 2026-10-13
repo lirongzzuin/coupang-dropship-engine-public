@@ -55,6 +55,7 @@ FileVault가 켜져 있으면 자동 로그인이 안 되므로, 정전으로 �
 | 하고 싶은 일 | 명령 |
 |---|---|
 | 상태 보기(버전·서비스·헬스·공인IP·최근 백업) | `bash ~/dropship/bin/status.sh` |
+| **API 키 연결 점검**(각 서비스 실제 조회) | `bash ~/dropship/bin/check.sh` |
 | 지금 바로 업데이트 | `bash ~/dropship/bin/update.sh` |
 | 특정 버전으로 되돌리기 | `bash ~/dropship/bin/update.sh <커밋SHA>` |
 | 앱 재시작 | `launchctl kickstart -k gui/$(id -u)/com.dropship.app` |
@@ -89,7 +90,7 @@ FileVault가 켜져 있으면 자동 로그인이 안 되므로, 정전으로 �
 ## CI (공통)
 main에 push하거나 PR을 만들면 GitHub Actions(`.github/workflows/ci-cd.yml`)가 다음을 실행합니다:
 - 타입체크
-- 테스트 81개
+- 테스트 114개
 - 웹 빌드
 - Docker 이미지 빌드와 컨테이너 스모크 테스트
 

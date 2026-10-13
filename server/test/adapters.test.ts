@@ -5,7 +5,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { CoupangClient } from '../src/adapters/coupang/client.js';
 import { CoupangMarket } from '../src/adapters/coupang/market.js';
 import { DomeggookSource } from '../src/adapters/domeggook/source.js';
-import { NaverClient, NaverShoppingSource } from '../src/adapters/naver/client.js';
+import { NaverClient } from '../src/adapters/naver/client.js';
+import { ElevenstSearchClient, parseElevenstSearch } from '../src/adapters/elevenst/search.js';
+import iconv from 'iconv-lite';
 import { OwnerclanSource } from '../src/adapters/ownerclan/source.js';
 import { TelegramNotifier } from '../src/adapters/telegram/notifier.js';
 import { CoupangPartnersClient } from '../src/adapters/coupang/partners.js';
@@ -213,11 +215,10 @@ describe('DomeggookSource', () => {
 });
 
 describe('Naver', () => {
-  it('쇼핑검색·데이터랩·검색광고(HMAC) 요청 형식과 파싱', async () => {
+  it('데이터랩·검색광고(HMAC) 요청 형식과 파싱', async () => {
     const calls: Call[] = [];
     const fetchImpl = (async (url: string, init?: RequestInit) => {
       calls.push({ url, init });
-      if (url.includes('/v1/search/shop.json')) return jsonRes({ total: 345, items: [{ title: '<b>정리함</b>', lprice: '15900', mallName: 'A몰', productId: '9001', link: 'https://l', image: 'https://i', productType: '2' }] });
       if (url.includes('/v1/datalab/search')) return jsonRes({ results: [{ data: [{ ratio: 50 }, { ratio: 100 }] }] });
       if (url.includes('keywordstool')) return jsonRes({ keywordList: [{ relKeyword: '정리함', monthlyPcQcCnt: 1200, monthlyMobileQcCnt: '< 10', compIdx: '중간' }, { relKeyword: '서랍정리함', monthlyPcQcCnt: 3000, monthlyMobileQcCnt: 9000, compIdx: '낮음' }] });
       return jsonRes({}, 404);
@@ -225,10 +226,6 @@ describe('Naver', () => {
     const n = new NaverClient({ clientId: 'id', clientSecret: 'sec', searchAd: { customerId: 'C', apiKey: 'K', secret: 'S' }, datalabEnabled: true, logger: log, fetchImpl });
     (n as any).adLimiter.setRate(1000);
     expect(await new NaverClient({ clientId: 'id', clientSecret: 'sec', logger: log, fetchImpl }).weeklyTrend('x', 12)).toBeNull(); // 데이터랩 권한 없으면 호출 안 함
-    const r = await n.shoppingSearch('정리함');
-    expect(r).toEqual({ total: 345, items: [{ title: '정리함', price: 15900, mall: 'A몰', productId: '9001', link: 'https://l', image: 'https://i', productType: 2 }] });
-    expect((calls[0]!.init!.headers as Record<string, string>)['X-Naver-Client-Id']).toBe('id');
-    expect(calls[0]!.url).toContain('exclude=used%3Arental%3Acbshop');
     expect(await n.weeklyTrend('정리함', 12)).toEqual([50, 100]);
     expect(await n.monthlySearchVolume(['정리 함'])).toEqual({ 정리함: 1205 });
     const h = calls.at(-1)!.init!.headers as Record<string, string>;
@@ -236,11 +233,8 @@ describe('Naver', () => {
     expect(h['X-Signature']).toBe(sig);
     expect(calls.at(-1)!.url).toContain('hintKeywords=%EC%A0%95%EB%A6%AC%ED%95%A8');
     expect(await n.relatedKeywords('정리함')).toEqual([{ keyword: '서랍정리함', volume: 12000, competition: '낮음' }]);
-
-    const src = new NaverShoppingSource(n);
-    await src.search('정리함');
-    const d = await src.getProduct('9001');
-    expect(d).toMatchObject({ price: 15900, imageReuseAllowed: false, taxInvoice: false });
+    expect(await n.keywordStats(['정리함', 'a', 'b', 'c', 'd', 'e'])).toHaveLength(2);
+    expect(decodeURIComponent(calls.at(-1)!.url)).toContain('hintKeywords=정리함,a,b,c,d&'); // 최대 5개
   });
 
   it('키워드도구 429 → 5분간 호출 중단(공식 가이드), 401 → 재발급 안내', async () => {
@@ -260,8 +254,35 @@ describe('Naver', () => {
 
   it('키 미설정 시 신호 없음(null)', async () => {
     const n = new NaverClient({ logger: log });
-    expect(await n.shoppingSearch('x')).toBeNull();
     expect(await n.monthlySearchVolume(['x'])).toBeNull();
+    expect(await n.keywordStats(['x'])).toBeNull();
+  });
+});
+
+describe('11번가 상품검색(시장가)', () => {
+  const xml = `<?xml version="1.0" encoding="EUC-KR"?><ProductSearchResponse><Products><TotalCount>1234</TotalCount>
+    <Product><ProductCode>1</ProductCode><ProductName><![CDATA[캠핑 의자 <b>경량</b>]]></ProductName><ProductPrice>25000</ProductPrice><SalePrice>19900</SalePrice><SellerNick>A샵</SellerNick></Product>
+    <Product><ProductCode>2</ProductCode><ProductName><![CDATA[릴렉스 체어]]></ProductName><ProductPrice>32000</ProductPrice><SalePrice></SalePrice><SellerNick>B샵</SellerNick></Product>
+  </Products></ProductSearchResponse>`;
+  it('EUC-KR 키워드 인코딩·XML 파싱·하루 캐시', async () => {
+    const urls: string[] = [];
+    const fetchImpl = (async (url: string) => {
+      urls.push(url);
+      return new Response(new Uint8Array(iconv.encode(xml, 'euc-kr')));
+    }) as unknown as typeof fetch;
+    const store = new Map<string, unknown>();
+    const c = new ElevenstSearchClient({ apiKey: 'K', logger: log, fetchImpl, cache: { get: async (k) => store.get(k), set: async (k, v) => void store.set(k, v) } });
+    const r = (await c.shoppingSearch('캠핑'))!;
+    expect(urls[0]).toContain('keyword=%C4%B7%C7%CE'); // EUC-KR
+    expect(urls[0]).toContain('apiCode=ProductSearch');
+    expect(r.total).toBe(1234);
+    expect(r.source).toBe('11번가');
+    expect(r.items.map((i) => [i.title, i.price, i.mall])).toEqual([['캠핑 의자 경량', 19900, 'A샵'], ['릴렉스 체어', 32000, 'B샵']]);
+    await c.shoppingSearch('캠핑');
+    expect(urls).toHaveLength(1);
+  });
+  it('오류 응답은 예외', () => {
+    expect(() => parseElevenstSearch('<ErrorResponse><ErrorMessage>tMall.invalidOpenApiKey</ErrorMessage></ErrorResponse>')).toThrow(/invalidOpenApiKey/);
   });
 });
 

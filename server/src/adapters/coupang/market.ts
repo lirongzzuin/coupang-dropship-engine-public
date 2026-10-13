@@ -156,6 +156,7 @@ export class CoupangMarket implements MarketPort {
       status,
       rawStatus: raw,
       vendorItemIds: (d.items ?? []).map((i: any) => i.vendorItemId).filter((x: unknown) => x !== null && x !== undefined).map(String),
+      items: (d.items ?? []).filter((i: any) => i.vendorItemId !== null && i.vendorItemId !== undefined).map((i: any) => ({ vendorItemId: String(i.vendorItemId), itemName: String(i.itemName ?? '') })),
     };
   }
 

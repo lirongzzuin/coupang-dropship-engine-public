@@ -7,7 +7,8 @@ import { refreshListingStatuses } from '../modules/listing/service.js';
 import { checkDelays, pollClaims, pollFulfillment, pollNewOrders, processPending, purgePii } from '../modules/orders/service.js';
 import { sendDailyReport, watchdog } from '../modules/reports/service.js';
 import { runSelection } from '../modules/selection/service.js';
-import { reviewSlowListings, syncListings } from '../modules/sync/service.js';
+import { discoverKeywords } from '../modules/keywords/service.js';
+import { optimizePrices, reviewSlowListings, scoutCheaperSources, syncListings } from '../modules/sync/service.js';
 
 /**
  * 내장 스케줄러. 작업 추가는 JOBS 배열에 한 줄.
@@ -43,8 +44,14 @@ export const JOBS: JobDef[] = [
     intervalMs: (s) => min(s.schedule.syncMinutes),
     run: async (ctx) => ({ sync: await syncListings(ctx), slow: await reviewSlowListings(ctx) }),
   },
+  {
+    name: 'profit.optimize', label: '수익 최적화(가격·원가)',
+    intervalMs: () => 24 * 3600_000,
+    run: async (ctx) => ({ prices: await optimizePrices(ctx), cost: await scoutCheaperSources(ctx) }),
+  },
   { name: 'cs.poll', label: '고객문의', intervalMs: (s) => min(s.schedule.csMinutes), run: pollInquiries },
   { name: 'finance.reconcile', label: '정산 대사', intervalMs: (s) => s.schedule.reconcileHours * 3600_000, run: async (ctx) => ({ reconcile: await reconcile(ctx), pii: await purgePii(ctx) }) },
+  { name: 'keywords.discover', label: '키워드 자동 발굴', intervalMs: (s) => s.schedule.discoveryHours * 3600_000, run: discoverKeywords },
   { name: 'selection.run', label: '상품 선정', intervalMs: (s) => s.schedule.selectionHours * 3600_000, run: (ctx) => runSelection(ctx) },
   {
     name: 'report.daily', label: '일일 리포트',

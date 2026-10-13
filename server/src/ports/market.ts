@@ -64,6 +64,8 @@ export interface MarketProductStatus {
   status: 'APPROVED' | 'IN_REVIEW' | 'REJECTED' | 'DRAFT' | 'UNKNOWN';
   rawStatus: string;
   vendorItemIds: string[];
+  /** 옵션명별 옵션ID(묶음 옵션 매칭용) */
+  items?: Array<{ vendorItemId: string; itemName: string }>;
   reason?: string;
 }
 

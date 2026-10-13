@@ -195,27 +195,38 @@ describe('selection scoring', () => {
   const d = { sourceItemId: '1', title: '수납 정리함', url: '', price: 10000, shippingFee: 3000, status: 'active', stock: 100, imageReuseAllowed: true, images: [], taxInvoice: true, categoryPath: '생활용품' } as any;
   const tp = targetPrice(s, { cost: 10000, shipping: 3000, categoryPath: '생활용품' });
   it('시장 최저가보다 비싸면 탈락, 싸면 통과', () => {
-    const fail = evaluateGates(s, d, tp, { naverLowest: tp.price - 100 }, { apiOrder: true });
+    const fail = evaluateGates(s, d, tp, { marketLowest: tp.price - 100 }, { apiOrder: true });
     expect(fail.find((g) => g.name === 'competitive')!.pass).toBe(false);
-    const ok = evaluateGates(s, d, tp, { naverLowest: tp.price + 5000 }, { apiOrder: true });
+    const ok = evaluateGates(s, d, tp, { marketLowest: tp.price + 5000 }, { apiOrder: true });
     expect(ok.filter((g) => g.hard).every((g) => g.pass)).toBe(true);
   });
   it('상표·금지 카테고리·KC 미인증 탈락', () => {
-    const g1 = evaluateGates(s, { ...d, title: '나이키 가방' }, tp, { naverLowest: 99999 }, { apiOrder: true });
+    const g1 = evaluateGates(s, { ...d, title: '나이키 가방' }, tp, { marketLowest: 99999 }, { apiOrder: true });
     expect(g1.find((g) => g.name === 'trademark')!.pass).toBe(false);
-    const g2 = evaluateGates(s, { ...d, title: 'USB 충전 선풍기', kc: { certified: false, exempt: false } }, tp, { naverLowest: 99999 }, { apiOrder: true });
+    const g2 = evaluateGates(s, { ...d, title: 'USB 충전 선풍기', kc: { certified: false, exempt: false } }, tp, { marketLowest: 99999 }, { apiOrder: true });
     expect(g2.find((g) => g.name === 'kc')!.pass).toBe(false);
-    const g3 = evaluateGates(s, { ...d, title: 'USB 충전 선풍기', kc: { certified: true, exempt: false, certNo: 'XU1' } }, tp, { naverLowest: 99999 }, { apiOrder: true });
+    const g3 = evaluateGates(s, { ...d, title: 'USB 충전 선풍기', kc: { certified: true, exempt: false, certNo: 'XU1' } }, tp, { marketLowest: 99999 }, { apiOrder: true });
     expect(g3.find((g) => g.name === 'kc')!.pass).toBe(true);
-    const g4 = evaluateGates(s, { ...d, title: '건강기능식품 비타민' }, tp, { naverLowest: 99999 }, { apiOrder: true });
+    const g4 = evaluateGates(s, { ...d, title: '건강기능식품 비타민' }, tp, { marketLowest: 99999 }, { apiOrder: true });
     expect(g4.find((g) => g.name === 'category')!.pass).toBe(false);
   });
+  it('관련성·허용 분류·최소주문 게이트', () => {
+    const gate = (over: object, opts: object) => evaluateGates(s, { ...d, ...over }, tp, { marketLowest: 99999 }, { apiOrder: true, ...opts });
+    expect(gate({ title: '접이식 수납 정리함' }, { keyword: '수납 정리함' }).find((g) => g.name === 'relevance')!.pass).toBe(true);
+    expect(gate({ title: '수납정리함 대형' }, { keyword: '수납 정리함' }).find((g) => g.name === 'relevance')!.pass).toBe(true);
+    expect(gate({ title: '머플러 코팅제 자동차' }, { keyword: '목도리' }).find((g) => g.name === 'relevance')!.pass).toBe(false);
+    expect(gate({ categoryPath: '자동차용품>세차' }, { enforceCategory: true }).find((g) => g.name === 'allowedCategory')!.pass).toBe(false);
+    expect(gate({ categoryPath: '생활용품>수납' }, { enforceCategory: true }).find((g) => g.name === 'allowedCategory')!.pass).toBe(true);
+    expect(gate({ categoryPath: '자동차용품>세차' }, {}).find((g) => g.name === 'allowedCategory')).toBeUndefined(); // 다른 공급처는 미적용
+    expect(gate({ minOrderQty: 3 }, {}).find((g) => g.name === 'moq')!.pass).toBe(false);
+    expect(gate({ minOrderQty: 1 }, {}).find((g) => g.name === 'moq')!.pass).toBe(true);
+  });
   it('가격 기준: 쿠팡 최저가 우선, 없으면 네이버', () => {
-    expect(marketReference({ naverLowest: 30000, coupangLowest: 25000 })).toEqual({ price: 25000, source: '쿠팡' });
-    expect(marketReference({ naverLowest: 30000 })).toEqual({ price: 30000, source: '네이버' });
+    expect(marketReference({ marketLowest: 30000, coupangLowest: 25000 })).toEqual({ price: 25000, source: '쿠팡' });
+    expect(marketReference({ marketLowest: 30000, marketSource: '11번가' })).toEqual({ price: 30000, source: '11번가' });
     expect(marketReference({})).toBeNull();
     // 네이버 기준 통과여도 쿠팡 최저가보다 비싸면 탈락
-    const g = evaluateGates(s, d, tp, { naverLowest: tp.price + 5000, coupangLowest: tp.price - 100 }, { apiOrder: true });
+    const g = evaluateGates(s, d, tp, { marketLowest: tp.price + 5000, coupangLowest: tp.price - 100 }, { apiOrder: true });
     expect(g.find((x) => x.name === 'competitive')!.pass).toBe(false);
     expect(g.find((x) => x.name === 'competitive')!.detail).toContain('쿠팡');
   });
@@ -226,20 +237,23 @@ describe('selection scoring', () => {
     expect(monthlySlope([{ at: at('09'), value: 2000 }, { at: at('10'), value: 1000 }])).toBe(-0.5);
   });
   it('구글 트렌드·로켓 비율이 점수에 반영', () => {
-    const base = scoreCandidate(s, d, tp, { naverLowest: 30000 }, { apiOrder: true });
-    const up = scoreCandidate(s, d, tp, { naverLowest: 30000, googleTrend: [10, 10, 10, 10, 20, 20, 20, 20], coupangRocketRatio: 0 }, { apiOrder: true });
+    const base = scoreCandidate(s, d, tp, { marketLowest: 30000 }, { apiOrder: true });
+    const up = scoreCandidate(s, d, tp, { marketLowest: 30000, googleTrend: [10, 10, 10, 10, 20, 20, 20, 20], coupangRocketRatio: 0 }, { apiOrder: true });
     expect(up.parts.googleTrend).toBe(1);
     expect(up.parts.rocketCompetition).toBe(1);
     expect(up.score).toBeGreaterThan(base.score);
   });
   it('시장가 미상: requireMarketPrice 설정 따름', () => {
-    expect(evaluateGates(s, d, tp, {}, { apiOrder: true }).find((g) => g.name === 'competitive')!.pass).toBe(false);
+    // 기본값 false: 시장가 소스가 없어도 탈락시키지 않음(네이버 쇼핑 API 종료 대응)
+    expect(s.selection.requireMarketPrice).toBe(false);
+    const s1 = mergeSettings(s, { selection: { requireMarketPrice: true } });
+    expect(evaluateGates(s1, d, tp, {}, { apiOrder: true }).find((g) => g.name === 'competitive')!.pass).toBe(false);
     const s2 = mergeSettings(s, { selection: { requireMarketPrice: false } });
     expect(evaluateGates(s2, d, tp, {}, { apiOrder: true }).find((g) => g.name === 'competitive')!.pass).toBe(true);
   });
   it('점수: 0~1, 자동발주 가능 소스가 더 높음, 추세 기울기', () => {
-    const a = scoreCandidate(s, d, tp, { naverLowest: 30000, naverCount: 500, searchVolume: 20000 }, { apiOrder: true });
-    const b = scoreCandidate(s, d, tp, { naverLowest: 30000, naverCount: 500, searchVolume: 20000 }, { apiOrder: false });
+    const a = scoreCandidate(s, d, tp, { marketLowest: 30000, marketCount: 500, searchVolume: 20000 }, { apiOrder: true });
+    const b = scoreCandidate(s, d, tp, { marketLowest: 30000, marketCount: 500, searchVolume: 20000 }, { apiOrder: false });
     expect(a.score).toBeGreaterThan(b.score);
     expect(a.score).toBeLessThanOrEqual(1);
     expect(trendSlope([10, 10, 10, 10, 20, 20, 20, 20], 4)).toBe(1);

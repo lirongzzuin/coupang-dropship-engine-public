@@ -1,6 +1,6 @@
 import type { Logger } from '../../lib/logger.js';
 import { HttpError, RateLimiter, retry } from '../../lib/util.js';
-import type { SourceAdapter, SourceProductDetail, SourceProductSummary } from '../../ports/source.js';
+import type { SourceAdapter, SourceCategory, SourceProductDetail, SourceProductSummary } from '../../ports/source.js';
 
 /**
  * 도매꾹/도매매 Open API (API 키만 있으면 사용, 별도 승인 불필요).
@@ -67,6 +67,31 @@ export class DomeggookSource implements SourceAdapter {
       }));
   }
 
+  /** 카테고리 트리(getCategoryList v1.0) → 평탄화. 출처: openapi.domeggook.com 카테고리 목록(확인 2026-10-13) */
+  async listCategories(): Promise<SourceCategory[]> {
+    const d = await this.call({ ver: '1.0', mode: 'getCategoryList' });
+    const out: SourceCategory[] = [];
+    const walk = (node: any, parents: string[]) => {
+      const children = node?.child ? Object.values(node.child) : [];
+      const path = [...parents, String(node.name)];
+      out.push({ code: String(node.code), name: String(node.name), path: path.join('>'), leaf: children.length === 0 });
+      for (const ch of children) walk(ch, path);
+    };
+    for (const top of Object.values(d?.items ?? {})) walk(top, []);
+    return out;
+  }
+
+  /** 카테고리 인기순(so=ha) 상품. 대분류만(01_00_00_00_00)은 조회 불가 → 2단계 이상 코드 */
+  async popularItems(categoryCode: string, limit: number): Promise<SourceProductSummary[]> {
+    const d = await this.call({ ver: '4.1', mode: 'getItemList', market: this.market, ca: categoryCode, sz: Math.min(200, limit), pg: 1, so: 'ha', org: 'kr' });
+    const raw = d?.list?.item ?? [];
+    const items: any[] = Array.isArray(raw) ? raw : [raw];
+    return items.filter((it) => it && !toBool(it.adultOnly)).map((it) => ({
+      sourceItemId: String(it.no), title: String(it.title ?? ''), url: String(it.url ?? ''), imageUrl: it.thumb ? String(it.thumb) : undefined,
+      price: Number(it.price) || 0, shippingFee: it.deli?.who === 'S' ? 0 : Number(it.deli?.fee) || 0,
+    }));
+  }
+
   async getProduct(no: string): Promise<SourceProductDetail | null> {
     const d = await this.call({ ver: '4.6', mode: 'getItemView', no });
     if (!d?.basis) return null;
@@ -102,7 +127,11 @@ export class DomeggookSource implements SourceAdapter {
       kc: kc ? { certified: kc.cert === 'Y' || kc.useNo === 'Y', exempt: kc.exem === 'Y', certNo: kc.no || undefined, certType: kc.certType || undefined } : undefined,
       manufacturer: d.detail?.manufacturer || undefined,
       origin: d.detail?.country || undefined,
-      sellerScore: d.seller?.score?.avg !== undefined ? Number(d.seller.score.avg) : undefined,
+      sellerScore: Number.isFinite(Number.parseFloat(String(d.seller?.score?.avg))) ? Number.parseFloat(String(d.seller.score.avg)) : undefined,
+      // 도매매(supply)는 낱개 위탁 판매 단위(supplyUnit), 도매꾹은 최소구매수량(domeMoq)
+      minOrderQty: this.market === 'supply' ? Number(d.qty?.supplyUnit ?? 1) || 1 : Number(d.qty?.domeMoq ?? 1) || 1,
+      // 수량별 배송비 구간(tbl)이 있거나 묶음배송 불가면 배송비가 수량만큼 든다고 본다
+      shippingPerUnit: !free && (!!deli?.tbl || String(d.deli?.merge?.enable ?? 'y').toLowerCase() === 'n'),
     };
   }
 }

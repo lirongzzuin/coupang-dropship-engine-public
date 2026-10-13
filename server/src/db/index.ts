@@ -5,6 +5,8 @@ import { Kysely, PGliteDialect, PostgresDialect } from 'kysely';
 import { type Migration, type MigrationProvider, Migrator } from 'kysely/migration';
 import pg from 'pg';
 import * as m001 from './migrations/001_init.js';
+import * as m002 from './migrations/002_keywords.js';
+import * as m003 from './migrations/003_profit.js';
 import type { DB } from './schema.js';
 
 export type Database = Kysely<DB>;
@@ -12,6 +14,8 @@ export type Database = Kysely<DB>;
 /** 새 마이그레이션은 여기에 순서대로 추가한다 */
 const MIGRATIONS: Record<string, Migration> = {
   '001_init': m001,
+  '002_keywords': m002,
+  '003_profit': m003,
 };
 
 class StaticProvider implements MigrationProvider {

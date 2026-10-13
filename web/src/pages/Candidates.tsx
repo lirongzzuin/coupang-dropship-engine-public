@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { api, won } from '../api';
 import { Badge, Card, Loading, Msg, useAction, useLoad } from '../ui';
+import { Keywords } from './Keywords';
 
 interface Gate { name: string; pass: boolean; detail: string; hard: boolean }
 interface Cand {
@@ -10,19 +11,28 @@ interface Cand {
 }
 
 const GATE_LABEL: Record<string, string> = {
-  status: '판매상태', stock: '재고', supplyPrice: '공급가 범위', trademark: '상표', category: '금지 카테고리', kc: 'KC 인증',
+  status: '판매상태', stock: '재고', relevance: '키워드 일치', allowedCategory: '허용 분류', moq: '최소주문', supplyPrice: '공급가 범위', trademark: '상표', category: '금지 카테고리', kc: 'KC 인증',
   profit: '이익', competitive: '가격 경쟁력', images: '이미지', notice: '고시정보', apiOrder: '자동 발주',
 };
 
 export function Candidates() {
+  const [view, setView] = useState<'cands' | 'keywords'>('cands');
   const [passed, setPassed] = useState<'true' | 'false'>('true');
   const { data, error, loading, reload } = useLoad<Cand[]>(`/api/candidates?status=new&passed=${passed}`);
   const [kw, setKw] = useState('');
   const act = useAction();
   // 후보 승인/제외 결과는 항목이 목록에서 사라지므로 페이지 상단에 표시
   const itemAct = useAction();
+  const switcher = (
+    <div className="tabs">
+      <button className={view === 'cands' ? 'on' : ''} onClick={() => setView('cands')}>상품 후보</button>
+      <button className={view === 'keywords' ? 'on' : ''} onClick={() => setView('keywords')}>키워드 풀</button>
+    </div>
+  );
+  if (view === 'keywords') return <div className="stack">{switcher}<Keywords /></div>;
   return (
     <div className="stack">
+      {switcher}
       <Card title="상품 선정 실행">
         <form className="form" onSubmit={(e) => {
           e.preventDefault();
@@ -33,7 +43,7 @@ export function Candidates() {
             return `평가 ${r.evaluated} · 통과 ${r.passed} · 자동등록 ${r.autoListed}${r.errors.length ? ` · 오류 ${r.errors.length}` : ''}`;
           });
         }}>
-          <label>키워드(쉼표 구분, 비우면 설정의 시드 키워드)<input value={kw} onChange={(e) => setKw(e.target.value)} placeholder="수납 정리함, 캠핑 의자" /></label>
+          <label>키워드(쉼표 구분, 비우면 키워드 풀에서 자동 선택)<input value={kw} onChange={(e) => setKw(e.target.value)} placeholder="수납 정리함, 캠핑 의자" /></label>
           <button className="btn primary" disabled={act.busy}>{act.busy ? '실행 중…' : '실행'}</button>
         </form>
         <Msg msg={act.msg} />

@@ -9,7 +9,8 @@ import { DryRunMarket } from './adapters/dryRunMarket.js';
 import { FakeMarket } from './adapters/fake/fakeMarket.js';
 import { MockSource } from './adapters/fake/mockSource.js';
 import { DemoMarketData, demoSources } from './adapters/fake/demo.js';
-import { NaverClient, NaverShoppingSource } from './adapters/naver/client.js';
+import { NaverClient } from './adapters/naver/client.js';
+import { ElevenstSearchClient } from './adapters/elevenst/search.js';
 import { OwnerclanSource } from './adapters/ownerclan/source.js';
 import { SourceRegistry } from './adapters/registry.js';
 import { LocalStorage } from './adapters/storage/localStorage.js';
@@ -82,6 +83,7 @@ export async function buildContext(env: Env, o: BuildOverrides = {}): Promise<Ap
     env.COUPANG_PARTNERS_ACCESS_KEY && env.COUPANG_PARTNERS_SECRET_KEY
       ? new CoupangPartnersClient({ accessKey: env.COUPANG_PARTNERS_ACCESS_KEY, secretKey: env.COUPANG_PARTNERS_SECRET_KEY, logger: log, cache: kv, now: () => clock.now() })
       : undefined,
+    env.ELEVENST_API_KEY ? new ElevenstSearchClient({ apiKey: env.ELEVENST_API_KEY, logger: log, cache: kv, now: () => clock.now() }) : undefined,
   );
 
   const demo = env.DEMO_MODE && env.MARKET_ADAPTER === 'fake';
@@ -93,7 +95,6 @@ export async function buildContext(env: Env, o: BuildOverrides = {}): Promise<Ap
       sources.register(new OwnerclanSource({ username: env.OWNERCLAN_USERNAME, password: env.OWNERCLAN_PASSWORD, sandbox: env.OWNERCLAN_SANDBOX, logger: log }));
     }
     if (!demo && env.DOMEGGOOK_API_KEY) sources.register(new DomeggookSource({ apiKey: env.DOMEGGOOK_API_KEY, market: env.DOMEGGOOK_MARKET, logger: log }));
-    if (!demo && naver.hasOpenApi) sources.register(new NaverShoppingSource(naver));
     if (env.ENABLE_MOCK_SOURCE) sources.register(new MockSource('mock'));
     if (demo) for (const d of demoSources()) sources.register(d);
   }
@@ -108,7 +109,7 @@ export async function buildContext(env: Env, o: BuildOverrides = {}): Promise<Ap
     kv,
     market,
     sources,
-    marketData: o.marketData ?? (demo && !naver.hasOpenApi ? new DemoMarketData() : marketData),
+    marketData: o.marketData ?? (demo ? new DemoMarketData() : marketData),
     notifications: new NotificationService(db, notifier, env.PUBLIC_BASE_URL, clock),
     storage: o.storage ?? new LocalStorage(join(env.DATA_DIR, 'media'), env.PUBLIC_BASE_URL),
     pii: new PiiCipher(env.PII_KEY),

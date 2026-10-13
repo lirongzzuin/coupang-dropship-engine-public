@@ -25,7 +25,7 @@ export interface OwnerclanOptions {
 const ITEM_FIELDS = `key name model production origin price pricePolicy fixedPrice
   category { key name fullName } content shippingFee shippingType images(size: large)
   status options { optionAttributes { name value } price quantity } taxFree adultOnly
-  returnable guaranteedShippingPeriod openmarketSellable`;
+  returnable guaranteedShippingPeriod openmarketSellable boxQuantity`;
 
 export class OwnerclanSource implements SourceAdapter {
   readonly id = 'ownerclan';
@@ -118,6 +118,9 @@ export class OwnerclanSource implements SourceAdapter {
       stock: (it.options ?? []).length ? stock : null,
       categoryPath: it.category?.fullName ?? it.category?.name,
       minResalePrice: it.pricePolicy === 'fixed' && it.fixedPrice ? Math.round(it.fixedPrice) : undefined,
+      // 오너클랜: boxQuantity = 1박스 최대 묶음배송 수량(매뉴얼 v0.11.0)
+      shippingPerUnit: false,
+      maxPerBox: it.boxQuantity ? Number(it.boxQuantity) : null,
       // 위탁 판매용 상품 이미지 제공이 오너클랜 서비스 전제. 단 openmarketSellable=false 는 검색에서 제외
       imageReuseAllowed: it.openmarketSellable !== false,
       detailHtml: it.content ?? undefined,

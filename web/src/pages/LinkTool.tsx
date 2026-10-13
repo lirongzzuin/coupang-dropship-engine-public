@@ -6,6 +6,7 @@ interface Quote {
   source: string; sourceItemId: string; sourceUrl: string; status: string; stock: number | null; supplyPrice: number; shippingFee: number;
   minResalePrice: number | null; suggestedTitle: string; suggestedTags: string[]; salePrice: number | null;
   profit: { profit: number; margin: number; fee: number; feeVat: number } | null; images: string[]; imageReuseAllowed: boolean;
+  options: Array<{ units: number; itemName: string; salePrice: number; floor: number; profit: number }>;
   prepDays: number; notice: { type?: string; items: Array<{ name: string; value: string }> } | null; apiOrder: boolean;
 }
 interface Meta { sources: Array<{ id: string; name: string; capabilities: { apiOrder: boolean } }> }
@@ -52,6 +53,7 @@ export function LinkTool({ onLinked }: { onLinked: () => void }) {
                 <tr><th>상품명</th><td>{q.suggestedTitle} <CopyButton value={q.suggestedTitle} /></td></tr>
                 <tr><th>권장 판매가</th><td><b>{won(q.salePrice)}</b> (무료배송) {q.salePrice && <CopyButton value={String(q.salePrice)} />}</td></tr>
                 <tr><th>예상 이익</th><td>{won(q.profit?.profit)} ({q.profit ? Math.round(q.profit.margin * 100) : '-'}%)</td></tr>
+                {q.options.length > 1 && <tr><th>묶음 옵션 권장</th><td className="small">{q.options.map((o) => `${o.units}개 ${won(o.salePrice)}(이익 ${won(o.profit)})`).join(' / ')}<div className="muted">Wing에서 옵션 "수량" 1개/2개/3개로 등록하면 객단가가 올라갑니다</div></td></tr>}
                 <tr><th>공급가</th><td>{won(q.supplyPrice)} + 배송비 {won(q.shippingFee)}{q.minResalePrice ? ` · 최저판매준수가 ${won(q.minResalePrice)}` : ''}</td></tr>
                 <tr><th>재고/상태</th><td>{q.stock ?? '?'} / {q.status}</td></tr>
                 <tr><th>출고소요일</th><td>{q.prepDays}일</td></tr>

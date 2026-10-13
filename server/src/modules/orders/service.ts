@@ -6,7 +6,8 @@ import { maskName } from '../../lib/logger.js';
 import { addDays, errMessage, kstDate } from '../../lib/util.js';
 import type { MarketOrderLine } from '../../ports/market.js';
 import { upsertSourceProduct } from '../catalog.js';
-import { findListingByVendorItem, pauseListing } from '../listing/control.js';
+import { pauseListing } from '../listing/control.js';
+import { findByVendorItem } from '../listing/items.js';
 import { computeProfit } from '../pricing/pricing.js';
 import { canTransition, isPrePurchase, type OrderStatus, STATUS_LABEL } from './stateMachine.js';
 
@@ -134,9 +135,11 @@ export async function processOrder(ctx: AppContext, orderId: number, opts: { ove
     if (!(opts.override && o.status === 'AWAITING_PURCHASE')) return o;
   }
 
-  // 매핑
-  const listing = await findListingByVendorItem(ctx, o.vendor_item_id);
-  if (!listing) return transition(ctx, o, 'MANUAL_REVIEW', '등록 상품과 매핑되지 않은 주문(vendorItemId)', actor);
+  // 매핑(묶음 옵션이면 실제 보낼 수량 = 주문수량 × 묶음수량)
+  const found = await findByVendorItem(ctx, o.vendor_item_id);
+  if (!found) return transition(ctx, o, 'MANUAL_REVIEW', '등록 상품과 매핑되지 않은 주문(vendorItemId)', actor);
+  const listing = found.listing;
+  const units = o.qty * found.unitQty;
   const sp = await ctx.db.selectFrom('source_products').selectAll().where('id', '=', listing.source_product_id).executeTakeFirstOrThrow();
   if (o.listing_id !== listing.id) {
     o = await ctx.db.updateTable('orders').set({ listing_id: listing.id, source_product_id: sp.id }).where('id', '=', o.id).returningAll().executeTakeFirstOrThrow();
@@ -150,7 +153,7 @@ export async function processOrder(ctx: AppContext, orderId: number, opts: { ove
   if (source.capabilities.detail) {
     try {
       const d = await source.getProduct(sp.source_item_id, { title: sp.title });
-      if (!d || d.status !== 'active' || (d.stock !== null && d.stock < o.qty)) {
+      if (!d || d.status !== 'active' || (d.stock !== null && d.stock < units)) {
         if (d) await upsertSourceProduct(ctx, sp.source, d);
         await pauseListing(ctx, listing, '공급처 품절');
         if (!opts.override) {
@@ -169,8 +172,10 @@ export async function processOrder(ctx: AppContext, orderId: number, opts: { ove
     }
   }
 
-  const cost = price * o.qty;
-  const breakdown = computeProfit(s, o.sale_amount, { cost, shipping, categoryPath: sp.category_path, inputVatDeductible: sp.tax_invoice });
+  const cost = price * units;
+  const perUnitShipping = (sp.detail as { shippingPerUnit?: boolean } | null)?.shippingPerUnit;
+  if (perUnitShipping) shipping *= units;
+  const breakdown = computeProfit(s, o.sale_amount, { cost, shipping, categoryPath: sp.category_path, inputVatDeductible: sp.tax_invoice, feeRate: listing.fee_rate_actual });
   o = await ctx.db.updateTable('orders').set({ expected_cost: cost + shipping, expected_profit: breakdown.profit }).where('id', '=', o.id).returningAll().executeTakeFirstOrThrow();
 
   if (!opts.override) {
@@ -204,16 +209,16 @@ export async function processOrder(ctx: AppContext, orderId: number, opts: { ove
 
   // 발주 전략 선택
   const canApi = source.capabilities.apiOrder && typeof source.placeOrder === 'function';
-  if (canApi && (s.orders.mode === 'auto' || opts.override)) return placeApiOrder(ctx, o, sp.source_item_id, actor);
+  if (canApi && (s.orders.mode === 'auto' || opts.override)) return placeApiOrder(ctx, o, sp.source_item_id, actor, units);
 
   if (o.status !== 'AWAITING_PURCHASE') {
     o = await transition(ctx, o, 'AWAITING_PURCHASE', canApi ? '승인 모드: 구매 확인 필요' : '공급처 API 발주 불가 → 구매 대행 작업', actor, { purchase_strategy: 'assisted' });
-    await ctx.notifications.notify('action', '구매할 주문이 있어요', `${o.item_name} × ${o.qty} (${maskName(decryptReceiver(ctx, o).name)}) — 예상 이익 ${breakdown.profit.toLocaleString()}원`, { path: `/orders/${o.id}` });
+    await ctx.notifications.notify('action', '구매할 주문이 있어요', `${o.item_name} — 공급처에서 ${units}개 구매 (${maskName(decryptReceiver(ctx, o).name)}) — 예상 이익 ${breakdown.profit.toLocaleString()}원`, { path: `/orders/${o.id}` });
   }
   return o;
 }
 
-async function placeApiOrder(ctx: AppContext, o: OrderRow, sourceItemId: string, actor: string): Promise<OrderRow> {
+async function placeApiOrder(ctx: AppContext, o: OrderRow, sourceItemId: string, actor: string, units: number): Promise<OrderRow> {
   const sp = await ctx.db.selectFrom('source_products').selectAll().where('id', '=', o.source_product_id!).executeTakeFirstOrThrow();
   const source = ctx.sources.require(sp.source);
   const key = `cp-${o.market_order_id}-${o.vendor_item_id}`;
@@ -229,7 +234,7 @@ async function placeApiOrder(ctx: AppContext, o: OrderRow, sourceItemId: string,
     const res = await source.placeOrder!({
       idempotencyKey: key,
       sourceItemId,
-      qty: o.qty,
+      qty: units,
       receiver: { name: r.name, phone: r.phone, addr1: r.addr1, addr2: r.addr2, zip: r.zip },
       deliveryMessage: r.deliveryMessage,
     });

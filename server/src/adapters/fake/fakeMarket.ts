@@ -134,21 +134,27 @@ export class FakeMarket implements MarketPort {
   }
 
   /** 테스트: 심사 승인 처리 */
+  /** 승인: 옵션마다 옵션ID 발급. 반환값은 첫 옵션(1개) ID */
   approve(sellerProductId: string): string {
     const p = this.products.get(sellerProductId);
     if (!p) throw new Error('no product');
-    const vi = `VI${++this.seq}`;
     p.status = 'APPROVED';
-    p.vendorItemIds = [vi];
-    this.items.set(vi, { price: p.payload?.items?.[0]?.salePrice ?? 0, qty: p.payload?.items?.[0]?.maximumBuyCount ?? 0, onSale: true });
-    return vi;
+    const payloadItems: any[] = p.payload?.items?.length ? p.payload.items : [{}];
+    p.vendorItemIds = payloadItems.map((it) => {
+      const vi = `VI${++this.seq}`;
+      this.items.set(vi, { price: it.salePrice ?? 0, qty: it.maximumBuyCount ?? 0, onSale: true });
+      this.itemNames.set(vi, String(it.itemName ?? ''));
+      return vi;
+    });
+    return p.vendorItemIds[0]!;
   }
+  itemNames = new Map<string, string>();
 
   async getProductStatus(sellerProductId: string): Promise<MarketProductStatus> {
     const p = this.products.get(sellerProductId);
     if (!p) return { sellerProductId, status: 'UNKNOWN', rawStatus: '', vendorItemIds: [] };
     if (this.autoApprove && p.status === 'IN_REVIEW') this.approve(sellerProductId);
-    return { sellerProductId, status: p.status, rawStatus: p.status, vendorItemIds: p.vendorItemIds };
+    return { sellerProductId, status: p.status, rawStatus: p.status, vendorItemIds: p.vendorItemIds, items: p.vendorItemIds.map((v) => ({ vendorItemId: v, itemName: this.itemNames.get(v) ?? '' })) };
   }
 
   private item(id: string) {

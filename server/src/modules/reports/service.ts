@@ -94,6 +94,9 @@ export async function sendDailyReport(ctx: AppContext): Promise<string> {
     `운영 상품: 판매중 ${d.listings.active ?? 0} · 심사중 ${d.listings.pending_approval ?? 0} · 일시중지 ${d.listings.paused ?? 0}`,
     `할 일: 구매/결제 ${d.actionCount}건 · 예외 ${d.exceptionCount}건 · 문의 ${d.inquiriesOpen}건`,
   ];
+  const { listingProfit } = await import('../finance/service.js');
+  const lp = await listingProfit(ctx, 7);
+  if (lp.length) lines.push(`최근 7일 이익 TOP: ${lp.slice(0, 3).map((x) => `${x.title.slice(0, 14)} ${won(x.expectedProfit)}(${x.orders}건)`).join(' · ')}`);
   const ex = Object.entries(d.byStatus).filter(([st, n]) => n > 0 && EXCEPTION_STATUSES.includes(st as OrderStatus));
   if (ex.length) lines.push(`예외 상세: ${ex.map(([st, n]) => `${STATUS_LABEL[st as OrderStatus]} ${n}`).join(', ')}`);
   if (d.keyExpiresInDays !== null) lines.push(`쿠팡 API 키 만료까지 ${d.keyExpiresInDays}일${d.keyExpiresInDays <= 14 ? ' ⚠️ 재발급 필요' : ''}`);

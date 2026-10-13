@@ -34,6 +34,17 @@ export async function reconcile(ctx: AppContext): Promise<{ imported: number; se
       .executeTakeFirst();
     if (res) imported++;
   }
+  // 실제 수수료율 학습: 판매 정산의 서비스이용료/매출금액 → 상품별 지수평균(가격 계산에 사용)
+  for (const r of lines) {
+    if (r.saleType !== 'SALE' || r.saleAmount <= 0) continue;
+    const o = await ctx.db.selectFrom('orders').select(['listing_id']).where('market_order_id', '=', r.marketOrderId).where('vendor_item_id', '=', r.vendorItemId).executeTakeFirst();
+    if (!o?.listing_id) continue;
+    const ratio = r.serviceFee / r.saleAmount;
+    if (!(ratio > 0 && ratio < 0.5)) continue;
+    const l = await ctx.db.selectFrom('listings').select(['fee_rate_actual']).where('id', '=', o.listing_id).executeTakeFirst();
+    const next = l?.fee_rate_actual ? l.fee_rate_actual * 0.7 + ratio * 0.3 : ratio;
+    await ctx.db.updateTable('listings').set({ fee_rate_actual: Math.round(next * 10000) / 10000 }).where('id', '=', o.listing_id).execute();
+  }
   const candidates = await ctx.db.selectFrom('orders').selectAll().where('status', 'in', ['DELIVERED', 'TRACKING_UPLOADED', 'IN_TRANSIT', 'RETURN_REQUESTED']).execute();
   for (const o of candidates) {
     const rows = await ctx.db.selectFrom('settlements').selectAll().where('market_order_id', '=', o.market_order_id).where('vendor_item_id', '=', o.vendor_item_id).execute();
@@ -85,4 +96,26 @@ export async function monthlyCsv(ctx: AppContext, month: string): Promise<string
   const sum = (k: 'sale_amount' | 'profit' | 'expected_profit') => rows.reduce((a, r) => a + (Number(r[k]) || 0), 0);
   body.push(['합계', '', '', '', '', sum('sale_amount'), '', '', '', '', '', sum('expected_profit'), '', sum('profit')].map(esc).join(','));
   return `﻿${head.join(',')}\n${body.join('\n')}\n`;
+}
+
+/** 상품별 수익(최근 N일): 주문수·매출·예상/확정 이익 — 잘 버는 상품과 못 버는 상품 */
+export async function listingProfit(ctx: AppContext, days = 30) {
+  const since = addDays(ctx.clock.now(), -days);
+  const rows = await ctx.db
+    .selectFrom('orders')
+    .innerJoin('listings', 'listings.id', 'orders.listing_id')
+    .select((eb) => [
+      'listings.id as listingId', 'listings.title as title', 'listings.sale_price as salePrice', 'listings.markup as markup', 'listings.status as status',
+      eb.fn.countAll<number>().as('orders'),
+      eb.fn.coalesce(eb.fn.sum<number>('orders.sale_amount'), eb.lit(0)).as('revenue'),
+      eb.fn.coalesce(eb.fn.sum<number>('orders.expected_profit'), eb.lit(0)).as('expectedProfit'),
+      eb.fn.coalesce(eb.fn.sum<number>('orders.profit'), eb.lit(0)).as('settledProfit'),
+    ])
+    .where('orders.ordered_at', '>=', since)
+    .where('orders.status', 'not in', ['CANCELLED'])
+    .groupBy(['listings.id', 'listings.title', 'listings.sale_price', 'listings.markup', 'listings.status'])
+    .execute();
+  return rows
+    .map((r) => ({ ...r, orders: Number(r.orders), revenue: Number(r.revenue), expectedProfit: Number(r.expectedProfit), settledProfit: Number(r.settledProfit) }))
+    .sort((a, b) => b.expectedProfit - a.expectedProfit);
 }

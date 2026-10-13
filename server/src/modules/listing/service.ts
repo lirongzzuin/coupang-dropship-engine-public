@@ -3,7 +3,8 @@ import { type AppContext, audit } from '../../context.js';
 import type { ListingRow } from '../../db/schema.js';
 import { errMessage } from '../../lib/util.js';
 import { detailOf } from '../catalog.js';
-import { targetPrice } from '../pricing/pricing.js';
+import { initialMarkup, priceFromMarkup, targetPrice } from '../pricing/pricing.js';
+import { getItems, planItems, saveItems } from './items.js';
 import { buildCoupangPayload } from './payload.js';
 import { buildDetailHtml, buildTags, findBannedTerms, sanitizeTitle } from './text.js';
 
@@ -22,6 +23,10 @@ export async function createDraftFromCandidate(ctx: AppContext, candidateId: num
   const tp = targetPrice(s, { cost: sp.price, shipping: sp.shipping_fee, categoryPath: sp.category_path, inputVatDeductible: sp.tax_invoice, minResalePrice: sp.min_resale_price });
   if (!tp.feasible) throw new ListingError('수익 가능한 판매가를 만들 수 없음');
   const images = sp.image_reuse_allowed ? (d?.images?.length ? d.images : sp.image_url ? [sp.image_url] : []) : [];
+  // 시작 마크업: 경쟁 최저가를 알면 그보다 살짝 낮게, 모르면 기본값 → 이후 가격 최적화가 조정
+  const markup = initialMarkup(s, tp.floor, cand.market_lowest);
+  const plans = await planItems(ctx, sp, title, markup);
+  if (!plans.length) throw new ListingError('수익 가능한 판매가를 만들 수 없음');
   const now = ctx.clock.now();
   const row = await ctx.db
     .insertInto('listings')
@@ -31,8 +36,9 @@ export async function createDraftFromCandidate(ctx: AppContext, candidateId: num
       market: ctx.market.name,
       title,
       search_tags: JSON.stringify(buildTags(title, cand.keyword, s.listing.bannedTerms, s.listing.maxTags)),
-      sale_price: Math.max(tp.price, cand.target_price ?? 0),
-      floor_price: tp.floor,
+      sale_price: plans[0]!.salePrice,
+      floor_price: plans[0]!.floor,
+      markup,
       images: JSON.stringify(images),
       status: 'draft',
       status_reason: images.length ? null : '이미지 필요(공급처 이미지 재사용 불가 → 직접 촬영/제작 이미지 업로드)',
@@ -42,8 +48,9 @@ export async function createDraftFromCandidate(ctx: AppContext, candidateId: num
     })
     .returningAll()
     .executeTakeFirstOrThrow();
+  await saveItems(ctx, row.id, plans);
   await ctx.db.updateTable('candidates').set({ status: 'listed', decided_at: now }).where('id', '=', cand.id).execute();
-  await audit(ctx, actor, 'listing.draft', String(row.id), { candidateId });
+  await audit(ctx, actor, 'listing.draft', String(row.id), { candidateId, markup, options: plans.map((p) => p.units) });
   return row;
 }
 
@@ -55,7 +62,14 @@ export async function updateDraft(ctx: AppContext, id: number, patch: { title?: 
   if (patch.title !== undefined) set.title = sanitizeTitle(patch.title, s.listing.bannedTerms, s.listing.maxTitleLength);
   if (patch.salePrice !== undefined) {
     if (patch.salePrice < l.floor_price) throw new ListingError(`하한가(${l.floor_price.toLocaleString()}원) 미만으로 설정할 수 없습니다`);
+    // 1개 옵션 가격으로 마크업을 역산해 묶음 옵션 가격도 같은 비율로
+    const markup = Math.max(0, patch.salePrice / l.floor_price - 1);
+    const sp = await ctx.db.selectFrom('source_products').selectAll().where('id', '=', l.source_product_id).executeTakeFirstOrThrow();
+    const plans = await planItems(ctx, sp, patch.title ?? l.title, markup, l.fee_rate_actual);
+    if (plans[0]) plans[0].salePrice = patch.salePrice;
+    if (l.status === 'draft' || l.status === 'rejected') await saveItems(ctx, l.id, plans);
     set.sale_price = patch.salePrice;
+    set.markup = markup;
   }
   if (patch.images !== undefined) {
     set.images = JSON.stringify(patch.images);
@@ -82,7 +96,10 @@ export async function validateListing(ctx: AppContext, l: ListingRow): Promise<s
     const missing = (['vendorUserId', 'outboundShippingPlaceCode', 'returnCenterCode', 'companyContactNumber', 'returnZipCode', 'returnAddress'] as const).filter((k) => !c[k]);
     if (missing.length) problems.push(`설정 > 쿠팡 정보 미입력: ${missing.join(', ')}`);
   }
-  const active = await ctx.db.selectFrom('listings').select((eb) => eb.fn.countAll<number>().as('n')).where('status', 'in', ['active', 'pending_approval']).executeTakeFirst();
+  // 실등록 모드에서는 모의(DRY_RUN) 등록분을 상한 계산에서 제외
+  let activeQ = ctx.db.selectFrom('listings').select((eb) => eb.fn.countAll<number>().as('n')).where('status', 'in', ['active', 'pending_approval']);
+  if (isLive(ctx.env, 'LIVE_LISTING')) activeQ = activeQ.where('dry_run', '=', false);
+  const active = await activeQ.executeTakeFirst();
   if (Number(active?.n ?? 0) >= s.listing.maxActiveListings && l.status === 'draft') problems.push(`운영 상품 수 상한(${s.listing.maxActiveListings}) 도달`);
   return problems;
 }
@@ -119,12 +136,15 @@ export async function registerListing(ctx: AppContext, id: number, actor = 'syst
     sourceHtml: d?.detailHtml,
     reuseAllowed: sp.image_reuse_allowed,
   });
+  // 옵션명은 현재 상품명 기준으로 다시 맞춘다(초안 수정 반영)
+  const items = await getItems(ctx, l);
+  const options = items.map((it) => ({ units: it.unit_qty, salePrice: it.sale_price, itemName: `${l!.title} ${it.unit_qty}개` }));
+  for (const it of items) if (it.id) await ctx.db.updateTable('listing_items').set({ item_name: `${l.title} ${it.unit_qty}개` }).where('id', '=', it.id).execute();
   const payload = buildCoupangPayload(s, {
     vendorId: ctx.env.COUPANG_VENDOR_ID ?? 'A00000000',
     title: l.title,
     categoryCode,
-    salePrice: l.sale_price,
-    originalPrice: Math.round(l.sale_price * s.pricing.originalPriceMultiplier),
+    options,
     stock: Math.min(sp.stock ?? 999, 999),
     images,
     detailHtml,
@@ -162,6 +182,11 @@ export async function registerListing(ctx: AppContext, id: number, actor = 'syst
 
 /** 심사 상태 추적 → 승인 시 vendorItemId 확보·active */
 export async function refreshListingStatuses(ctx: AppContext): Promise<{ approved: number; rejected: number }> {
+  // 실등록으로 전환되면 모의 등록분은 정리(실제 쿠팡에 없는 상품)
+  if (isLive(ctx.env, 'LIVE_LISTING')) {
+    await ctx.db.updateTable('listings').set({ status: 'stopped', status_reason: '모의 등록분 정리(실운영 전환)', updated_at: ctx.clock.now() })
+      .where('dry_run', '=', true).where('status', 'in', ['active', 'pending_approval', 'paused']).execute();
+  }
   const pending = await ctx.db.selectFrom('listings').selectAll().where('status', '=', 'pending_approval').execute();
   let approved = 0, rejected = 0;
   for (const l of pending) {
@@ -169,7 +194,15 @@ export async function refreshListingStatuses(ctx: AppContext): Promise<{ approve
     try {
       const st = await ctx.market.getProductStatus(l.seller_product_id);
       if (st.status === 'APPROVED' && st.vendorItemIds.length) {
-        await ctx.db.updateTable('listings').set({ status: 'active', vendor_item_id: st.vendorItemIds[0]!, listed_at: ctx.clock.now(), updated_at: ctx.clock.now() }).where('id', '=', l.id).execute();
+        // 옵션명으로 옵션ID 매칭(없으면 등록 순서)
+        const items = await ctx.db.selectFrom('listing_items').selectAll().where('listing_id', '=', l.id).orderBy('unit_qty').execute();
+        const named = st.items ?? [];
+        items.forEach((it, idx) => {
+          it.vendor_item_id = named.find((n) => n.itemName === it.item_name)?.vendorItemId ?? st.vendorItemIds[idx] ?? null;
+        });
+        for (const it of items) await ctx.db.updateTable('listing_items').set({ vendor_item_id: it.vendor_item_id }).where('id', '=', it.id).execute();
+        const base = items.find((i) => i.unit_qty === 1)?.vendor_item_id ?? st.vendorItemIds[0]!;
+        await ctx.db.updateTable('listings').set({ status: 'active', vendor_item_id: base, listed_at: ctx.clock.now(), price_set_at: ctx.clock.now(), updated_at: ctx.clock.now() }).where('id', '=', l.id).execute();
         approved++;
         await ctx.notifications.notify('info', '상품 판매 시작', `${l.title} (${l.sale_price.toLocaleString()}원)`, { path: `/listings` });
       } else if (st.status === 'REJECTED') {
@@ -198,7 +231,12 @@ export async function quoteSourceItem(ctx: AppContext, source: string, sourceIte
   await upsertSourceProduct(ctx, source, d);
   const tp = targetPrice(s, { cost: d.price, shipping: d.shippingFee, categoryPath: d.categoryPath, inputVatDeductible: d.taxInvoice, minResalePrice: d.minResalePrice });
   const title = sanitizeTitle(d.title, s.listing.bannedTerms, s.listing.maxTitleLength);
+  const spRow = await ctx.db.selectFrom('source_products').selectAll().where('source', '=', source).where('source_item_id', '=', d.sourceItemId).executeTakeFirstOrThrow();
+  const plans = tp.feasible ? await planItems(ctx, spRow, title, s.pricing.defaultMarkup) : [];
+  const { computeProfit } = await import('../pricing/pricing.js');
   return {
+    options: plans.map((p) => ({ units: p.units, itemName: p.itemName, salePrice: p.salePrice, floor: p.floor,
+      profit: computeProfit(s, p.salePrice, { cost: d.price * p.units, shipping: d.shippingPerUnit ? d.shippingFee * p.units : d.shippingFee, categoryPath: d.categoryPath, inputVatDeductible: d.taxInvoice }).profit })),
     source,
     sourceItemId: d.sourceItemId,
     sourceUrl: d.url,
@@ -209,8 +247,9 @@ export async function quoteSourceItem(ctx: AppContext, source: string, sourceIte
     minResalePrice: d.minResalePrice ?? null,
     suggestedTitle: title,
     suggestedTags: buildTags(title, '', s.listing.bannedTerms, s.listing.maxTags),
-    salePrice: tp.feasible ? tp.price : null,
-    profit: tp.breakdown,
+    salePrice: plans[0]?.salePrice ?? null,
+    floorPrice: tp.feasible ? tp.floor : null,
+    profit: plans[0] ? (await import('../pricing/pricing.js')).computeProfit(s, plans[0].salePrice, { cost: d.price, shipping: d.shippingFee, categoryPath: d.categoryPath, inputVatDeductible: d.taxInvoice }) : null,
     images: d.imageReuseAllowed ? d.images : [],
     imageReuseAllowed: d.imageReuseAllowed,
     prepDays: (d.prepDays ?? 1) + s.listing.shippingBufferDays,
@@ -232,6 +271,9 @@ export async function linkExistingListing(
   const s = await ctx.settings.get();
   const vendorItemId = input.vendorItemId.trim();
   if (!/^\d+$/.test(vendorItemId) && !ctx.env.DEMO_MODE && ctx.env.MARKET_ADAPTER === 'coupang') throw new ListingError('옵션ID(vendorItemId)는 숫자입니다. Wing > 상품조회/수정에서 확인하세요');
+  const { findByVendorItem } = await import('./items.js');
+  const dupItem = await findByVendorItem(ctx, vendorItemId);
+  if (dupItem && !['stopped', 'rejected'].includes(dupItem.listing.status)) throw new ListingError(`이미 연결된 옵션ID입니다(상품 #${dupItem.listing.id})`);
   const dup = await ctx.db.selectFrom('listings').select('id').where('vendor_item_id', '=', vendorItemId).where('status', 'not in', ['stopped', 'rejected']).executeTakeFirst();
   if (dup) throw new ListingError(`이미 연결된 옵션ID입니다(상품 #${dup.id})`);
   const src = ctx.sources.get(input.source);
@@ -254,6 +296,8 @@ export async function linkExistingListing(
       search_tags: JSON.stringify([]),
       sale_price: input.salePrice,
       floor_price: floor,
+      markup: Math.max(0, input.salePrice / floor - 1),
+      price_set_at: now,
       images: JSON.stringify(d.imageReuseAllowed ? d.images : []),
       status: 'active',
       status_reason: '기존 쿠팡 상품 연결',

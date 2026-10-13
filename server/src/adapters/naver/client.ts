@@ -1,12 +1,11 @@
 import { createHmac } from 'node:crypto';
 import type { Logger } from '../../lib/logger.js';
 import { HttpError, RateLimiter, retry } from '../../lib/util.js';
-import type { MarketDataProvider, MarketSearchResult, RelatedKeyword } from '../../ports/misc.js';
-import type { SourceAdapter, SourceProductDetail, SourceProductSummary } from '../../ports/source.js';
+import type { RelatedKeyword } from '../../ports/misc.js';
 
 /**
  * 네이버 공식 API (확인 2026-10-13)
- * - 쇼핑 검색: GET https://openapi.naver.com/v1/search/shop.json (25,000회/일, display≤100)
+ * - 쇼핑 검색 API는 2026-07-31 종료(호출 시 404 SE05) → 사용하지 않음. 시장가는 11번가·쿠팡 파트너스로 대체
  * - 데이터랩 통합검색어 트렌드: POST /v1/datalab/search (1,000회/일, 상대값)
  * - 검색광고 키워드도구: GET https://api.searchad.naver.com/keywordstool (HMAC)
  *   2025-09 광고계정 통합 이후 키는 '네이버 광고주센터(ads.naver.com)'에서 발급·확인 (릴리스노트 2026-07-02, 확인 2026-10-13)
@@ -21,7 +20,7 @@ export interface NaverOptions {
   fetchImpl?: typeof fetch;
 }
 
-export class NaverClient implements MarketDataProvider {
+export class NaverClient {
   private readonly limiter = new RateLimiter(5);
   /**
    * 키워드도구(RelKwdStat)는 다른 API 대비 1/5~1/6 속도 제한, IP 단위로도 제한.
@@ -56,23 +55,6 @@ export class NaverClient implements MarketDataProvider {
       if (!res.ok) throw new HttpError(res.status, `naver ${path} ${res.status}`);
       return res.json();
     }, { attempts: 2, retryable: (e) => e instanceof HttpError && (e.status === 429 || e.status >= 500) });
-  }
-
-  async shoppingSearch(keyword: string): Promise<MarketSearchResult | null> {
-    const d = await this.openapi('GET', '/v1/search/shop.json', { query: keyword, display: '100', start: '1', sort: 'sim', exclude: 'used:rental:cbshop' });
-    if (!d) return null;
-    return {
-      total: Number(d.total) || 0,
-      items: (d.items ?? []).map((it: any) => ({
-        title: String(it.title ?? '').replace(/<[^>]+>/g, ''),
-        price: Number(it.lprice) || 0,
-        mall: String(it.mallName ?? ''),
-        productId: String(it.productId ?? ''),
-        link: String(it.link ?? ''),
-        image: it.image ? String(it.image) : undefined,
-        productType: it.productType ? Number(it.productType) : undefined,
-      })),
-    };
   }
 
   async weeklyTrend(keyword: string, weeks: number): Promise<number[] | null> {
@@ -129,57 +111,14 @@ export class NaverClient implements MarketDataProvider {
     return out;
   }
 
+  async keywordStats(hints: string[]): Promise<RelatedKeyword[] | null> {
+    if (!this.opts.searchAd) return null;
+    return this.keywordTool(hints.slice(0, 5));
+  }
+
   async relatedKeywords(seed: string): Promise<RelatedKeyword[] | null> {
     if (!this.opts.searchAd) return null;
     const self = seed.replace(/\s+/g, '');
     return (await this.keywordTool([seed])).filter((k) => k.keyword.replace(/\s+/g, '') !== self);
-  }
-}
-
-/**
- * 네이버 쇼핑 상품을 공급처로 사용(구매대행 작업함 전용).
- * 상세 API가 없어 검색 결과에서 productId로 가격을 재확인한다.
- * 타 판매자 이미지는 저작물이므로 imageReuseAllowed=false (직접 제작 이미지 필요).
- */
-export class NaverShoppingSource implements SourceAdapter {
-  readonly id = 'naver';
-  readonly displayName = '네이버쇼핑';
-  readonly capabilities = { search: true, detail: true, apiOrder: false, apiTracking: false };
-  private cache = new Map<string, { title: string; summary: SourceProductSummary }>();
-  constructor(private readonly client: NaverClient) {}
-
-  async search(keyword: string, opts: { limit?: number; minPrice?: number; maxPrice?: number } = {}): Promise<SourceProductSummary[]> {
-    const r = await this.client.shoppingSearch(keyword);
-    if (!r) return [];
-    const list = r.items
-      .filter((i) => i.productId && i.price > 0)
-      .filter((i) => (!opts.minPrice || i.price >= opts.minPrice) && (!opts.maxPrice || i.price <= opts.maxPrice))
-      .slice(0, opts.limit ?? 20)
-      .map((i) => ({ sourceItemId: i.productId, title: i.title, url: i.link, imageUrl: i.image, price: i.price, shippingFee: 3000 }));
-    for (const s of list) this.cache.set(s.sourceItemId, { title: s.title, summary: s });
-    return list;
-  }
-
-  async getProduct(productId: string, hint?: { title?: string }): Promise<SourceProductDetail | null> {
-    const title = hint?.title ?? this.cache.get(productId)?.title;
-    if (!title) return null;
-    const r = await this.client.shoppingSearch(title);
-    const hit = r?.items.find((i) => i.productId === productId);
-    if (!hit) return { sourceItemId: productId, title, url: '', price: 0, shippingFee: 0, status: 'ended', stock: null, imageReuseAllowed: false, images: [], taxInvoice: false };
-    return {
-      sourceItemId: productId,
-      title: hit.title,
-      url: hit.link,
-      imageUrl: hit.image,
-      price: hit.price,
-      // 배송비는 검색 API에 없음 → 보수적으로 3,000원 가정(구매 시 실제값 입력으로 보정)
-      shippingFee: 3000,
-      status: 'active',
-      stock: null,
-      imageReuseAllowed: false,
-      images: [],
-      // 소매 구매는 현금영수증/카드 매입 → 세금계산서 없다고 보수적으로 가정
-      taxInvoice: false,
-    };
   }
 }

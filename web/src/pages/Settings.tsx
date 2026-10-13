@@ -9,10 +9,16 @@ type Settings = Record<string, any>;
 const QUICK: Array<{ path: string; label: string; type: 'number' | 'text' | 'select' | 'list' | 'percent'; options?: string[]; help?: string }> = [
   { path: 'orders.mode', label: '발주 모드', type: 'select', options: ['auto', 'approve'], help: 'auto: API 가능한 공급처는 자동 발주' },
   { path: 'selection.mode', label: '선정 모드', type: 'select', options: ['auto', 'manual_approve'], help: 'auto: 조건 통과 상품 자동 등록' },
-  { path: 'selection.seedKeywords', label: '시드 키워드(줄바꿈 구분)', type: 'list' },
+  { path: 'selection.keywordMode', label: '키워드 모드', type: 'select', options: ['auto', 'manual'], help: 'auto: API 데이터로 키워드 자동 발굴·순환(후보 > 키워드 풀)' },
+  { path: 'discovery.allowTopCategories', label: '발굴 대상 대분류(줄바꿈, 도매꾹 분류명)', type: 'list', help: '기본: 인증·허가가 필요 없는 분류만' },
+  { path: 'discovery.keywordsPerRun', label: '선정 1회당 키워드 수', type: 'number' },
+  { path: 'selection.seedKeywords', label: '고정 키워드(줄바꿈, 선택)', type: 'list', help: '항상 함께 쓸 키워드. 비워도 자동 발굴로 동작' },
   { path: 'selection.autoListPerRun', label: '1회 자동 등록 최대 수', type: 'number' },
   { path: 'listing.maxActiveListings', label: '운영 상품 수 상한', type: 'number' },
   { path: 'pricing.minProfitKrw', label: '최소 순이익(원)', type: 'number' },
+  { path: 'pricing.defaultMarkup', label: '시작 마크업(%) — 경쟁가 모를 때', type: 'percent' },
+  { path: 'pricing.maxMarkup', label: '마크업 상한(%)', type: 'percent' },
+  { path: 'optimizer.enabled', label: '가격 자동 최적화', type: 'select', options: ['true', 'false'], help: '판매 결과로 매일 가격 조정' },
   { path: 'pricing.minMarginRate', label: '최소 순이익률(%)', type: 'percent' },
   { path: 'selection.minSupplyPrice', label: '공급가 하한(원)', type: 'number' },
   { path: 'orders.perOrderMaxCost', label: '건당 발주 상한(원)', type: 'number' },
@@ -55,7 +61,7 @@ export function SettingsPage() {
     let patch: any = {};
     for (const q of QUICK) {
       const raw = vals[q.path] ?? '';
-      const v = q.type === 'number' ? Number(raw) : q.type === 'percent' ? Number(raw) / 100 : q.type === 'list' ? raw.split('\n').map((s) => s.trim()).filter(Boolean) : raw;
+      const v = q.type === 'number' ? Number(raw) : q.type === 'percent' ? Number(raw) / 100 : q.type === 'list' ? raw.split('\n').map((s) => s.trim()).filter(Boolean) : raw === 'true' ? true : raw === 'false' ? false : raw;
       patch = deepMerge(patch, toPatch(q.path, v));
     }
     await api.put('/api/settings', patch);

@@ -51,6 +51,12 @@ export interface SourceProductDetail extends SourceProductSummary {
   manufacturer?: string;
   origin?: string;
   sellerScore?: number;
+  /** 최소 주문 수량(위탁은 1이어야 함) */
+  minOrderQty?: number;
+  /** 배송비가 수량만큼 늘어나는지(true면 묶음 옵션 이점 없음) */
+  shippingPerUnit?: boolean;
+  /** 한 상자에 함께 보낼 수 있는 최대 수량 */
+  maxPerBox?: number | null;
   options?: Array<{ name: string; price: number; stock: number | null }>;
 }
 
@@ -76,6 +82,14 @@ export interface SourceTracking {
   trackingNo: string;
 }
 
+export interface SourceCategory {
+  code: string;
+  /** 상위>하위 전체 경로 이름 */
+  path: string;
+  name: string;
+  leaf: boolean;
+}
+
 export interface SourceAdapter {
   readonly id: string;
   readonly displayName: string;
@@ -84,4 +98,8 @@ export interface SourceAdapter {
   getProduct(sourceItemId: string, hint?: { title?: string }): Promise<SourceProductDetail | null>;
   placeOrder?(req: SourceOrderRequest): Promise<SourceOrderResult>;
   getTracking?(sourceOrderId: string): Promise<SourceTracking | null>;
+  /** 키워드 자동 발굴용: 카테고리 목록 */
+  listCategories?(): Promise<SourceCategory[]>;
+  /** 키워드 자동 발굴용: 카테고리 인기 상품 */
+  popularItems?(categoryCode: string, limit: number): Promise<SourceProductSummary[]>;
 }

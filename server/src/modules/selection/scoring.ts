@@ -13,19 +13,21 @@ export interface KeywordSignals {
   volumeSlope?: number;
   /** 구글 트렌드 주간 값(보조) */
   googleTrend?: number[];
-  naverLowest?: number;
-  naverCount?: number;
-  naverMalls?: number;
+  /** 오픈마켓(11번가 등) 최저가·상품 수·판매처 수 */
+  marketLowest?: number;
+  marketCount?: number;
+  marketSellers?: number;
+  marketSource?: string;
   /** 쿠팡 검색 상위 최저가·로켓 비율(쿠팡 파트너스) */
   coupangLowest?: number;
   coupangRocketRatio?: number;
   coupangSalesEst?: number;
 }
 
-/** 가격 경쟁 기준가: 쿠팡 판매이므로 쿠팡 최저가 우선, 없으면 네이버 최저가 */
-export function marketReference(sig: KeywordSignals): { price: number; source: '쿠팡' | '네이버' } | null {
+/** 가격 경쟁 기준가: 쿠팡 판매이므로 쿠팡 최저가 우선, 없으면 오픈마켓(11번가) 최저가 */
+export function marketReference(sig: KeywordSignals): { price: number; source: string } | null {
   if (sig.coupangLowest && sig.coupangLowest > 0) return { price: sig.coupangLowest, source: '쿠팡' };
-  if (sig.naverLowest && sig.naverLowest > 0) return { price: sig.naverLowest, source: '네이버' };
+  if (sig.marketLowest && sig.marketLowest > 0) return { price: sig.marketLowest, source: sig.marketSource ?? '오픈마켓' };
   return null;
 }
 
@@ -68,12 +70,25 @@ export function evaluateGates(
   d: SourceProductDetail,
   tp: TargetPrice,
   sig: KeywordSignals,
-  opts: { apiOrder: boolean },
+  opts: { apiOrder: boolean; keyword?: string; enforceCategory?: boolean },
 ): GateResult[] {
   const sel = s.selection;
   const text = `${d.title} ${d.categoryPath ?? ''}`;
   const g: GateResult[] = [];
   g.push({ name: 'status', hard: true, pass: d.status === 'active', detail: d.status });
+  if (opts.keyword) {
+    const n = (x: string) => x.replace(/\s+/g, '').toLowerCase();
+    const title = n(d.title);
+    const words = opts.keyword.split(/\s+/).filter(Boolean);
+    const rel = title.includes(n(opts.keyword)) || words.every((w) => title.includes(n(w)));
+    g.push({ name: 'relevance', hard: true, pass: rel, detail: rel ? '키워드 일치' : `상품명에 '${opts.keyword}' 없음` });
+  }
+  if (opts.enforceCategory && s.discovery.allowTopCategories.length) {
+    const top = (d.categoryPath ?? '').split('>')[0] ?? '';
+    const ok = !top || s.discovery.allowTopCategories.includes(top);
+    g.push({ name: 'allowedCategory', hard: true, pass: ok, detail: ok ? top || '미상' : `허용 안 된 분류: ${top}` });
+  }
+  g.push({ name: 'moq', hard: true, pass: (d.minOrderQty ?? 1) <= 1, detail: `최소주문 ${d.minOrderQty ?? 1}개` });
   g.push({ name: 'stock', hard: true, pass: d.stock === null || d.stock >= sel.minStock, detail: `재고 ${d.stock ?? '미상'}` });
   g.push({ name: 'supplyPrice', hard: true, pass: d.price >= sel.minSupplyPrice && d.price <= sel.maxSupplyPrice, detail: `공급가 ${d.price}` });
   const blocked = sel.blockedKeywords.filter((k) => k && text.includes(k));
@@ -113,13 +128,19 @@ export function scoreCandidate(
   if (slope !== undefined) parts.trend = (slope + 1) / 2;
   const gSlope = trendSlope(sig.googleTrend, 4);
   if (gSlope !== undefined) parts.googleTrend = (gSlope + 1) / 2;
-  if (sig.naverCount !== undefined) parts.competition = 1 - clamp(Math.log10(sig.naverCount + 1) / 6);
+  if (sig.marketCount !== undefined) parts.competition = 1 - clamp(Math.log10(sig.marketCount + 1) / 6);
   const ref = marketReference(sig);
   if (ref && tp.feasible) parts.priceAdvantage = clamp(((ref.price - tp.price) / ref.price) * 5);
   if (sig.coupangRocketRatio !== undefined) parts.rocketCompetition = 1 - clamp(sig.coupangRocketRatio);
   if (tp.feasible && tp.breakdown) parts.margin = clamp(tp.breakdown.margin / 0.3);
+  // 이익 잠재력: 개당 이익(원) × 수요(월 검색량). 이익 5천원·검색 1만이면 약 0.77
+  if (tp.feasible && tp.breakdown && sig.searchVolume !== undefined) {
+    parts.profitPotential = clamp(Math.log10(Math.max(1, tp.breakdown.profit) * Math.max(1, sig.searchVolume) / 1000) / 6);
+  }
   parts.supplier = clamp((d.sellerScore !== undefined ? d.sellerScore / 100 : 0.7) * 0.7 + (opts.apiOrder ? 0.3 : 0));
   if (sig.coupangSalesEst !== undefined) parts.coupangSales = clamp(Math.log10(sig.coupangSalesEst + 1) / 4);
+  // 계산 불가(NaN·무한대) 신호는 제외 — 외부 데이터 이상이 점수 전체를 망치지 않도록
+  for (const k of Object.keys(parts)) if (!Number.isFinite(parts[k]!)) delete parts[k];
   let num = 0, den = 0;
   for (const [k, v] of Object.entries(parts)) {
     const wk = (w as Record<string, number>)[k] ?? 0;

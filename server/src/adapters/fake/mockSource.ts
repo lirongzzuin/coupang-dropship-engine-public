@@ -10,6 +10,8 @@ export class MockSource implements SourceAdapter {
   orders = new Map<string, { req: SourceOrderRequest; tracking?: SourceTracking }>();
   failNext = new Map<string, number>();
   needsPayment = false;
+  categories: Array<{ code: string; name: string; path: string; leaf: boolean }> = [];
+  popular = new Map<string, SourceProductSummary[]>();
   private seq = 0;
 
   constructor(readonly id = 'mock', opts: { apiOrder?: boolean } = {}) {
@@ -53,6 +55,14 @@ export class MockSource implements SourceAdapter {
       .filter((p) => (!opts.minPrice || p.price >= opts.minPrice) && (!opts.maxPrice || p.price <= opts.maxPrice))
       .slice(0, opts.limit ?? 20)
       .map(({ sourceItemId, title, url, imageUrl, price, shippingFee }) => ({ sourceItemId, title, url, imageUrl, price, shippingFee }));
+  }
+
+  async listCategories() {
+    return this.categories;
+  }
+
+  async popularItems(code: string, limit: number): Promise<SourceProductSummary[]> {
+    return (this.popular.get(code) ?? []).slice(0, limit);
   }
 
   async getProduct(id: string): Promise<SourceProductDetail | null> {

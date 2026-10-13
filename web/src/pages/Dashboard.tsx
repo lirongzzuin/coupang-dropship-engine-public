@@ -18,11 +18,13 @@ interface Dash {
   dryRun: boolean;
   live: Record<string, boolean>;
 }
+interface LP { listingId: number; title: string; salePrice: number; markup: number; status: string; orders: number; revenue: number; expectedProfit: number; settledProfit: number }
 interface Noti { id: number; level: string; title: string; body: string; link: string | null; at: string }
 
 export function Dashboard() {
   const d = useLoad<Dash>('/api/dashboard');
   const n = useLoad<Noti[]>('/api/notifications');
+  const lp = useLoad<LP[]>('/api/finance/listings?days=30');
   const act = useAction();
   const x = d.data;
   return (
@@ -73,6 +75,16 @@ export function Dashboard() {
           </Card>
         </>
       )}
+      <Card title="상품별 이익(최근 30일)">
+        {(lp.data ?? []).length === 0 && <div className="muted">아직 주문이 없습니다</div>}
+        {(lp.data ?? []).slice(0, 10).map((x) => (
+          <div key={x.listingId} className="event">
+            <b>{x.title.slice(0, 28)}</b> <span className="muted small">마크업 {Math.round(x.markup * 100)}%</span>
+            <div className="small">{x.orders}건 · 매출 {won(x.revenue)} · 예상이익 <b>{won(x.expectedProfit)}</b>{x.settledProfit ? ` · 확정 ${won(x.settledProfit)}` : ''}</div>
+          </div>
+        ))}
+        <div className="muted small">가격은 매일 판매 결과에 따라 자동 조정됩니다(잘 팔리면 인상, 안 팔리면 인하).</div>
+      </Card>
       <Card title="최근 알림">
         {(n.data ?? []).slice(0, 15).map((m) => (
           <div key={m.id} className={`noti ${m.level}`}>

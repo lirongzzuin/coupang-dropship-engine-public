@@ -41,8 +41,15 @@ export class DryRunMarket implements MarketPort {
   listRevenue: MarketPort['listRevenue'] = (a, b) => this.inner.listRevenue(a, b);
   listInquiries: MarketPort['listInquiries'] = (a, b) => this.inner.listInquiries(a, b);
 
+  /** 모의 등록 상품의 옵션명(재시작하면 사라짐 → 옵션 1개로 처리) */
+  private dryItems = new Map<string, string[]>();
+
   getProductStatus: MarketPort['getProductStatus'] = async (id) => {
-    if (id.startsWith('DRY-')) return { sellerProductId: id, status: 'APPROVED', rawStatus: 'DRY_RUN', vendorItemIds: [`DRYVI-${id.slice(4)}`] };
+    if (id.startsWith('DRY-')) {
+      const names = this.dryItems.get(id) ?? [''];
+      const items = names.map((n, i) => ({ vendorItemId: `DRYVI-${id.slice(4)}-${i + 1}`, itemName: n }));
+      return { sellerProductId: id, status: 'APPROVED', rawStatus: 'DRY_RUN', vendorItemIds: items.map((x) => x.vendorItemId), items };
+    }
     return this.inner.getProductStatus(id);
   };
 
@@ -59,7 +66,9 @@ export class DryRunMarket implements MarketPort {
   async createProduct(payload: unknown): Promise<{ sellerProductId: string; dryRun?: boolean }> {
     if (this.live('LIVE_LISTING')) return this.inner.createProduct(payload);
     this.simulated('createProduct', { name: (payload as any)?.sellerProductName });
-    return { sellerProductId: `DRY-${Date.now()}${++this.seq}`, dryRun: true };
+    const id = `DRY-${Date.now()}${++this.seq}`;
+    this.dryItems.set(id, ((payload as any)?.items ?? []).map((it: any) => String(it.itemName ?? '')));
+    return { sellerProductId: id, dryRun: true };
   }
 
   async updatePrice(id: string, price: number): Promise<MarketResult> {

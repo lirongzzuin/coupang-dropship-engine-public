@@ -12,8 +12,8 @@ export interface PayloadInput {
   vendorId: string;
   title: string;
   categoryCode: string;
-  salePrice: number;
-  originalPrice: number;
+  /** 판매 옵션(묶음 수량별) */
+  options: Array<{ units: number; salePrice: number; itemName: string }>;
   stock: number;
   images: string[];
   detailHtml: string;
@@ -56,22 +56,22 @@ export function buildCoupangPayload(s: Settings, p: PayloadInput): Record<string
     outboundShippingPlaceCode: c.outboundShippingPlaceCode,
     vendorUserId: c.vendorUserId,
     requested: true,
-    items: [
-      {
-        itemName: truncate(p.title, 150),
-        originalPrice: ten(Math.max(p.originalPrice, p.salePrice)),
-        salePrice: ten(p.salePrice),
-        maximumBuyCount: Math.max(0, Math.min(99999, p.stock)),
+    items: p.options.map((o) => ({
+        itemName: truncate(o.itemName, 150),
+        originalPrice: ten(Math.max(o.salePrice * s.pricing.originalPriceMultiplier, o.salePrice)),
+        salePrice: ten(o.salePrice),
+        maximumBuyCount: Math.max(0, Math.min(99999, Math.floor(p.stock / o.units))),
         maximumBuyForPerson: s.listing.maxBuyPerPerson,
         maximumBuyForPersonPeriod: 1,
         outboundShippingTimeDay: prepDays,
-        unitCount: 1,
+        // 단위수량: 쿠팡이 개당 단가를 계산·표시(묶음은 개당 가격이 낮아 유리)
+        unitCount: o.units,
         adultOnly: 'EVERYONE',
         taxType: 'TAX',
         parallelImported: 'NOT_PARALLELIMPORTED',
         overseasPurchased: 'NOT_OVERSEAS_PURCHASED',
         pccNeeded: false,
-        externalVendorSku: `SP-${p.sourceProductId}`,
+        externalVendorSku: `SP-${p.sourceProductId}-${o.units}`,
         // GTIN 정책(2026-08-01 API 적용): 공식 식별자가 없는 상품에 임의 번호 입력 금지
         barcode: '',
         emptyBarcode: true,
@@ -82,11 +82,10 @@ export function buildCoupangPayload(s: Settings, p: PayloadInput): Record<string
         searchTags: p.tags.slice(0, 20),
         images: p.images.slice(0, 10).map((url, i) => ({ imageOrder: i, imageType: i === 0 ? 'REPRESENTATION' : 'DETAIL', vendorPath: url })),
         notices: buildNotices(p.meta, p.detail, c.companyContactNumber),
-        attributes: [{ attributeTypeName: '수량', attributeValueName: '1개' }],
+        attributes: [{ attributeTypeName: '수량', attributeValueName: `${o.units}개` }],
         contents: [{ contentsType: 'HTML', contentDetails: [{ content: p.detailHtml, detailType: 'TEXT' }] }],
         offerCondition: 'NEW',
-      },
-    ],
+      })),
   };
 }
 

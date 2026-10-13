@@ -395,7 +395,8 @@ describe('동기화·판매 관리', () => {
     expect(r.repriced).toBe(1);
     let l = await h.ctx.db.selectFrom('listings').selectAll().where('id', '=', listing.id).executeTakeFirstOrThrow();
     expect(l.sale_price).toBeGreaterThan(24000);
-    expect(l.sale_price).toBe(l.floor_price);
+    expect(l.sale_price).toBeGreaterThanOrEqual(l.floor_price);
+    expect(l.sale_price % 1000).toBe(900); // 끝자리 900원
     expect(h.market.items.get(vendorItemId)!.price).toBe(l.sale_price);
 
     h.apiSource.products.get(d.sourceItemId)!.status = 'soldout';
@@ -423,7 +424,7 @@ describe('동기화·판매 관리', () => {
 
   it('판매 부진: 하한가 1회 인하 → 이후에도 0건이면 판매종료', async () => {
     h = await makeHarness({ live: true });
-    const { listing } = await seedActiveListing(h, { salePrice: 30000 });
+    const { listing } = await seedActiveListing(h, { salePrice: 30000, markup: 0.3 });
     h.clock.advanceMinutes(60 * 24 * 15);
     expect((await reviewSlowListings(h.ctx)).lowered).toBe(1);
     expect((await h.ctx.db.selectFrom('listings').select('sale_price').where('id', '=', listing.id).executeTakeFirstOrThrow()).sale_price).toBe(24000); // -20% 가드

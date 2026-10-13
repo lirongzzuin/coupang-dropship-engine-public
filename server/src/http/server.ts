@@ -14,7 +14,7 @@ import { JOBS } from '../jobs/scheduler.js';
 import { maskAddress, maskName, maskPhone } from '../lib/logger.js';
 import { errMessage } from '../lib/util.js';
 import { answerInquiry } from '../modules/cs/service.js';
-import { monthlyCsv } from '../modules/finance/service.js';
+import { listingProfit, monthlyCsv } from '../modules/finance/service.js';
 import { pauseListing, resumeListing } from '../modules/listing/control.js';
 import { linkExistingListing, ListingError, quoteSourceItem, registerListing, updateDraft, validateListing } from '../modules/listing/service.js';
 import { importCoupangSalesCsv } from '../modules/marketdata/csvImport.js';
@@ -23,6 +23,7 @@ import { ACTION_STATUSES, EXCEPTION_STATUSES, ORDER_STATUSES, type OrderStatus, 
 import { computeProfit } from '../modules/pricing/pricing.js';
 import { dashboard } from '../modules/reports/service.js';
 import { decideCandidate, runSelection } from '../modules/selection/service.js';
+import { discoverKeywords, setKeywordStatus } from '../modules/keywords/service.js';
 import { AuthError, AuthService } from './auth.js';
 
 const COOKIE = 'sid';
@@ -201,11 +202,28 @@ export async function buildServer(ctx: AppContext, scheduler: Scheduler | null, 
       return runSelection(ctx, { keywords: b.keywords?.length ? b.keywords : undefined });
     });
 
+    // ── 키워드 풀(자동 발굴) ──
+    api.get('/api/keywords', async (req) => {
+      const q = z.object({ status: z.string().optional() }).parse(req.query);
+      let query = ctx.db.selectFrom('keywords').selectAll().orderBy('score', 'desc').limit(500);
+      if (q.status) query = query.where('status', '=', q.status);
+      const rows = await query.execute();
+      const counts = await ctx.db.selectFrom('keywords').select(['status', (eb) => eb.fn.countAll<number>().as('n')]).groupBy('status').execute();
+      return { rows, counts: Object.fromEntries(counts.map((c) => [c.status, Number(c.n)])) };
+    });
+    api.post('/api/keywords/discover', async () => discoverKeywords(ctx));
+    api.post('/api/keywords/status', async (req) => {
+      const b = z.object({ keyword: z.string().min(1).max(50), status: z.enum(['active', 'pinned', 'paused', 'blocked']) }).parse(req.body);
+      await setKeywordStatus(ctx, b.keyword.trim(), b.status);
+      await audit(ctx, actor(req), 'keyword.status', b.keyword, b);
+      return { ok: true };
+    });
+
     // ── 등록 상품 ──
     api.get('/api/listings', async (req) => {
       const q = z.object({ status: z.string().optional() }).parse(req.query);
       let query = ctx.db.selectFrom('listings').innerJoin('source_products', 'source_products.id', 'listings.source_product_id')
-        .select(['listings.id', 'listings.title', 'listings.status', 'listings.status_reason', 'listings.sale_price', 'listings.floor_price', 'listings.images', 'listings.vendor_item_id', 'listings.seller_product_id', 'listings.category_code', 'listings.category_name', 'listings.search_tags', 'listings.dry_run', 'listings.listed_at', 'listings.updated_at',
+        .select(['listings.id', 'listings.title', 'listings.status', 'listings.status_reason', 'listings.sale_price', 'listings.floor_price', 'listings.markup', 'listings.fee_rate_actual', 'listings.images', 'listings.vendor_item_id', 'listings.seller_product_id', 'listings.category_code', 'listings.category_name', 'listings.search_tags', 'listings.dry_run', 'listings.listed_at', 'listings.updated_at',
           'source_products.source', 'source_products.price as source_price', 'source_products.shipping_fee as source_shipping', 'source_products.stock as source_stock', 'source_products.url as source_url', 'source_products.image_reuse_allowed'])
         .orderBy('listings.id', 'desc').limit(300);
       if (q.status) query = query.where('listings.status', '=', q.status);
@@ -287,6 +305,10 @@ export async function buildServer(ctx: AppContext, scheduler: Scheduler | null, 
       const q = z.object({ month: z.string() }).parse(req.query);
       const csv = await monthlyCsv(ctx, q.month);
       return reply.header('Content-Type', 'text/csv; charset=utf-8').header('Content-Disposition', `attachment; filename="profit-${q.month}.csv"`).send(csv);
+    });
+    api.get('/api/finance/listings', async (req) => {
+      const q = z.object({ days: z.coerce.number().int().min(1).max(365).default(30) }).parse(req.query);
+      return listingProfit(ctx, q.days);
     });
     api.get('/api/jobs', async () => {
       const runs = await ctx.db.selectFrom('job_runs').selectAll().orderBy('id', 'desc').limit(100).execute();

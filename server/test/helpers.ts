@@ -29,6 +29,13 @@ export class FakeMarketData implements MarketDataProvider {
   related = new Map<string, Array<{ keyword: string; volume: number; competition: string }>>();
   google = new Map<string, number[]>();
   coupang = new Map<string, { lowest: number; median: number; rocketRatio: number; count: number }>();
+  /** 키워드도구 응답(힌트 → 해당 키워드·연관 키워드) */
+  stats = new Map<string, Array<{ keyword: string; volume: number; competition: string }>>();
+  statsCalls: string[][] = [];
+  async keywordStats(hints: string[]) {
+    this.statsCalls.push(hints);
+    return hints.flatMap((h) => this.stats.get(h) ?? []);
+  }
   async relatedKeywords(seed: string) {
     return this.related.get(seed) ?? null;
   }
@@ -109,7 +116,7 @@ export async function makeHarness(opts: { live?: boolean; env?: Record<string, s
 }
 
 /** 소스 상품 + 활성 상품(쿠팡 승인 완료 상태)을 바로 만들어 주문 테스트에 사용 */
-export async function seedActiveListing(h: TestHarness, opts: { source?: 'mockapi' | 'mockmanual'; itemId?: string; price?: number; salePrice?: number; stock?: number } = {}) {
+export async function seedActiveListing(h: TestHarness, opts: { source?: 'mockapi' | 'mockmanual'; itemId?: string; price?: number; salePrice?: number; stock?: number; markup?: number } = {}) {
   const src = opts.source === 'mockmanual' ? h.manualSource : h.apiSource;
   const itemId = opts.itemId ?? `I${Math.floor(Math.random() * 1e9)}`;
   const d = src.add({ sourceItemId: itemId, title: `수납 정리함 ${itemId}`, price: opts.price ?? 15000, stock: opts.stock ?? 50 });
@@ -125,6 +132,7 @@ export async function seedActiveListing(h: TestHarness, opts: { source?: 'mockap
       search_tags: JSON.stringify([]),
       sale_price: opts.salePrice ?? 30000,
       floor_price: 22000,
+      markup: opts.markup ?? 0,
       images: JSON.stringify(d.images),
       status: 'active',
       vendor_item_id: vendorItemId,

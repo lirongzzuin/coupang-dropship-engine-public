@@ -22,6 +22,8 @@ export interface CostInput {
   categoryPath?: string | null;
   /** 매입 세금계산서 수취 가능 여부 */
   inputVatDeductible?: boolean;
+  /** 정산에서 학습한 실제 수수료율(있으면 카테고리 표보다 우선) */
+  feeRate?: number | null;
 }
 
 export interface ProfitBreakdown {
@@ -53,7 +55,7 @@ export function fixedAllocation(settings: Settings): number {
 }
 
 export function computeProfit(settings: Settings, salePrice: number, input: CostInput): ProfitBreakdown {
-  const c = feeRateFor(settings, input.categoryPath);
+  const c = input.feeRate ?? feeRateFor(settings, input.categoryPath);
   const fv = settings.fees.feeVatRate;
   const r = settings.pricing.returnReserveRate;
   const deductible = input.inputVatDeductible ?? settings.pricing.inputVatDeductibleDefault;
@@ -87,7 +89,7 @@ export interface TargetPrice {
 }
 
 export function targetPrice(settings: Settings, input: CostInput & { minResalePrice?: number | null }): TargetPrice {
-  const c = feeRateFor(settings, input.categoryPath);
+  const c = input.feeRate ?? feeRateFor(settings, input.categoryPath);
   const fv = settings.fees.feeVatRate;
   const r = settings.pricing.returnReserveRate;
   const deductible = input.inputVatDeductible ?? settings.pricing.inputVatDeductibleDefault;
@@ -126,4 +128,67 @@ export function guardPriceChange(
   desired = desired > current ? roundUp(desired, unit) : Math.max(roundUp(desired, unit), roundUp(floor, unit));
   if (desired === current) return { price: null, reason: 'no-change' };
   return { price: desired, reason: desired > current ? 'raise' : 'lower' };
+}
+
+// ── 수익 극대화 ─────────────────────────────────────────────────
+
+/** 끝자리 가격: 1만원 이상은 ○,900원, 미만은 ○○90원으로 올림(항상 원래 가격 이상) */
+export function charmPrice(settings: Settings, price: number): number {
+  if (settings.pricing.charmEnding === 'none') return roundUp(price, Math.max(10, settings.pricing.roundUnit));
+  if (price >= 10000) return Math.ceil((price + 100) / 1000) * 1000 - 100;
+  return Math.ceil((price + 10) / 100) * 100 - 10;
+}
+
+/** 판매가 = 끝자리(하한가 × (1 + 마크업)) */
+export function priceFromMarkup(settings: Settings, floor: number, markup: number): number {
+  const m = Math.max(0, Math.min(settings.pricing.maxMarkup, markup));
+  return Math.max(floor, charmPrice(settings, floor * (1 + m)));
+}
+
+/**
+ * 시작 마크업: 경쟁 최저가를 알면 그보다 undercutRate 낮은 가격이 되도록(하한 미만이면 0),
+ * 모르면 defaultMarkup.
+ */
+export function initialMarkup(settings: Settings, floor: number, marketLowest?: number | null): number {
+  if (!marketLowest || marketLowest <= 0) return settings.pricing.defaultMarkup;
+  const m = (marketLowest * (1 - settings.pricing.undercutRate)) / floor - 1;
+  return Math.max(0, Math.min(settings.pricing.maxMarkup, Math.round(m * 1000) / 1000));
+}
+
+/** 경쟁가 상한을 넘지 않는 최대 마크업 */
+export function markupCapForMarket(settings: Settings, floor: number, marketLowest?: number | null): number {
+  if (!marketLowest || marketLowest <= 0) return settings.pricing.maxMarkup;
+  return Math.max(0, Math.min(settings.pricing.maxMarkup, (marketLowest * (1 - settings.pricing.undercutRate)) / floor - 1));
+}
+
+export interface BundleOption {
+  units: number;
+  floor: number;
+}
+
+/**
+ * 묶음 수량 옵션별 하한가. 공급처가 여러 개를 배송비 1회로 보낼 수 있을 때만 2개 이상 옵션을 만든다.
+ * shippingPerUnit=true(수량만큼 배송비 증가)면 묶음 이점이 없어 1개만.
+ */
+export function bundleOptions(
+  settings: Settings,
+  input: CostInput & { unitCost: number; shippingPerUnit?: boolean; maxPerBox?: number | null; stock?: number | null; minResalePrice?: number | null },
+): BundleOption[] {
+  const units = [...new Set([1, ...settings.pricing.bundleUnits])].sort((a, b) => a - b);
+  const out: BundleOption[] = [];
+  for (const n of units) {
+    if (n > 1) {
+      if (input.shippingPerUnit) continue;
+      if (input.maxPerBox && n > input.maxPerBox) continue;
+      if (input.stock !== null && input.stock !== undefined && input.stock < n * 5) continue;
+    }
+    const tp = targetPrice(settings, {
+      ...input,
+      cost: input.unitCost * n,
+      shipping: input.shippingPerUnit ? input.shipping * n : input.shipping,
+      minResalePrice: input.minResalePrice ? input.minResalePrice * n : null,
+    });
+    if (tp.feasible) out.push({ units: n, floor: tp.floor });
+  }
+  return out;
 }

@@ -13,7 +13,8 @@
 | `docs/research.md` | 쿠팡·공급처·네이버 API, 정책, 법규 조사(출처·확인일) |
 | `docs/feasibility.md` | 기능별 자동화 판정, 손익분기 표, 리스크 |
 | `docs/architecture.md` | 배포 결정, 모듈 구조, 상태머신, 변경 용이성 원칙 |
-| `docs/selection-model.md` | 상품 선정 게이트·점수 수식 |
+| `docs/selection-model.md` | 키워드 자동 발굴, 상품 선정 게이트·점수 수식 |
+| `docs/profit.md` | **수익 극대화**: 가격 자동 최적화, 묶음 옵션, 원가 절감, 수수료 학습 |
 | `docs/runbook.md` | **매일/매주 할 일, 장애 대응, 실운영 전환 절차** |
 | `docs/deploy.md` | **무료 운영 환경(Mac 홈서버) 설치·자동 업데이트·백업, 서버 대안** |
 
@@ -42,7 +43,7 @@ bash deploy/mac/install.sh      # 이 Mac에 1회 설치
 
 ## 개발
 ```bash
-pnpm test        # 서버 테스트 81개(단위·통합·E2E·HTTP·어댑터)
+pnpm test        # 서버 테스트 114개(단위·통합·E2E·HTTP·어댑터)
 pnpm typecheck
 pnpm dev         # 서버(tsx watch) — PGlite 내장 DB 사용, Docker 불필요
 pnpm dev:web     # 관리자 웹(Vite, /api 프록시)
