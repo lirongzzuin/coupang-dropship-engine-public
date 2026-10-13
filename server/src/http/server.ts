@@ -91,7 +91,11 @@ export async function buildServer(ctx: AppContext, scheduler: Scheduler | null, 
       for (const g of gates) if (g.hard && !g.pass) { fails[g.name] = (fails[g.name] ?? 0) + 1; samples[g.name] ??= g.detail ?? ''; }
     }
     const st = await ctx.settings.get();
-    return { runId: last?.run_id ?? null, total: rows.length, passed: rows.filter((r) => r.passed).length, fails, samples, pricing: st.pricing, selection: { ...st.selection, seedKeywords: st.selection.seedKeywords.length }, mode: st.selection.mode, killSwitch: st.killSwitch };
+    const top = last ? await ctx.db.selectFrom('candidates').innerJoin('source_products', 'source_products.id', 'candidates.source_product_id')
+      .select(['source_products.title', 'source_products.source', 'source_products.price', 'candidates.keyword', 'candidates.score', 'candidates.est_profit', 'candidates.target_price', 'candidates.signals', 'candidates.status'])
+      .where('run_id', '=', last.run_id).where('passed', '=', true).orderBy('score', 'desc').limit(40).execute() : [];
+    const listings = await ctx.db.selectFrom('listings').select(['title', 'status', 'sale_price', 'dry_run', 'listed_at']).orderBy('id', 'desc').limit(20).execute();
+    return { top, listings, runId: last?.run_id ?? null, total: rows.length, passed: rows.filter((r) => r.passed).length, fails, samples, pricing: st.pricing, selection: { ...st.selection, seedKeywords: st.selection.seedKeywords.length }, mode: st.selection.mode, killSwitch: st.killSwitch };
   });
 
   // 이 Mac 안에서만(run-job.sh): 작업 즉시 실행. 브라우저 위조 요청 방지용 헤더 필수
