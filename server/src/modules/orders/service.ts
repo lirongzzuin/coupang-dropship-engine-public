@@ -232,12 +232,14 @@ async function placeApiOrder(ctx: AppContext, o: OrderRow, sourceItemId: string,
     });
   }
   const r = decryptReceiver(ctx, o);
+  const s = await ctx.settings.get();
   try {
     const res = await source.placeOrder!({
       idempotencyKey: key,
       sourceItemId,
       qty: units,
       receiver: { name: r.name, phone: r.phone, addr1: r.addr1, addr2: r.addr2, zip: r.zip },
+      sender: { name: s.orders.senderName || r.name, phone: s.orders.senderPhone || s.coupang.companyContactNumber || r.phone },
       deliveryMessage: r.deliveryMessage,
     });
     await audit(ctx, actor, 'order.placed', String(o.id), { source: sp.source, sourceOrderId: res.sourceOrderId, cost: res.cost });

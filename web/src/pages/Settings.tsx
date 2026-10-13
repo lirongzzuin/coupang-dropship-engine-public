@@ -26,6 +26,8 @@ const QUICK: Array<{ path: string; label: string; type: 'number' | 'text' | 'sel
   { path: 'pricing.minMarginRate', label: '최소 순이익률(%)', type: 'percent' },
   { path: 'selection.minSupplyPrice', label: '공급가 하한(원)', type: 'number' },
   { path: 'orders.perOrderMaxCost', label: '건당 발주 상한(원)', type: 'number' },
+  { path: 'orders.senderName', label: '보내는 사람 이름(택배 송장)', type: 'text', help: '보통 쿠팡 상호명. 비우면 받는 분 이름' },
+  { path: 'orders.senderPhone', label: '보내는 사람 전화', type: 'text', help: '비우면 고객센터 전화' },
   { path: 'orders.dailyMaxCost', label: '일 발주 상한(원)', type: 'number' },
   { path: 'coupang.keyIssuedAt', label: '쿠팡 API 키 발급일(YYYY-MM-DD)', type: 'text' },
   { path: 'coupang.vendorUserId', label: 'Wing 로그인 ID', type: 'text' },

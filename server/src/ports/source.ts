@@ -70,6 +70,8 @@ export interface SourceOrderRequest {
   option?: string;
   qty: number;
   receiver: { name: string; phone: string; addr1: string; addr2: string; zip: string };
+  /** 보내는 사람(송장 표시) */
+  sender?: { name: string; phone: string };
   deliveryMessage?: string;
 }
 

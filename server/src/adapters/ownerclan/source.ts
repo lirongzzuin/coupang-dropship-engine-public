@@ -51,7 +51,7 @@ export class OwnerclanSource implements SourceAdapter {
   private userType: string | null = null;
 
   private async getToken(force = false): Promise<string> {
-    // JWT 만료 시간은 매뉴얼에 명시 없음 → 6시간마다 재발급, 401이면 즉시 재발급
+    // JWT 유효기간 1개월(판매사 API 문서) → 보수적으로 6시간마다 재발급, 401이면 즉시 재발급
     if (!force && this.token && Date.now() - this.token.at < 6 * 3600_000) return this.token.value;
     // 계정 유형: 판매사(seller)로 먼저 시도, 아이디 없음이면 vendor 유형으로 재시도(계정마다 다름)
     const types = this.userType ? [this.userType] : ['seller', 'vendor'];
@@ -99,7 +99,7 @@ export class OwnerclanSource implements SourceAdapter {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
             body: JSON.stringify({ query, variables }),
-            signal: AbortSignal.timeout(30_000),
+            signal: AbortSignal.timeout(90_000), // 검색은 30초 가까이 걸리기도 함(실측 28초)
           });
           if (res.status === 401 && attempt === 0) {
             attempt++;
@@ -127,7 +127,7 @@ export class OwnerclanSource implements SourceAdapter {
   }
 
   async getProduct(key: string): Promise<SourceProductDetail | null> {
-    const data = await this.gql(`query($key:String!){ item(key:$key){ ${ITEM_FIELDS} } }`, { key });
+    const data = await this.gql(`query($key:ID!){ item(key:$key){ ${ITEM_FIELDS} } }`, { key });
     const it = data?.item;
     if (!it) return null;
     const s = toSummary(it);
@@ -170,7 +170,7 @@ export class OwnerclanSource implements SourceAdapter {
   async findOrderByKey(idempotencyKey: string): Promise<{ key: string; status: string; amount: number; shipping: number } | null> {
     const now = Math.floor(Date.now() / 1000);
     const data = await this.gql(
-      `query($note:String,$from:Int,$to:Int){ allOrders(note:$note, dateFrom:$from, dateTo:$to, first:5){ edges { node { key status products { price quantity } shippingInfo { shippingFee } } } } }`,
+      `query($note:String,$from:Timestamp,$to:Timestamp){ allOrders(note:$note, dateFrom:$from, dateTo:$to, first:5){ edges { node { key status products { price quantity } shippingInfo { shippingFee } } } } }`,
       { note: idempotencyKey, from: now - 89 * 86400, to: now },
     );
     const node = data?.allOrders?.edges?.[0]?.node;
@@ -190,17 +190,19 @@ export class OwnerclanSource implements SourceAdapter {
       return { sourceOrderId: existing.key, cost: existing.amount, shippingCost: existing.shipping, needsPayment: existing.status === 'placed' };
     }
     const input = {
+      sender: { name: req.sender?.name || req.receiver.name, phoneNumber: req.sender?.phone || req.receiver.phone },
       recipient: {
         name: req.receiver.name,
         phoneNumber: req.receiver.phone,
         destinationAddress: { addr1: req.receiver.addr1, addr2: req.receiver.addr2, postalCode: req.receiver.zip },
       },
-      products: [{ quantity: req.qty, itemKey: req.sourceItemId, ...(req.option ? { optionAttributes: req.option.split(' / ') } : {}) }],
+      products: [{ quantity: req.qty, itemKey: req.sourceItemId, optionAttributes: req.option ? req.option.split(' / ') : [] }],
       note: req.idempotencyKey,
       sellerNote: req.idempotencyKey,
       ordererNote: req.deliveryMessage ?? '',
     };
-    const sim = await this.gql(`query($input:OrderInput!){ simulateCreateOrder(input:$input){ itemAmounts { itemKey amount } shippingAmount extraShippingFeeExists } }`, { input });
+    // 실 스키마(2026-10 확인): simulateCreateOrder 는 Mutation
+    const sim = await this.gql(`mutation($input:OrderInput!){ simulateCreateOrder(input:$input){ itemAmounts { itemKey amount } shippingAmount extraShippingFeeExists } }`, { input });
     const results: any[] = sim?.simulateCreateOrder ?? [];
     const cost = results.reduce((a, r) => a + (r.itemAmounts ?? []).reduce((b: number, x: any) => b + (x.amount ?? 0), 0), 0);
     const shippingCost = results.reduce((a, r) => a + (r.shippingAmount ?? 0), 0);

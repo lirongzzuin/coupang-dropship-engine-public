@@ -174,6 +174,10 @@ describe('OwnerclanSource', () => {
     const create = calls.find((c) => String(c.init?.body).includes('createOrder(input'))!;
     const vars = JSON.parse(String(create.init!.body)).variables;
     expect(vars.input.note).toBe('cp-1-2');
+    // 실 스키마: 보내는 사람 필수, 옵션 없으면 빈 배열, 시뮬레이션은 mutation
+    expect(vars.input.sender).toEqual({ name: '홍', phoneNumber: '010' });
+    expect(vars.input.products[0].optionAttributes).toEqual([]);
+    expect(String(calls.find((c) => String(c.init?.body).includes('simulateCreateOrder'))!.init!.body)).toContain('mutation(');
     expect(vars.sim[0].shippingAmount).toBe(3000);
     const r2 = await oc.placeOrder(req);
     expect(r2.sourceOrderId).toBe('OC1');

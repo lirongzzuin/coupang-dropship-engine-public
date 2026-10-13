@@ -298,6 +298,9 @@ export const settingsSchema = z.object({
     .object({
       /** approve: 구매 전 사람이 확인 | auto: API 가능한 소스는 자동 발주 */
       mode: z.enum(['approve', 'auto']).default('auto'),
+      /** 공급처 주문의 보내는 사람(택배 송장에 표시) — 비우면 받는 분 이름·쿠팡 고객센터 번호 */
+      senderName: z.string().default(''),
+      senderPhone: z.string().default(''),
       perOrderMaxCost: z.number().int().default(100000),
       dailyMaxCost: z.number().int().default(500000),
       /** 구매 작업 미처리 경고(시간) */
