@@ -262,3 +262,15 @@ describe('가격대 우선순위(가볍게 사는 1만원대 우선, 데이터�
     expect(l.sale_price).toBeLessThan(20000);
   });
 });
+
+describe('묶음 옵션과 카테고리', () => {
+  it('수량 구매옵션이 없는 카테고리는 1개 옵션만, 있으면(선택 속성이어도) 수량으로 구분', async () => {
+    const { buildAttributes, supportsBundles } = await import('../src/modules/listing/payload.js');
+    const noQty = { code: '1', notices: [], requiredAttributes: ['색상', '사이즈'], requiredAttributeSpecs: [{ name: '색상', dataType: 'STRING' }, { name: '사이즈', dataType: 'STRING' }], attributeNames: ['색상', '사이즈'] };
+    expect(supportsBundles(noQty)).toBe(false);
+    const optQty = { ...noQty, attributeNames: ['색상', '사이즈', '수량'] };
+    expect(supportsBundles(optQty)).toBe(true);
+    expect(buildAttributes(optQty, '창문 스티커', 2).find((a) => a.attributeTypeName === '수량')!.attributeValueName).toBe('2개');
+    expect(buildAttributes(noQty, '창문 스티커', 1).some((a) => a.attributeTypeName === '수량')).toBe(false);
+  });
+});

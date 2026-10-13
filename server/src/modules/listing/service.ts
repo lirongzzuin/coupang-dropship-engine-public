@@ -6,7 +6,7 @@ import { errMessage } from '../../lib/util.js';
 import { detailOf } from '../catalog.js';
 import { initialMarkup, targetMarkup, targetPrice } from '../pricing/pricing.js';
 import { getItems, planItems, saveItems } from './items.js';
-import { buildCoupangPayload } from './payload.js';
+import { buildCoupangPayload, supportsBundles } from './payload.js';
 import { hostDetailHtml, prepareMainImages } from './media.js';
 import { buildDetailHtml, buildTags, findBannedTerms, sanitizeTitle } from './text.js';
 
@@ -317,7 +317,13 @@ async function prepareRegistration(ctx: AppContext, l: ListingRow, sp: SourcePro
     reuseAllowed: sp.image_reuse_allowed,
   });
   // 옵션명은 현재 상품명 기준으로 다시 맞춘다(초안 수정 반영)
-  const items = await getItems(ctx, l);
+  let items = await getItems(ctx, l);
+  if (items.length > 1 && !supportsBundles(meta)) {
+    // 수량 구매옵션이 없는 카테고리: 묶음 옵션은 서로 구분이 안 돼 쿠팡이 거부 → 1개 옵션만
+    const drop = items.filter((it) => it.unit_qty !== 1 && it.id && !it.vendor_item_id).map((it) => it.id!);
+    if (drop.length) await ctx.db.deleteFrom('listing_items').where('id', 'in', drop).execute();
+    items = items.filter((it) => it.unit_qty === 1);
+  }
   const options = items.map((it) => ({ units: it.unit_qty, salePrice: it.sale_price, itemName: `${l!.title} ${it.unit_qty}개` }));
   for (const it of items) if (it.id) await ctx.db.updateTable('listing_items').set({ item_name: `${l.title} ${it.unit_qty}개` }).where('id', '=', it.id).execute();
   const payload = buildCoupangPayload(s, {

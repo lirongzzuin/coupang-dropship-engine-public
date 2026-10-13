@@ -81,6 +81,8 @@ export interface CategoryMeta {
   requiredAttributes: string[];
   /** 필수 구매옵션 상세(값 형식·단위) */
   requiredAttributeSpecs?: AttributeSpec[];
+  /** 이 카테고리에서 쓸 수 있는 모든 구매옵션 이름(선택 포함) */
+  attributeNames?: string[];
 }
 
 export interface AttributeSpec {

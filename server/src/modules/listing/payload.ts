@@ -68,7 +68,7 @@ export function buildCoupangPayload(s: Settings, p: PayloadInput): Record<string
         unitCount: o.units,
         adultOnly: 'EVERYONE',
         taxType: 'TAX',
-        parallelImported: 'NOT_PARALLELIMPORTED',
+        parallelImported: 'NOT_PARALLEL_IMPORTED',
         overseasPurchased: 'NOT_OVERSEAS_PURCHASED',
         pccNeeded: false,
         externalVendorSku: `SP-${p.sourceProductId}-${o.units}`,
@@ -150,6 +150,13 @@ export function buildAttributes(meta: CategoryMeta, title: string, units: number
       out.push({ attributeTypeName: n, attributeValueName: '상세페이지 참조' });
     }
   }
-  if (!has('수량') && !specs.length) out.push({ attributeTypeName: '수량', attributeValueName: `${units}개` });
+  // 묶음 옵션은 '수량'으로 구분해야 쿠팡이 받음 → 필수가 아니어도 카테고리에 있으면 넣는다
+  if (!has('수량') && (!specs.length || meta.attributeNames?.includes('수량'))) out.push({ attributeTypeName: '수량', attributeValueName: `${units}개` });
   return out;
+}
+
+/** 이 카테고리에서 묶음(2개·3개) 옵션을 구분할 수 있는가(수량 구매옵션 존재) */
+export function supportsBundles(meta: CategoryMeta): boolean {
+  if (meta.attributeNames) return meta.attributeNames.includes('수량');
+  return meta.requiredAttributes.includes('수량') || !meta.requiredAttributes.length;
 }

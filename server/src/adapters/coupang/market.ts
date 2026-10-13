@@ -152,6 +152,7 @@ export class CoupangMarket implements MarketPort {
         name: String(a.attributeTypeName), dataType: String(a.dataType ?? 'STRING'),
         basicUnit: a.basicUnit && a.basicUnit !== '없음' ? String(a.basicUnit) : undefined, usableUnits: (a.usableUnits ?? []).map(String),
       })),
+      attributeNames: (d.attributes ?? []).map((a: any) => String(a.attributeTypeName)),
     };
   }
 
