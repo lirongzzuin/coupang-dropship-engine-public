@@ -149,12 +149,17 @@ describe('HTTP API', () => {
     expect(m.headers['content-type']).toContain('text/csv');
     expect(m.body).toContain('합계');
 
-    // 작업 수동 실행 → 이력
+    // 작업 지금 실행(= run-job.sh): 백그라운드로 시작하고 바로 응답 → 끝나면 이력
     const job = await app.inject({ method: 'POST', url: '/api/jobs/orders.poll/run', headers: H(cookie) });
-    expect(job.json().ok).toBe(true);
-    const jobs = (await app.inject({ url: '/api/jobs', headers: { cookie } })).json();
+    expect(job.json()).toEqual({ started: 'orders.poll', label: '주문 수집·처리' });
+    let jobs: any;
+    for (let i = 0; i < 50; i++) {
+      jobs = (await app.inject({ url: '/api/jobs', headers: { cookie } })).json();
+      if (!jobs.jobs.find((j: any) => j.name === 'orders.poll').running) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
     expect(jobs.jobs.find((j: any) => j.name === 'orders.poll').last.ok).toBe(true);
-    expect((await app.inject({ method: 'POST', url: '/api/jobs/nope/run', headers: H(cookie) })).json().ok).toBe(false);
+    expect((await app.inject({ method: 'POST', url: '/api/jobs/nope/run', headers: H(cookie) })).statusCode).toBe(404);
 
     const meta = (await app.inject({ url: '/api/meta', headers: { cookie } })).json();
     expect(meta.sources.map((s: any) => s.id)).toEqual(['mockapi', 'mockmanual']);
@@ -192,6 +197,40 @@ describe('Scheduler', () => {
     expect((await s.runJob('b')).ok).toBe(true);
     const daily = await h.ctx.db.selectFrom('job_runs').selectAll().where('job', '=', 'daily').execute();
     expect(daily).toHaveLength(1);
+  });
+});
+
+describe('상품 선정 지금 실행 API', () => {
+  it('지금 실행은 바로 응답, 실행 중엔 다시 시작·키워드 선정 모두 거부(동시 실행 방지), 기록·감사 로그 남김', async () => {
+    const { totpSecret, scheduler } = await setup();
+    const cookie = await login(totpSecret);
+    // 선정이 오래 걸리는 상황 흉내: 작업을 잡아 둠
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const { JOBS } = await import('../src/jobs/scheduler.js');
+    const job = JOBS.find((j) => j.name === 'selection.run')!;
+    const orig = job.run;
+    job.run = async () => { await gate; return { evaluated: 0, passed: 0, autoListed: 0 }; };
+    try {
+      const r = await app.inject({ method: 'POST', url: '/api/jobs/selection.run/run', headers: H(cookie) });
+      expect(r.statusCode).toBe(200);
+      expect(r.json()).toEqual({ started: 'selection.run', label: '상품 선정' });
+      expect(scheduler.isRunning('selection.run')).toBe(true);
+      const again = await app.inject({ method: 'POST', url: '/api/jobs/selection.run/run', headers: H(cookie) });
+      expect(again.statusCode).toBe(409);
+      expect(again.json().error ?? again.json().message).toContain('이미 실행 중');
+      const kw = await app.inject({ method: 'POST', url: '/api/selection/run', headers: H(cookie), payload: { keywords: ['정리함'] } });
+      expect(kw.statusCode).toBe(409);
+      release();
+      for (let i = 0; i < 50 && scheduler.isRunning('selection.run'); i++) await new Promise((x) => setTimeout(x, 20));
+      const jobs = (await app.inject({ url: '/api/jobs', headers: { cookie } })).json();
+      expect(jobs.jobs.find((j: any) => j.name === 'selection.run')).toMatchObject({ running: false, last: { ok: true } });
+      const auditRow = await h.ctx.db.selectFrom('audit_log').selectAll().where('action', '=', 'job.run').executeTakeFirst();
+      expect(auditRow?.target).toBe('selection.run');
+    } finally {
+      job.run = orig;
+      release();
+    }
   });
 });
 
