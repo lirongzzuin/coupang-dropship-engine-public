@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { parseDomeggookOptions } from '../src/adapters/domeggook/source.js';
 import { CoupangMarket } from '../src/adapters/coupang/market.js';
 import { forceStop, repairListings, requestResume } from '../src/modules/monitor/repair.js';
+import { optionItemName } from '../src/modules/listing/payload.js';
 import { syncListings } from '../src/modules/sync/service.js';
 import type { CategoryMeta } from '../src/ports/market.js';
 import { makeHarness, seedActiveListing, type TestHarness } from './helpers.js';
@@ -25,7 +26,7 @@ let seq = 0;
 
 type Attr = { attributeTypeName: string; attributeValueName: string };
 /** 쿠팡에 이미 올라간 상품(승인완료) + 시스템 기록 */
-async function seedCoupang(o: { sourceTitle: string; name: string; attrs: (units: number) => Attr[]; units?: number[]; options?: string; status?: 'active' | 'paused'; reason?: string; sourceOption?: string | null; linked?: boolean }) {
+async function seedCoupang(o: { sourceTitle: string; name: string; attrs: (units: number) => Attr[]; units?: number[]; options?: string; status?: 'active' | 'paused'; reason?: string; sourceOption?: string | null; linked?: boolean; /** 이전 버전 옵션명(상품명 전체 + 수량) */ oldItemNames?: boolean }) {
   const n = ++seq;
   const x = await seedActiveListing(h, { price: 3030, salePrice: 11900 });
   const p = h.apiSource.products.get(x.d.sourceItemId)!;
@@ -38,7 +39,7 @@ async function seedCoupang(o: { sourceTitle: string; name: string; attrs: (units
   h.market.products.set(sid, {
     payload: {
       displayProductName: o.name, sellerProductName: o.name, generalProductName: o.name, displayCategoryCode: 80719, vendorId: 'A0', requested: true,
-      items: units.map((u) => ({ itemName: `${o.name} ${u}개`, salePrice: 11900 * u, images: [{ imageOrder: 0, imageType: 'REPRESENTATION', vendorPath: 'img-1.jpg' }], attributes: [...o.attrs(u), { attributeTypeName: '바구니 형태', attributeValueName: '' }, { attributeTypeName: '수납/정리용품 재질', attributeValueName: '플라스틱' }] })),
+      items: units.map((u) => ({ itemName: o.oldItemNames ? `${o.name} ${u}개` : optionItemName(o.attrs(u), u), salePrice: 11900 * u, images: [{ imageOrder: 0, imageType: 'REPRESENTATION', vendorPath: 'img-1.jpg' }], attributes: [...o.attrs(u), { attributeTypeName: '바구니 형태', attributeValueName: '' }, { attributeTypeName: '수납/정리용품 재질', attributeValueName: '플라스틱' }] })),
     },
     status: 'APPROVED', vendorItemIds: vids,
   });
@@ -51,7 +52,7 @@ async function seedCoupang(o: { sourceTitle: string; name: string; attrs: (units
     payload: o.linked ? null : JSON.stringify({ displayProductName: o.name }),
   }).where('id', '=', x.listing.id).execute();
   for (const [i, u] of units.entries()) {
-    await h.ctx.db.insertInto('listing_items').values({ listing_id: x.listing.id, unit_qty: u, item_name: `${o.name} ${u}개`, vendor_item_id: vids[i], sale_price: 11900 * u, floor_price: 8000 * u, created_at: h.clock.now() }).execute();
+    await h.ctx.db.insertInto('listing_items').values({ listing_id: x.listing.id, unit_qty: u, item_name: o.oldItemNames ? `${o.name} ${u}개` : optionItemName(o.attrs(u), u), vendor_item_id: vids[i], sale_price: 11900 * u, floor_price: 8000 * u, created_at: h.clock.now() }).execute();
   }
   return { ...x, sid, vids, listingId: x.listing.id };
 }
@@ -228,6 +229,59 @@ describe('상품 설정 자동 점검·수정', () => {
     await h.ctx.settings.update({ repair: { enabled: true }, killSwitch: true });
     expect((await repairListings(h.ctx)).checked).toBe(0);
     expect(h.market.updates).toHaveLength(0);
+  });
+});
+
+describe('옵션명(상품명과 중복) 자동 수정', () => {
+  it('실제 세면파우치: 옵션명이 "상품명 전체 + 블랙 1개" → "블랙 소 1개", 상품명 옵션 단어·사이즈(S→소)도 함께, 옵션ID 유지', async () => {
+    await setup();
+    const name = '방수가방 여행용 세면파우치 방수 워시백 목욕가방 소 S10952 블랙';
+    const p = await seedCoupang({
+      sourceTitle: name, name, units: [1, 2, 3], oldItemNames: true,
+      attrs: (u) => [{ attributeTypeName: '색상', attributeValueName: '블랙' }, { attributeTypeName: '사이즈', attributeValueName: 'S' }, { attributeTypeName: '수량', attributeValueName: `${u}개` }],
+    });
+    // 옵션명 기존 값을 실제와 같게(상품명 + 블랙 + 수량)
+    for (const it of h.market.products.get(p.sid)!.payload.items) it.itemName = `${name} ${it.attributes.find((a: Attr) => a.attributeTypeName === '수량').attributeValueName}`;
+    const r = await repairListings(h.ctx);
+    expect(r.requested).toBe(1);
+    const body = h.market.updates[0]!;
+    expect(body.items.map((i: any) => i.itemName)).toEqual(['블랙 소 1개', '블랙 소 2개', '블랙 소 3개']);
+    expect(body.items.map((i: any) => i.vendorItemId)).toEqual(p.vids);
+    expect(body.displayProductName).toBe('방수가방 여행용 세면파우치 방수 워시백 목욕가방 S10952');
+    expect(attrsOf(body, 0)).toMatchObject({ 색상: '블랙', 사이즈: '소', 수량: '1개' });
+    // 상품명 단어가 옵션명에 남지 않음
+    for (const it of body.items) for (const w of body.displayProductName.split(' ')) expect(it.itemName.split(' ')).not.toContain(w);
+    const items = await h.ctx.db.selectFrom('listing_items').select(['vendor_item_id', 'item_name']).where('listing_id', '=', p.listingId).orderBy('unit_qty').execute();
+    expect(items.map((i) => i.item_name)).toEqual(['블랙 소 1개', '블랙 소 2개', '블랙 소 3개']);
+    // 승인 후 재점검: 정상 → 더 요청 안 함
+    h.market.approve(p.sid);
+    await repairListings(h.ctx);
+    expect((await listingOf(p.listingId)).repair_state).toBeNull();
+    await repairListings(h.ctx);
+    expect(h.market.updates).toHaveLength(1);
+  });
+
+  it('새 등록: 옵션명은 구매옵션 값 + 수량, 승인 시 옵션ID가 옵션명으로 정확히 매칭', async () => {
+    h = await makeHarness({ live: true });
+    await h.ctx.settings.update({ coupang: { vendorUserId: 'w', outboundShippingPlaceCode: '1', returnCenterCode: '1', companyContactNumber: '1588-0000', returnZipCode: '04524', returnAddress: '서울' } });
+    h.market.getCategoryMeta = async () => META;
+    h.apiSource.add({ sourceItemId: 'N1', title: '접이식 수납 정리함 블랙 대형', price: 15000, stock: 200 });
+    h.marketData.lowest.set('수납 정리함', 35000);
+    h.marketData.volume.set('수납 정리함', 20000);
+    const { runSelection } = await import('../src/modules/selection/service.js');
+    expect((await runSelection(h.ctx, { keywords: ['수납 정리함'] })).autoListed).toBe(1);
+    const l = await h.ctx.db.selectFrom('listings').selectAll().where('status', '=', 'pending_approval').executeTakeFirstOrThrow();
+    const sent = h.market.products.get(l.seller_product_id!)!.payload;
+    expect(sent.items.map((i: any) => i.itemName)).toEqual(['블랙 대형 1개', '블랙 대형 2개', '블랙 대형 3개']);
+    expect(sent.displayProductName).toBe('접이식 수납 정리함');
+    // 승인 응답의 옵션 순서가 바뀌어도 옵션명으로 맞춤
+    h.market.approve(l.seller_product_id!);
+    const prod = h.market.products.get(l.seller_product_id!)!;
+    prod.vendorItemIds.reverse();
+    const { refreshListingStatuses } = await import('../src/modules/listing/service.js');
+    await refreshListingStatuses(h.ctx);
+    const items = await h.ctx.db.selectFrom('listing_items').select(['unit_qty', 'vendor_item_id', 'item_name']).where('listing_id', '=', l.id).orderBy('unit_qty').execute();
+    for (const it of items) expect(h.market.itemNames.get(it.vendor_item_id!)).toBe(it.item_name);
   });
 });
 

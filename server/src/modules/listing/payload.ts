@@ -62,7 +62,7 @@ export function buildCoupangPayload(s: Settings, p: PayloadInput): Record<string
     vendorUserId: c.vendorUserId,
     requested: true,
     items: p.options.map((o, i) => ({
-        itemName: truncate(o.itemName, 150),
+        itemName: optionItemName(attrs[i]!, o.units),
         originalPrice: ten(Math.max(o.salePrice * s.pricing.originalPriceMultiplier, o.salePrice)),
         salePrice: ten(o.salePrice),
         maximumBuyCount: Math.max(0, Math.min(99999, Math.floor(p.stock / o.units))),
@@ -123,6 +123,18 @@ function kstLocal(d: Date): string {
 }
 
 export class AttributeError extends Error {}
+
+/**
+ * 쿠팡 옵션명(itemName): 구매옵션 값만(예: "블랙 소 1개", "화이트 3호 2개", 단일이면 "1개").
+ * 상품명 전체를 옵션명에 넣으면 상품명 단어가 모두 옵션과 겹쳐 Wing에 "상품명에서 옵션과 중복된 단어를 지워주세요"가 뜬다(실측 2026-10-14).
+ * 수량은 마지막에, 자리채움 값(멀티·FREE)은 뺀다. 같은 상품 안에서 묶음 수량이 달라 이름이 겹치지 않는다.
+ */
+export function optionItemName(attrs: Array<{ attributeTypeName: string; attributeValueName: string }>, units: number): string {
+  const values = attrs
+    .filter((a) => !/수량|개수/.test(a.attributeTypeName) && a.attributeValueName && !['멀티', 'FREE'].includes(a.attributeValueName))
+    .map((a) => a.attributeValueName.trim());
+  return truncate([...new Set(values), `${units}개`].join(' '), 150);
+}
 
 /**
  * 카테고리 필수 구매옵션(색상·사이즈·수량 등)을 채운다. 쿠팡은 필수 속성이 빠지면 등록을 거부.

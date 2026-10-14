@@ -418,8 +418,7 @@ async function prepareRegistration(ctx: AppContext, l: ListingRow, sp: SourcePro
     if (drop.length) await ctx.db.deleteFrom('listing_items').where('id', 'in', drop).execute();
     items = items.filter((it) => it.unit_qty === 1);
   }
-  const options = items.map((it) => ({ units: it.unit_qty, salePrice: it.sale_price, itemName: `${l!.title} ${it.unit_qty}개` }));
-  for (const it of items) if (it.id) await ctx.db.updateTable('listing_items').set({ item_name: `${l.title} ${it.unit_qty}개` }).where('id', '=', it.id).execute();
+  const options = items.map((it) => ({ units: it.unit_qty, salePrice: it.sale_price, itemName: `${it.unit_qty}개` }));
   const payload = buildCoupangPayload(s, {
     vendorId: ctx.env.COUPANG_VENDOR_ID ?? 'A00000000',
     title: l.title,
@@ -434,6 +433,9 @@ async function prepareRegistration(ctx: AppContext, l: ListingRow, sp: SourcePro
     sourceProductId: sp.id,
     now: ctx.clock.now(),
   });
+  // 쿠팡에 보낸 옵션명(구매옵션 값 + 수량)을 그대로 기록 → 승인 시 옵션ID를 옵션명으로 매칭
+  const sent = (payload as { items: Array<{ itemName: string }> }).items;
+  for (const [i, it] of items.entries()) if (it.id && sent[i]) await ctx.db.updateTable('listing_items').set({ item_name: sent[i]!.itemName }).where('id', '=', it.id).execute();
   return { payload, categoryCode, categoryName, detailHtml };
 }
 
