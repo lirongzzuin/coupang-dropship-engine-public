@@ -154,6 +154,16 @@ export function productFamily(title: string): string {
     .join(' ');
 }
 
+/** 두 상품명이 같은(비슷한) 상품인지: 계열 단어가 2개 이상 겹치고, 짧은 쪽의 60% 이상이 겹침 */
+export function similarProduct(a: string, b: string): boolean {
+  const A = new Set(productFamily(a).split(' ').filter(Boolean));
+  const B = new Set(productFamily(b).split(' ').filter(Boolean));
+  if (!A.size || !B.size) return false;
+  let shared = 0;
+  for (const t of A) if (B.has(t)) shared++;
+  return shared >= 2 && shared / Math.min(A.size, B.size) >= 0.6;
+}
+
 /** "3M)포스트잇", "브레인)수납정리함" 같은 브랜드 표기(오너클랜 관행) 또는 [브랜드] */
 export function looksBranded(title: string): boolean {
   return /^\s*[^\s)]{1,12}\)/.test(title) || /^\s*\[[^\]]{1,12}\]/.test(title);

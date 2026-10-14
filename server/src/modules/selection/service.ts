@@ -5,7 +5,7 @@ import { createDraftFromCandidate, registerListing } from '../listing/service.js
 import { pickKeywordsForRun, recordKeywordResults } from '../keywords/service.js';
 import { targetPrice } from '../pricing/pricing.js';
 import { DEFAULT_MODEL, expectedMonthly, keywordMatches, learnedFactor, looksBranded, looksBulk, median, productFamily, profitScore, rankScore, salesScore } from './demandModel.js';
-import { evaluateGates, type KeywordSignals, marketReference, monthlySlope, scoreCandidate, trendSlope } from './scoring.js';
+import { evaluateGates, type KeywordSignals, marketReference, productMarketReference, monthlySlope, scoreCandidate, trendSlope } from './scoring.js';
 
 /**
  * 상품 선정 파이프라인: 키워드 → 시장 신호 → 공급처 후보 → 게이트 → 점수 → (auto) 자동 등록
@@ -46,12 +46,17 @@ export async function collectSignals(ctx: AppContext, keywords: string[]): Promi
     try {
       const shop = await ctx.marketData.shoppingSearch(kw);
       if (shop) {
-        const prices = shop.items.map((i) => i.price).filter((p) => p > 0).sort((a, b) => a - b);
+        // 키워드 상품만(검색 결과엔 엉뚱한 상품도 섞임 — 실측: '수납정리함'에 오토바이 탑박스). 너무 적으면 전체 사용
+        const relevant = shop.items.filter((i) => keywordMatches(i.title, kw));
+        const pool = relevant.length >= 5 ? relevant : shop.items;
+        const prices = pool.map((i) => i.price).filter((p) => p > 0).sort((a, b) => a - b);
         sig.marketCount = shop.total;
         sig.marketSellers = new Set(shop.items.map((i) => i.mall)).size;
         sig.marketSource = shop.source;
         // 극단적 저가(액세서리·부품) 오염을 줄이려고 하위 10% 지점을 최저가로 사용
         if (prices.length) sig.marketLowest = prices[Math.floor(prices.length * 0.1)];
+        if (prices.length) sig.marketMedian = prices[Math.floor(prices.length / 2)];
+        sig.marketItems = shop.items.map((i) => ({ title: i.title, price: i.price })); // 상품별 비교용(저장 안 함)
         await save(kw, 'market_count', shop.total, { source: shop.source });
         if (sig.marketLowest) await save(kw, 'market_lowest', sig.marketLowest, { source: shop.source, min: prices[0], p25: prices[Math.floor(prices.length / 4)] });
       }
@@ -250,7 +255,9 @@ export async function runSelection(ctx: AppContext, opts: { keywords?: string[] 
           const dupKey = `${kw}|${d.title.replace(/\s+/g, '')}`;
           if (seenTitles.has(dupKey)) continue;
           seenTitles.add(dupKey);
-          const gates = evaluateGates(s, d, tp, sig, { apiOrder, keyword: kw, enforceCategory: s.discovery.enforceCategoryForSources.includes(src.id), marketPriceAvailable });
+          // 시장 기준가: 11번가 등에서 같은(비슷한) 상품을 찾아 비교(없으면 키워드 중앙가를 참고로만)
+          const ref = productMarketReference(sig, sig.marketItems, d.title);
+          const gates = evaluateGates(s, d, tp, sig, { apiOrder, keyword: kw, enforceCategory: s.discovery.enforceCategoryForSources.includes(src.id), marketPriceAvailable, marketRef: ref });
           const passed = gates.every((g) => !g.hard || g.pass);
           for (const g of gates) if (g.hard && !g.pass) failCounts[g.name] = (failCounts[g.name] ?? 0) + 1;
           const quality = scoreCandidate(s, d, tp, sig, { apiOrder });
@@ -259,7 +266,6 @@ export async function runSelection(ctx: AppContext, opts: { keywords?: string[] 
           const cw: Record<string, number> = { fastShipping: 2, imageRichness: 1, returnable: 1 };
           const conv = Object.keys(cw).filter((k) => quality.parts[k] !== undefined);
           const convAvg = conv.length ? conv.reduce((a, k) => a + quality.parts[k]! * cw[k]!, 0) / conv.reduce((a, k) => a + cw[k]!, 0) : undefined;
-          const ref = marketReference(sig);
           const fam = productFamily(d.title);
           const top = (d.categoryPath ?? '').split('>')[0] ?? '';
           const learnedKw = learnedFactor(learned.byKeyword.get(kw));
@@ -270,7 +276,8 @@ export async function runSelection(ctx: AppContext, opts: { keywords?: string[] 
             priceRatio: kwMedian ? d.price / kwMedian : undefined,
             slope: trendSlope(sig.trend, 4) ?? sig.volumeSlope,
             conversion: convAvg,
-            marketRatio: ref && tp.feasible ? tp.price / ref.price : undefined,
+            // 같은 상품 가격이면 그대로, 키워드 일반 가격(크기·종류 섞임)이면 절반 강도로
+            marketRatio: ref && tp.feasible ? (ref.exact ? tp.price / ref.price : 1 + (tp.price / ref.price - 1) * 0.5) : undefined,
             undercutBySameProduct: !!fam && (familyMin.get(fam) ?? Infinity) < d.price * 0.97,
             brand: looksBranded(d.title),
             bulk: looksBulk(d.title),
@@ -289,13 +296,13 @@ export async function runSelection(ctx: AppContext, opts: { keywords?: string[] 
             source_product_id: sp.id,
             keyword: kw,
             score,
-            signals: JSON.stringify({ ...sig, trend: undefined, competition: comp[kw] ?? undefined, keywordMedianPrice: kwMedian, parts, demand, family: productFamily(d.title), category: top }),
+            signals: JSON.stringify({ ...sig, trend: undefined, marketItems: undefined, competition: comp[kw] ?? undefined, keywordMedianPrice: kwMedian, parts, demand, family: productFamily(d.title), category: top }),
             gates: JSON.stringify(gates),
             passed,
             target_price: tp.feasible ? tp.price : null,
             est_profit: tp.breakdown?.profit ?? null,
             est_margin: tp.breakdown?.margin ?? null,
-            market_lowest: marketReference(sig)?.price ?? null,
+            market_lowest: ref?.price ?? null,
             status: 'new',
             run_id: runId,
             created_at: ctx.clock.now(),

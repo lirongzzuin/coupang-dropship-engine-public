@@ -1,4 +1,4 @@
-import { keywordMatches } from './demandModel.js';
+import { keywordMatches, similarProduct } from './demandModel.js';
 import { extractImageUrls } from '../listing/text.js';
 import type { Settings } from '../../config/settings.js';
 import type { SourceProductDetail } from '../../ports/source.js';
@@ -20,6 +20,10 @@ export interface KeywordSignals {
   marketCount?: number;
   marketSellers?: number;
   marketSource?: string;
+  /** 오픈마켓 키워드 상품들의 중앙가(사람들이 보통 사는 가격) */
+  marketMedian?: number;
+  /** 오픈마켓 검색 상품(상품별 같은 상품 찾기용, 실행 중에만 사용·저장 안 함) */
+  marketItems?: Array<{ title: string; price: number }>;
   /** 쿠팡 검색 상위 최저가·로켓 비율(쿠팡 파트너스) */
   coupangLowest?: number;
   coupangRocketRatio?: number;
@@ -28,7 +32,28 @@ export interface KeywordSignals {
   coupangReviews?: number;
 }
 
-/** 가격 경쟁 기준가: 쿠팡 판매이므로 쿠팡 최저가 우선, 없으면 오픈마켓(11번가) 최저가 */
+/**
+ * 상품별 시장 기준가:
+ *  - 쿠팡 최저가(파트너스)가 있으면 그것(동일 상품 기준으로 봄)
+ *  - 오픈마켓 검색 결과 중 이 상품과 같은(비슷한) 상품이 있으면 그 최저가 → exact(비싸면 탈락)
+ *  - 없으면 키워드 중앙가 → 참고용(점수에만 반영). 키워드 전체 최저가는 크기·종류가 다른 상품이 섞여 비교 불가
+ */
+export function productMarketReference(sig: KeywordSignals, items: Array<{ title: string; price: number }> | undefined, title: string): MarketRef | null {
+  if (sig.coupangLowest && sig.coupangLowest > 0) return { price: sig.coupangLowest, source: '쿠팡', exact: true };
+  const same = (items ?? []).filter((i) => i.price > 0 && similarProduct(i.title, title));
+  if (same.length) return { price: Math.min(...same.map((i) => i.price)), source: `${sig.marketSource ?? '오픈마켓'} 같은 상품 ${same.length}개`, exact: true };
+  if (sig.marketMedian && sig.marketMedian > 0) return { price: sig.marketMedian, source: `${sig.marketSource ?? '오픈마켓'} 키워드 중앙가`, exact: false };
+  return null;
+}
+
+export interface MarketRef {
+  price: number;
+  source: string;
+  /** true: 같은 상품 가격(비싸면 탈락), false: 키워드 일반 가격(참고) */
+  exact: boolean;
+}
+
+/** 가격 경쟁 기준가(키워드 단위, 상품명 없이): 쿠팡 최저가 우선, 없으면 오픈마켓(11번가) 최저가 */
 export function marketReference(sig: KeywordSignals): { price: number; source: string } | null {
   if (sig.coupangLowest && sig.coupangLowest > 0) return { price: sig.coupangLowest, source: '쿠팡' };
   if (sig.marketLowest && sig.marketLowest > 0) return { price: sig.marketLowest, source: sig.marketSource ?? '오픈마켓' };
@@ -75,7 +100,7 @@ export function evaluateGates(
   tp: TargetPrice,
   sig: KeywordSignals,
   /** marketPriceAvailable=false: 시장가 공급원(11번가·파트너스)이 하나도 동작하지 않음 → 시장가 필수 조건을 적용하지 않음 */
-  opts: { apiOrder: boolean; keyword?: string; enforceCategory?: boolean; marketPriceAvailable?: boolean },
+  opts: { apiOrder: boolean; keyword?: string; enforceCategory?: boolean; marketPriceAvailable?: boolean; marketRef?: MarketRef | null },
 ): GateResult[] {
   const sel = s.selection;
   const text = `${d.title} ${d.categoryPath ?? ''}`;
@@ -107,10 +132,12 @@ export function evaluateGates(
   const kcOk = !kcNeeded || !!(d.kc && (d.kc.certified || d.kc.exempt));
   g.push({ name: 'kc', hard: true, pass: kcOk, detail: kcNeeded ? (kcOk ? 'KC 정보 있음' : 'KC 인증정보 없음') : '해당 없음' });
   g.push({ name: 'profit', hard: true, pass: tp.feasible && (tp.breakdown?.profit ?? -1) >= s.pricing.minProfitKrw, detail: tp.feasible ? `목표가 ${tp.price} 이익 ${tp.breakdown?.profit}` : '불가' });
-  const ref = marketReference(sig);
-  if (ref) {
+  const ref: MarketRef | null = opts.marketRef !== undefined ? opts.marketRef : (() => { const r = marketReference(sig); return r ? { ...r, exact: true } : null; })();
+  if (ref?.exact) {
     const limit = ref.price * (1 + sel.competitiveTolerance);
     g.push({ name: 'competitive', hard: true, pass: tp.price <= limit, detail: `목표가 ${tp.price} / ${ref.source} 최저 ${ref.price}` });
+  } else if (ref) {
+    g.push({ name: 'competitive', hard: false, pass: tp.price <= ref.price, detail: `목표가 ${tp.price} / ${ref.source} ${ref.price}(같은 상품 없음 — 점수에만 반영)` });
   } else {
     const required = sel.requireMarketPrice && opts.marketPriceAvailable !== false;
     g.push({ name: 'competitive', hard: required, pass: !required, detail: opts.marketPriceAvailable === false ? '시장가 공급원 없음(11번가·쿠팡 파트너스 키 미설정) — 가격 최적화가 판매 결과로 조정' : '시장가 정보 없음' });

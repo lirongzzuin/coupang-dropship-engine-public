@@ -306,7 +306,7 @@ describe('11번가 상품검색(시장가)', () => {
     const store = new Map<string, unknown>();
     const c = new ElevenstSearchClient({ apiKey: 'K', logger: log, fetchImpl, cache: { get: async (k) => store.get(k), set: async (k, v) => void store.set(k, v) } });
     const r = (await c.shoppingSearch('캠핑'))!;
-    expect(urls[0]).toContain('keyword=%C4%B7%C7%CE'); // EUC-KR
+    expect(urls[0]).toContain('keyword=%EC%BA%A0%ED%95%91'); // UTF-8(실측: EUC-KR은 0건)
     expect(urls[0]).toContain('apiCode=ProductSearch');
     expect(r.total).toBe(1234);
     expect(r.source).toBe('11번가');

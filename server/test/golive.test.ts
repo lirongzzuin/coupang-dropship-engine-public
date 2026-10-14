@@ -278,3 +278,36 @@ describe('실전 준비 점검(golive.sh)', () => {
     expect(urls).toEqual(['https://mac.ts.net/media/_ping']);
   });
 });
+
+describe('11번가 시장가: 같은 상품끼리 비교', () => {
+  it('같은 상품이 있으면 그 최저가(비싸면 탈락), 없으면 키워드 중앙가는 참고만', async () => {
+    const { similarProduct } = await import('../src/modules/selection/demandModel.js');
+    const { productMarketReference } = await import('../src/modules/selection/scoring.js');
+    expect(similarProduct('접이식 캠핑의자 경량 블랙', '캠핑의자 접이식 경량 체어 그린')).toBe(true);
+    expect(similarProduct('접이식 캠핑의자 경량', '캠핑의자 커버 방수 원단')).toBe(false);
+    const items = [
+      { title: '미니 캠핑 스툴 의자 소형', price: 4500 }, // 다른 상품(작은 스툴)
+      { title: '접이식 캠핑의자 경량 체어', price: 12900 },
+      { title: '캠핑의자 접이식 경량 등받이', price: 13900 },
+      { title: '릴렉스 캠핑의자 대형 체어', price: 39000 },
+    ];
+    const sig = { marketLowest: 4500, marketMedian: 13400, marketSource: '11번가' };
+    const same = productMarketReference(sig, items, '접이식 캠핑의자 경량 블랙')!;
+    expect(same).toMatchObject({ price: 12900, exact: true });
+    const none = productMarketReference(sig, items, '캠핑 테이블 롤 테이블')!;
+    expect(none).toMatchObject({ price: 13400, exact: false }); // 4,500원 스툴과 비교하지 않음
+  });
+
+  it('게이트: 같은 상품보다 비싸면 탈락, 키워드 중앙가보다 비싼 건 탈락시키지 않음(점수만)', async () => {
+    h = await makeHarness({ live: true });
+    const { evaluateGates } = await import('../src/modules/selection/scoring.js');
+    const { targetPrice } = await import('../src/modules/pricing/pricing.js');
+    const s = await h.ctx.settings.get();
+    const d = h.apiSource.add({ sourceItemId: 'T1', title: '원목 캠핑 테이블 접이식', price: 9000, stock: 100 });
+    const tp = targetPrice(s, { cost: d.price, shipping: d.shippingFee, categoryPath: d.categoryPath, inputVatDeductible: true });
+    const comp = (ref: { price: number; source: string; exact: boolean }) => evaluateGates(s, d, tp, {}, { apiOrder: true, marketRef: ref }).find((g) => g.name === 'competitive')!;
+    expect(comp({ price: tp.price - 1000, source: '11번가 같은 상품', exact: true })).toMatchObject({ hard: true, pass: false });
+    expect(comp({ price: tp.price - 1000, source: '11번가 키워드 중앙가', exact: false })).toMatchObject({ hard: false, pass: false });
+    expect(comp({ price: tp.price + 1000, source: '11번가 같은 상품', exact: true })).toMatchObject({ hard: true, pass: true });
+  });
+});

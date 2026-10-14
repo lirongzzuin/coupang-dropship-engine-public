@@ -6,9 +6,9 @@ import type { MarketSearchResult } from '../../ports/misc.js';
 /**
  * 11번가 오픈API 상품검색(시장 가격 참고용, 선택).
  * 네이버 쇼핑 검색 API는 2026-07-31 종료(실호출 404 SE05 확인, 2026-10-13) → 대체 시장가 소스.
- *  GET http://openapi.11st.co.kr/openapi/OpenApiService.tmall?key=&apiCode=ProductSearch&keyword=(EUC-KR)&pageSize=&sortCd=CP
+ *  GET http://openapi.11st.co.kr/openapi/OpenApiService.tmall?key=&apiCode=ProductSearch&keyword=(UTF-8)&pageSize=&sortCd=CP
+ *  실측(2026-10-14, 실키): 검색어는 UTF-8 URL 인코딩이어야 함(EUC-KR로 보내면 '???'로 깨져 0건).
  *  응답: EUC-KR XML (Products > TotalCount, Product > ProductName/ProductPrice/SalePrice/SellerNick/Delivery …)
- * 엔드포인트 생존은 확인(키 없이 호출 시 invalidOpenApiKey). 응답 필드는 키 발급 후 `check.sh`로 검증 필요.
  */
 export interface ElevenstOptions {
   apiKey: string;
@@ -28,11 +28,11 @@ export class ElevenstSearchClient {
   }
 
   async shoppingSearch(keyword: string): Promise<MarketSearchResult | null> {
-    const ck = `11st:${keyword}`;
+    const ck = `11st2:${keyword}`; // v2: UTF-8 검색어(이전 EUC-KR 0건 캐시 무시)
     const now = this.opts.now?.() ?? new Date();
     const cached = (await this.opts.cache?.get(ck)) as { at: string; v: MarketSearchResult | null } | undefined;
     if (cached && now.getTime() - new Date(cached.at).getTime() < 24 * 3600_000) return cached.v;
-    const kw = [...iconv.encode(keyword, 'euc-kr')].map((b) => `%${b.toString(16).toUpperCase().padStart(2, '0')}`).join('');
+    const kw = encodeURIComponent(keyword);
     await this.limiter.take();
     const res = await this.fetchImpl(`${BASE}?key=${encodeURIComponent(this.opts.apiKey)}&apiCode=ProductSearch&keyword=${kw}&pageNum=1&pageSize=50&sortCd=CP`, { signal: AbortSignal.timeout(15_000) });
     if (!res.ok) throw new HttpError(res.status, `11번가 검색 ${res.status}`);
