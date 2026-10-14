@@ -4,6 +4,7 @@ import type { ListingItemRow, ListingRow, SourceProductRow } from '../../db/sche
 import { kstDate } from '../../lib/util.js';
 import { detailOf } from '../catalog.js';
 import { bundleOptions, guardPriceChange, priceFromMarkup } from '../pricing/pricing.js';
+import { winnerCap } from './winner.js';
 
 /**
  * 등록 상품의 판매 옵션(묶음 수량)과 가격.
@@ -86,10 +87,13 @@ export async function reprice(ctx: AppContext, l: ListingRow, markup: number, re
   const count = l.price_changes_date === today ? l.price_changes_count : 0;
   let changed = false;
   let base = { price: l.sale_price, floor: l.floor_price };
+  // 아이템위너 가격을 입력해 둔 상품: 1개 옵션은 위너보다 비싸지지 않게(하한가 이상에서만, 10원 단위)
+  const cap = winnerCap(s, l, ctx.clock.now());
   for (const it of items) {
     const plan = plans.find((p) => p.units === it.unit_qty);
     if (!plan) continue;
-    const g = guardPriceChange(s, { current: it.sale_price, desired: plan.salePrice, floor: plan.floor, changesToday: count });
+    const capped = it.unit_qty === 1 && cap !== null && plan.salePrice > cap && cap >= plan.floor;
+    const g = guardPriceChange(s, { current: it.sale_price, desired: capped ? cap : plan.salePrice, floor: plan.floor, changesToday: count, ...(capped ? { unit: 10 } : {}) });
     let newPrice = it.sale_price;
     if (g.price !== null) {
       if (it.vendor_item_id) {

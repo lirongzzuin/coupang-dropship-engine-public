@@ -181,7 +181,7 @@ export async function refreshListingStatuses(ctx: AppContext): Promise<{ approve
           await pauseListing(ctx, fresh, HALT_REASON);
           continue;
         }
-        await ctx.notifications.notify('info', '상품 판매 시작', `${l.title} (${l.sale_price.toLocaleString()}원)`, { path: `/listings` });
+        await ctx.notifications.notify('info', '상품 판매 시작', `${l.title} (${l.sale_price.toLocaleString()}원)${l.dry_run ? '' : '\n👉 1~2일 안에 Wing > 상품관리 > 가격관리에서 아이템위너인지 확인하세요. 위너가 아니면 관리 화면 상품 > [아이템위너 대응]에 위너 가격(판매가+배송비)을 입력하면 하한가 안에서 맞추거나 정리합니다.'}`, { path: `/listings` });
       } else if (st.status === 'REJECTED') {
         await ctx.db.updateTable('listings').set({ status: 'rejected', status_reason: `쿠팡 승인 반려(${st.rawStatus}) — Wing에서 사유 확인`, updated_at: ctx.clock.now() }).where('id', '=', l.id).execute();
         rejected++;

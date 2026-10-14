@@ -6,6 +6,7 @@ import type { SourceProductDetail } from '../../ports/source.js';
 import { upsertSourceProduct } from '../catalog.js';
 import { PAUSE, pauseKind, pauseListing, resumeListing } from '../listing/control.js';
 import { reprice } from '../listing/items.js';
+import { setBasePrice, winnerCap } from '../listing/winner.js';
 import { getHalt } from '../guard/safety.js';
 import { computeProfit, markupCapForMarket } from '../pricing/pricing.js';
 
@@ -85,6 +86,21 @@ export async function syncListings(ctx: AppContext): Promise<{ checked: number; 
         await pause(current, `${PAUSE.margin}: 예상 손익 ${profit.toLocaleString()}원`);
         continue;
       }
+      // 아이템위너 맞춤이 가드(1회 −20%·하루 횟수) 때문에 덜 됐으면 이어서 내림. 원가가 올라 위너 아래로 못 가면 알림만(손실 판매 금지)
+      const wc = winnerCap(s, current, ctx.clock.now());
+      if (wc !== null && current.sale_price > wc) {
+        if (wc >= current.floor_price) {
+          const fresh = await ctx.db.selectFrom('listings').selectAll().where('id', '=', l.id).executeTakeFirstOrThrow(); // 하루 변경 횟수 최신값
+          const r = await setBasePrice(ctx, fresh, wc, '아이템위너 가격 맞춤(이어서)');
+          if (r.changed) {
+            stats.repriced++;
+            current = { ...current, sale_price: r.price };
+          }
+        } else {
+          await ctx.notifications.notify('warn', '아이템위너 가격 아래로 내릴 수 없음', `${l.title.slice(0, 30)}: 위너 ${l.winner_price!.toLocaleString()}원보다 싸게 팔면 하한가(${current.floor_price.toLocaleString()}원) 미만 — 원가가 올랐습니다. 노출이 적어 판매 부진 정리 대상이 됩니다.`,
+            { path: '/listings', dedupeKey: `winner-floor-${l.id}`, dedupeMinutes: 7 * 24 * 60 });
+        }
+      }
       if (d.minResalePrice && current.sale_price < d.minResalePrice) {
         await pause(current, `${PAUSE.minResale}: 판매가 ${current.sale_price.toLocaleString()}원 < 준수가 ${d.minResalePrice.toLocaleString()}원`);
         continue;
@@ -156,7 +172,9 @@ export async function optimizePrices(ctx: AppContext): Promise<{ checked: number
     const n = Number(agg?.n ?? 0);
     const dailyProfit = Number(agg?.profit ?? 0) / days;
     const marketLowest = await latestMarketLowest(ctx, l);
-    const cap = markupCapForMarket(s, l.floor_price, marketLowest);
+    // 아이템위너 가격을 입력해 둔 상품은 그 아래에서만 인상(위너를 다시 잃지 않게)
+    const wc = winnerCap(s, l, now);
+    const cap = Math.min(markupCapForMarket(s, l.floor_price, marketLowest), wc !== null && l.floor_price > 0 ? Math.max(0, wc / l.floor_price - 1) : Infinity);
     const best = l.best_daily_profit ?? 0;
     let next: number | null = null;
     let reason = '';
