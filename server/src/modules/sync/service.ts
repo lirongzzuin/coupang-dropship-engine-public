@@ -41,6 +41,7 @@ export async function syncListings(ctx: AppContext): Promise<{ checked: number; 
   const listings = await ctx.db.selectFrom('listings').selectAll().where('status', 'in', ['active', 'paused']).orderBy('id').execute();
   const pausedNow: Array<{ title: string; reason: string }> = [];
   const resumedNow: string[] = [];
+  const optionUnset: string[] = [];
   const okSources = new Set<string>();
   const failed: Array<{ l: ListingRow; source: string; fails: number }> = [];
   const pause = async (l: ListingRow, reason: string) => {
@@ -68,6 +69,12 @@ export async function syncListings(ctx: AppContext): Promise<{ checked: number; 
       okSources.add(sp.source);
       await ctx.db.updateTable('listings').set({ checked_at: ctx.clock.now(), check_fails: 0 }).where('id', '=', l.id).execute();
       if (d) await upsertSourceProduct(ctx, sp.source, d);
+      // 옵션이 여러 개인 공급처 상품인데 판매할 옵션이 정해지지 않은 채 올라감(이전 버전·도매꾹) → 구매자가 다른 색·사이즈를 받을 수 있어 판매중지
+      const variants = (d?.options ?? []).filter((o) => o.name).length;
+      if (l.status === 'active' && !l.dry_run && !l.source_option && variants > 1) {
+        if (await pauseListing(ctx, l, `${PAUSE.optionUnset}: 공급처 옵션 ${variants}개 중 어떤 것을 파는지 정해지지 않음 — [옵션 지정해 다시 등록]`)) optionUnset.push(l.title);
+        continue;
+      }
       const problem = supplyProblem(s, d);
       if (problem || !d) {
         await pause(l, problem ?? PAUSE.notSellable);
@@ -119,6 +126,11 @@ export async function syncListings(ctx: AppContext): Promise<{ checked: number; 
     const lines = pausedNow.slice(0, 8).map((x) => `• ${x.title.slice(0, 28)} — ${x.reason}`);
     await ctx.notifications.notify('warn', `상품 ${stats.paused}개 자동 판매중지`,
       `${lines.join('\n')}${pausedNow.length > 8 ? `\n외 ${pausedNow.length - 8}개` : ''}\n공급처에서 주문할 수 없는 상태라 쿠팡 판매를 멈췄습니다. 회복되면 자동 재개됩니다.`, { path: '/listings' });
+  }
+  if (optionUnset.length) {
+    await ctx.notifications.notify('action', `옵션이 정해지지 않은 상품 ${optionUnset.length}개 판매중지`,
+      `${optionUnset.slice(0, 8).map((t) => `• ${t.slice(0, 28)}`).join('\n')}\n공급처에 색상·사이즈 옵션이 여러 개인데 어떤 옵션을 파는지 정해지지 않은 채 올라가(쿠팡 옵션: 멀티/FREE 등) 구매자가 다른 옵션을 받을 수 있습니다.\n관리 화면 상품 > 해당 상품 > [옵션 지정해 다시 등록]을 누르면 옵션(예: 3호 화이트)을 정해 새로 등록합니다. 이전 쿠팡 상품은 Wing에서 삭제하면 자동 정리됩니다.`,
+      { path: '/listings' });
   }
   if (stats.resumed) await ctx.notifications.notify('info', `상품 ${stats.resumed}개 판매 재개`, resumedNow.slice(0, 8).map((t) => `• ${t.slice(0, 28)}`).join('\n'), { path: '/listings' });
   return stats;

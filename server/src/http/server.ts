@@ -16,7 +16,7 @@ import { errMessage } from '../lib/util.js';
 import { answerInquiry } from '../modules/cs/service.js';
 import { listingProfit, monthlyCsv } from '../modules/finance/service.js';
 import { pauseListing, resumeListing } from '../modules/listing/control.js';
-import { linkExistingListing, ListingError, quoteSourceItem, listNameFixes, markNameFixed, registerListing, updateDraft, validateListing } from '../modules/listing/service.js';
+import { linkExistingListing, ListingError, quoteSourceItem, listNameFixes, markNameFixed, registerListing, relistWithOption, updateDraft, validateListing } from '../modules/listing/service.js';
 import { importCoupangSalesCsv } from '../modules/marketdata/csvImport.js';
 import { confirmPurchase, decryptReceiver, OrderError, overrideAndProcess, submitTracking, transition } from '../modules/orders/service.js';
 import { ACTION_STATUSES, EXCEPTION_STATUSES, ORDER_STATUSES, type OrderStatus, STATUS_LABEL } from '../modules/orders/stateMachine.js';
@@ -335,6 +335,8 @@ export async function buildServer(ctx: AppContext, scheduler: Scheduler | null, 
       }
       return { done };
     });
+    // 옵션이 정해지지 않은 채 올라간 상품 → 공급처 옵션을 정해 새로 등록
+    api.post('/api/listings/:id/relist', async (req) => relistWithOption(ctx, idParam(req), actor(req)));
     api.post('/api/listings/:id/resume', async (req) => {
       const l = await ctx.db.selectFrom('listings').selectAll().where('id', '=', idParam(req)).executeTakeFirstOrThrow();
       return { ok: await resumeListing(ctx, { ...l, status: 'paused' }) };

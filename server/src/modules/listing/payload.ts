@@ -3,6 +3,7 @@ import type { AttributeSpec, CategoryMeta } from '../../ports/market.js';
 import type { SourceProductDetail } from '../../ports/source.js';
 import { truncate } from '../../lib/util.js';
 import { productNameFor } from './text.js';
+import { colorFor, sizeFor, variantOf } from './variant.js';
 
 /**
  * 쿠팡 상품 생성 페이로드.
@@ -30,7 +31,7 @@ export function buildCoupangPayload(s: Settings, p: PayloadInput): Record<string
   const prepDays = Math.min(30, (p.detail?.prepDays ?? 1) + s.listing.shippingBufferDays);
   const ten = (n: number) => Math.round(n / 10) * 10;
   // 구매옵션은 원래 상품명에서 뽑고(색상·사이즈 등), 상품명에서는 그 옵션 값을 뺀다(쿠팡: 상품명·옵션 단어 중복 금지)
-  const attrs = p.options.map((o) => buildAttributes(p.meta, p.title, o.units, p.detail?.defaultOption));
+  const attrs = p.options.map((o) => buildAttributes(p.meta, p.title, o.units, p.detail));
   const name = truncate(productNameFor(p.title, attrs.flat().map((a) => a.attributeValueName)), 100);
   return {
     displayCategoryCode: Number(p.categoryCode),
@@ -123,17 +124,20 @@ function kstLocal(d: Date): string {
 
 export class AttributeError extends Error {}
 
-const COLORS = ['블랙', '화이트', '그레이', '베이지', '네이비', '핑크', '블루', '레드', '그린', '브라운', '아이보리', '옐로우', '퍼플', '민트', '오렌지', '실버', '골드', '투명', '카키', '와인', '차콜', '크림', '검정', '흰색', '회색', '빨강', '파랑', '노랑', '초록', '분홍', '하늘색', '남색', '갈색'];
-
 /**
- * 카테고리 필수 구매옵션(색상·사이즈·수량 등)을 상품명에서 채운다. 쿠팡은 필수 속성이 빠지면 등록을 거부.
+ * 카테고리 필수 구매옵션(색상·사이즈·수량 등)을 채운다. 쿠팡은 필수 속성이 빠지면 등록을 거부.
+ * 4번째 인자: 공급처 상품 상세(옵션·고시정보 사용) 또는 옵션 이름(문자열)
  * - 수량: 묶음 수량(n개)
- * - 색상: 기본 옵션·상품명의 색상 단어, 없으면 "멀티"(쿠팡은 '상세페이지 참조' 거부)
- * - 사이즈: 상품명의 규격(44리터, 30x40cm 등), 없으면 FREE
- * - 그 밖의 숫자형 속성(용량·중량 등): 상품명에서 단위가 맞는 숫자를 찾고, 없으면 등록 불가(AttributeError → 다른 후보로)
+ * - 색상·사이즈: 판매할 공급처 옵션의 축(색상=화이트, 사이즈=3호) → 옵션 이름("심플바스켓 (3호 화이트)") → 상품명 → 고시정보 (variant.ts)
+ *   · 옵션이 여러 개이고 옵션끼리 색상(사이즈)이 다른데 값을 못 찾으면 등록 불가(AttributeError → 다른 후보로)
+ *   · 단일 상품이라 값이 없으면 색상 '멀티'·사이즈 'FREE'(쿠팡은 '상세페이지 참조' 같은 값을 거부, 실측 2026-10-14)
+ * - 그 밖의 숫자형 속성(용량·중량 등): 상품명에서 단위가 맞는 숫자를 찾고, 없으면 등록 불가
  */
-export function buildAttributes(meta: CategoryMeta, title: string, units: number, optionName?: string): Array<{ attributeTypeName: string; attributeValueName: string }> {
+export function buildAttributes(meta: CategoryMeta, title: string, units: number, source?: SourceProductDetail | string | null): Array<{ attributeTypeName: string; attributeValueName: string }> {
   const specs: AttributeSpec[] = meta.requiredAttributeSpecs ?? meta.requiredAttributes.map((name) => ({ name, dataType: name === '수량' ? 'NUMBER' : 'STRING' }));
+  const v = typeof source === 'string' ? variantOf(null, source) : variantOf(source ?? null);
+  const optionName = v.option;
+  if (v.issue) throw new AttributeError(v.issue);
   const out: Array<{ attributeTypeName: string; attributeValueName: string }> = [];
   const has = (n: string) => out.some((x) => x.attributeTypeName === n);
   for (const a of specs) {
@@ -141,11 +145,13 @@ export function buildAttributes(meta: CategoryMeta, title: string, units: number
     if (n === '수량' || (a.dataType === 'NUMBER' && /수량|개수/.test(n))) {
       out.push({ attributeTypeName: n, attributeValueName: `${units}${a.usableUnits?.includes('개') || !a.basicUnit ? '개' : a.basicUnit}` });
     } else if (/색상|컬러/.test(n)) {
-      // 쿠팡은 '상세페이지 참조' 같은 의미 없는 옵션값을 거부(실측 2026-10-14) → 기본 옵션·상품명의 색상, 없으면 '멀티'
-      out.push({ attributeTypeName: n, attributeValueName: COLORS.find((c) => optionName?.includes(c)) ?? COLORS.find((c) => title.includes(c)) ?? '멀티' });
+      const c = colorFor(v, title);
+      if (!c && v.colorVaries) throw new AttributeError(`필수 구매옵션 '${n}': 공급처 옵션(${optionName ?? '?'})에서 색상을 찾지 못함 — 옵션마다 색상이 달라 임의값으로 올리지 않음`);
+      out.push({ attributeTypeName: n, attributeValueName: c ?? '멀티' });
     } else if (/사이즈|크기/.test(n)) {
-      const m = title.match(/(\d+\s*[xX*×]\s*\d+(?:\s*[xX*×]\s*\d+)?\s*(?:cm|mm)?|\d+(?:\.\d+)?\s*(?:리터|L|ml|cm|mm|m)(?![A-Za-z])|(?<![A-Za-z])(?:XS|S|M|L|XL|XXL|FREE)(?![A-Za-z]))/);
-      out.push({ attributeTypeName: n, attributeValueName: m ? m[0].replace(/\s+/g, '') : 'FREE' });
+      const z = sizeFor(v, title);
+      if (!z && v.sizeVaries) throw new AttributeError(`필수 구매옵션 '${n}': 공급처 옵션(${optionName ?? '?'})에서 사이즈를 찾지 못함 — 옵션마다 사이즈가 달라 임의값으로 올리지 않음`);
+      out.push({ attributeTypeName: n, attributeValueName: z ?? 'FREE' });
     } else if (a.dataType === 'NUMBER') {
       const unitsRe = (a.usableUnits?.length ? a.usableUnits : a.basicUnit ? [a.basicUnit] : []).map((u) => u.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
       const m = unitsRe ? title.match(new RegExp(`(\\d+(?:\\.\\d+)?)\\s*(${unitsRe})`, 'i')) : null;

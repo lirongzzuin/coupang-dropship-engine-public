@@ -1,6 +1,7 @@
 import type {
   SourceAdapter, SourceOrderCheck, SourceOrderCheckRequest, SourceOrderRequest, SourceOrderResult, SourceOrderState, SourceProductDetail, SourceProductSummary, SourceTracking,
 } from '../../ports/source.js';
+import { pickDefaultOption } from '../options.js';
 
 /** 테스트·데모용 공급처. apiOrder 여부를 생성자에서 정해 두 가지 흐름(API/작업함)을 모두 검증한다. */
 export class MockSource implements SourceAdapter {
@@ -83,6 +84,12 @@ export class MockSource implements SourceAdapter {
       const o = d.options.find((x) => x.name === hint.option);
       if (!o) return { ...d, status: 'ended', stock: 0, defaultOption: hint.option, unavailableReason: `판매 옵션(${hint.option})이 공급처에서 없어짐` };
       return { ...d, price: o.price, stock: o.stock, defaultOption: o.name, status: d.status === 'active' && o.stock === 0 ? 'soldout' : d.status };
+    }
+    // 실제 어댑터처럼 옵션이 여러 개면 기본 옵션(가장 싼 재고 옵션)을 정해 그 가격·재고로
+    const named = (d.options ?? []).filter((o) => o.name);
+    if (!hint.option && !d.defaultOption && named.length > 1) {
+      const def = pickDefaultOption(named)!;
+      return { ...d, price: def.price, stock: def.stock, defaultOption: def.name };
     }
     return d;
   }

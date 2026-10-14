@@ -200,6 +200,38 @@ export async function refreshListingStatuses(ctx: AppContext): Promise<{ approve
 }
 
 /**
+ * [옵션 지정해 다시 등록]: 공급처 옵션이 정해지지 않은 채 올라간 상품(쿠팡 옵션이 멀티/FREE 등)을
+ * 공급처 옵션을 다시 읽어 판매할 옵션(예: 3호 화이트)을 정하고 정확한 구매옵션으로 새로 등록한다.
+ * 이전 상품은 판매종료(쿠팡 판매중지). 새 등록이 실패하면 이전 상품을 원래 상태(판매중지)로 되돌린다.
+ * 승인된 상품의 옵션을 API로 바꾸면 재심사가 필요해 새로 등록하는 방식을 쓴다(이전 쿠팡 상품은 Wing에서 삭제하면 자동 정리).
+ */
+export async function relistWithOption(ctx: AppContext, id: number, actor: string): Promise<ListingRow> {
+  const l = await ctx.db.selectFrom('listings').selectAll().where('id', '=', id).executeTakeFirst();
+  if (!l) throw new ListingError('등록 상품 없음');
+  if (!['active', 'paused'].includes(l.status)) throw new ListingError('판매중·일시중지 상품만 다시 등록할 수 있습니다');
+  if (!l.candidate_id) throw new ListingError('직접 연결한 상품은 다시 등록할 수 없습니다 — Wing에서 옵션을 직접 수정하세요');
+  const sp = await ctx.db.selectFrom('source_products').selectAll().where('id', '=', l.source_product_id).executeTakeFirstOrThrow();
+  const src = ctx.sources.get(sp.source);
+  if (!src) throw new ListingError(`공급처 연결 없음: ${sp.source}`);
+  const { upsertSourceProduct } = await import('../catalog.js');
+  const d = await src.getProduct(sp.source_item_id, { title: sp.title });
+  if (!d || d.status !== 'active') throw new ListingError('공급처에서 지금 판매하지 않는 상품입니다');
+  await upsertSourceProduct(ctx, sp.source, d);
+  const prev = { status: l.status, status_reason: l.status_reason, paused_at: l.paused_at };
+  await pauseListing(ctx, l, '옵션 지정 재등록으로 교체(이전 쿠팡 상품은 Wing에서 삭제해도 됨)', true);
+  try {
+    const draft = await createDraftFromCandidate(ctx, l.candidate_id, actor);
+    const fresh = await registerListing(ctx, draft.id, actor);
+    await audit(ctx, actor, 'listing.relist_option', String(l.id), { newListing: fresh.id, option: fresh.source_option });
+    return fresh;
+  } catch (e) {
+    // 되돌림: 이전 상품은 판매중지 상태로(사람이 확인)
+    await ctx.db.updateTable('listings').set({ status: 'paused', status_reason: prev.status_reason ?? `${PAUSE.optionUnset}: 다시 등록 실패`, paused_at: prev.paused_at ?? ctx.clock.now(), updated_at: ctx.clock.now() }).where('id', '=', l.id).execute();
+    throw new ListingError(`다시 등록 실패: ${errMessage(e)}`);
+  }
+}
+
+/**
  * 이미 쿠팡에 올린 상품 중 노출상품명에 구매옵션 값이 겹치는 상품(이전 버전으로 등록) → 고칠 이름 제안.
  * 승인된 상품의 이름을 API로 바꾸면 쿠팡 재심사가 필요하고 그동안 판매가 유지되는지 공식 문서에 없어
  * 자동으로 바꾸지 않는다. 관리 화면에 제안 이름을 보여 주고 사람이 Wing에서 고친 뒤 [수정함]을 누른다.
@@ -343,7 +375,9 @@ export async function linkExistingListing(
 /** 쿠팡 등록 요청 만들기(카테고리 추천·필수 정보·이미지 변환·상세·옵션) — 실제 등록과 사전 점검이 같이 사용 */
 async function prepareRegistration(ctx: AppContext, l: ListingRow, sp: SourceProductRow) {
   const s = await ctx.settings.get();
-  const d = detailOf(sp);
+  // 구매옵션·상세 안내는 이 상품에 고정한 공급처 옵션 기준(스냅샷의 기본 옵션이 그 뒤 바뀌었어도)
+  const snap = detailOf(sp);
+  const d = snap && l.source_option ? { ...snap, defaultOption: l.source_option } : snap;
   let categoryCode = l.category_code;
   let categoryName = l.category_name;
   if (!categoryCode) {
