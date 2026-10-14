@@ -9,8 +9,8 @@ import { detailOf } from '../catalog.js';
 import { getHalt, HALT_REASON } from '../guard/safety.js';
 import { PAUSE, pauseListing } from './control.js';
 import { initialMarkup, targetMarkup, targetPrice } from '../pricing/pricing.js';
-import { getItems, planItems, saveItems } from './items.js';
-import { buildCoupangPayload, supportsBundles } from './payload.js';
+import { getItems, listingVariants, planItems, saveItems, sellableVariants } from './items.js';
+import { buildAttributes, buildCoupangPayload, supportsBundles } from './payload.js';
 import { hostDetailHtml, prepareMainImages } from './media.js';
 import { buildDetailHtml, buildTags, findBannedTerms, productNameFor, sanitizeTitle } from './text.js';
 
@@ -28,8 +28,10 @@ export async function createDraftFromCandidate(ctx: AppContext, candidateId: num
   // 후보 탭에서 직접 승인해도 1개씩 발주할 수 없는 상품(최소 구매수량·구매 단위)은 등록 불가
   const qtyIssue = orderQtyIssue(d);
   if (qtyIssue) throw new ListingError(`등록할 수 없는 상품: ${qtyIssue}`);
-  // 옵션이 여러 개인 상품은 기본 옵션 하나만 판매 → 상품명에 옵션을 밝혀 "다른 색이 왔다" 클레임 방지
-  const opt = d?.defaultOption && !sp.title.replace(/\s/g, '').includes(d.defaultOption.replace(/\s/g, '')) ? ` ${d.defaultOption.replace(/\s*\/\s*/g, ' ')}` : '';
+  // 공급처 옵션이 여러 개면 재고 있는 옵션을 모두 쿠팡 옵션으로(옵션별 원가로 가격) — 고객이 색상·사이즈를 고름
+  const variants = sellableVariants(s, d).map((o) => o.name);
+  // 옵션 하나만 파는 상품은 상품명에 그 옵션을 밝혀 "다른 색이 왔다" 클레임 방지(여러 옵션이면 구매옵션으로 고름)
+  const opt = !variants.length && d?.defaultOption && !sp.title.replace(/\s/g, '').includes(d.defaultOption.replace(/\s/g, '')) ? ` ${d.defaultOption.replace(/\s*\/\s*/g, ' ')}` : '';
   // 상품명이 길어도 옵션이 잘리지 않게 앞부분을 줄인다
   const title = sanitizeTitle(`${sanitizeTitle(sp.title, s.listing.bannedTerms, Math.max(20, s.listing.maxTitleLength - opt.length))}${opt}`, s.listing.bannedTerms, s.listing.maxTitleLength);
   const tp = targetPrice(s, { cost: sp.price, shipping: sp.shipping_fee, categoryPath: sp.category_path, inputVatDeductible: sp.tax_invoice, minResalePrice: sp.min_resale_price });
@@ -38,8 +40,10 @@ export async function createDraftFromCandidate(ctx: AppContext, candidateId: num
   // 출시 기간엔 낮은 가격(초기 판매·리뷰 확보), 이후 목표(하한가와 경쟁가의 중간 지점)로 → 최적화가 조정
   const markup = initialMarkup(s, tp.floor, cand.market_lowest);
   const target = targetMarkup(s, tp.floor, cand.market_lowest);
-  const plans = await planItems(ctx, sp, title, markup);
+  const plans = await planItems(ctx, sp, title, markup, null, variants);
   if (!plans.length) throw new ListingError('수익 가능한 판매가를 만들 수 없음');
+  // 대표 옵션(목록 표시·가격 비교): 고정 옵션(가장 싼 재고 옵션)의 1개
+  const basePlan = plans.find((p) => p.units === 1 && (!p.option || p.option === d?.defaultOption)) ?? plans[0]!;
   const now = ctx.clock.now();
   const row = await ctx.db
     .insertInto('listings')
@@ -49,8 +53,8 @@ export async function createDraftFromCandidate(ctx: AppContext, candidateId: num
       market: ctx.market.name,
       title,
       search_tags: JSON.stringify(buildTags(title, cand.keyword, s.listing.bannedTerms, s.listing.maxTags)),
-      sale_price: plans[0]!.salePrice,
-      floor_price: plans[0]!.floor,
+      sale_price: basePlan.salePrice,
+      floor_price: basePlan.floor,
       markup,
       target_markup: target,
       source_option: d?.defaultOption ?? null,
@@ -65,7 +69,7 @@ export async function createDraftFromCandidate(ctx: AppContext, candidateId: num
     .executeTakeFirstOrThrow();
   await saveItems(ctx, row.id, plans);
   await ctx.db.updateTable('candidates').set({ status: 'listed', decided_at: now }).where('id', '=', cand.id).execute();
-  await audit(ctx, actor, 'listing.draft', String(row.id), { candidateId, markup, options: plans.map((p) => p.units) });
+  await audit(ctx, actor, 'listing.draft', String(row.id), { candidateId, markup, options: plans.map((p) => `${p.option || '기본'} ${p.units}개`) });
   return row;
 }
 
@@ -80,8 +84,9 @@ export async function updateDraft(ctx: AppContext, id: number, patch: { title?: 
     // 1개 옵션 가격으로 마크업을 역산해 묶음 옵션 가격도 같은 비율로
     const markup = Math.max(0, patch.salePrice / l.floor_price - 1);
     const sp = await ctx.db.selectFrom('source_products').selectAll().where('id', '=', l.source_product_id).executeTakeFirstOrThrow();
-    const plans = await planItems(ctx, sp, patch.title ?? l.title, markup, l.fee_rate_actual);
-    if (plans[0]) plans[0].salePrice = patch.salePrice;
+    const plans = await planItems(ctx, sp, patch.title ?? l.title, markup, l.fee_rate_actual, await listingVariants(ctx, l));
+    const basePlan = plans.find((p) => p.units === 1 && (!p.option || p.option === l.source_option)) ?? plans[0];
+    if (basePlan) basePlan.salePrice = patch.salePrice;
     if (l.status === 'draft' || l.status === 'rejected') await saveItems(ctx, l.id, plans);
     set.sale_price = patch.salePrice;
     set.markup = markup;
@@ -391,6 +396,8 @@ async function prepareRegistration(ctx: AppContext, l: ListingRow, sp: SourcePro
   // 구매옵션·상세 안내는 이 상품에 고정한 공급처 옵션 기준(스냅샷의 기본 옵션이 그 뒤 바뀌었어도)
   const snap = detailOf(sp);
   const d = snap && l.source_option ? { ...snap, defaultOption: l.source_option } : snap;
+  // 여러 공급처 옵션을 함께 파는 상품이면 고객이 쿠팡 구매옵션으로 고름(상세에 '이 옵션으로 발송' 안내 안 함)
+  const multi = (await listingVariants(ctx, l)).length > 0;
   let categoryCode = l.category_code;
   let categoryName = l.category_name;
   if (!categoryCode) {
@@ -415,7 +422,7 @@ async function prepareRegistration(ctx: AppContext, l: ListingRow, sp: SourcePro
     title: l.title,
     images,
     facts: [
-      ...(d?.defaultOption ? [{ name: '옵션(구성)', value: `${d.defaultOption} — 이 옵션으로 발송됩니다` }] : []),
+      ...(!multi && d?.defaultOption ? [{ name: '옵션(구성)', value: `${d.defaultOption} — 이 옵션으로 발송됩니다` }] : []),
       { name: '원산지', value: d?.origin ?? '' },
       { name: '제조사', value: d?.manufacturer ?? '' },
       ...(d?.kc?.certNo ? [{ name: 'KC 인증', value: d.kc.certNo }] : []),
@@ -431,7 +438,30 @@ async function prepareRegistration(ctx: AppContext, l: ListingRow, sp: SourcePro
     if (drop.length) await ctx.db.deleteFrom('listing_items').where('id', 'in', drop).execute();
     items = items.filter((it) => it.unit_qty === 1);
   }
-  const options = items.map((it) => ({ units: it.unit_qty, salePrice: it.sale_price, itemName: `${it.unit_qty}개` }));
+  if (multi) {
+    // 공급처 옵션별로 구매옵션(색상·사이즈)을 정할 수 있는지, 다른 옵션과 겹치지 않는지 확인 → 안 되는 옵션만 뺌(상품 전체는 등록)
+    const seen = new Set<string>();
+    const bad = new Set<string>();
+    for (const opt of [...new Set(items.map((it) => it.source_option).filter(Boolean))]) {
+      try {
+        const attrs = buildAttributes(meta, `${sp.title} ${opt}`, 1, d ? { ...d, defaultOption: opt } : null).filter((a) => !/수량|개수/.test(a.attributeTypeName));
+        const key = JSON.stringify(attrs.map((a) => [a.attributeTypeName, a.attributeValueName.replace(/\s/g, '')]));
+        if (seen.has(key)) bad.add(opt);
+        seen.add(key);
+      } catch {
+        bad.add(opt);
+      }
+    }
+    const drop = items.filter((it) => bad.has(it.source_option) && it.id && !it.vendor_item_id);
+    if (drop.length) {
+      await ctx.db.deleteFrom('listing_items').where('id', 'in', drop.map((it) => it.id)).execute();
+      items = items.filter((it) => !bad.has(it.source_option));
+      ctx.log.info({ listing: l.id, dropped: [...bad] }, '구매옵션을 정할 수 없거나 겹치는 공급처 옵션은 빼고 등록');
+    }
+    if (!items.length) throw new ListingError('구매옵션(색상·사이즈)을 정할 수 있는 공급처 옵션이 없음');
+  }
+  const detailOfItem = (opt: string) => (d && opt ? d.options?.find((o) => o.name === opt) : undefined);
+  const options = items.map((it) => ({ units: it.unit_qty, salePrice: it.sale_price, itemName: `${it.unit_qty}개`, option: it.source_option || undefined, stock: detailOfItem(it.source_option)?.stock ?? undefined }));
   const payload = buildCoupangPayload(s, {
     vendorId: ctx.env.COUPANG_VENDOR_ID ?? 'A00000000',
     title: l.title,

@@ -16,6 +16,7 @@ import { errMessage } from '../lib/util.js';
 import { answerInquiry } from '../modules/cs/service.js';
 import { listingProfit, monthlyCsv } from '../modules/finance/service.js';
 import { forceStop, requestResume } from '../modules/monitor/repair.js';
+import { findByVendorItem } from '../modules/listing/items.js';
 import { linkExistingListing, ListingError, quoteSourceItem, listNameFixes, markNameFixed, registerListing, relistWithOption, updateDraft, validateListing } from '../modules/listing/service.js';
 import { importCoupangSalesCsv } from '../modules/marketdata/csvImport.js';
 import { confirmPurchase, decryptReceiver, OrderError, overrideAndProcess, submitTracking, transition } from '../modules/orders/service.js';
@@ -211,6 +212,10 @@ export async function buildServer(ctx: AppContext, scheduler: Scheduler | null, 
       const sp = o.source_product_id ? await ctx.db.selectFrom('source_products').selectAll().where('id', '=', o.source_product_id).executeTakeFirst() : undefined;
       const listing = o.listing_id ? await ctx.db.selectFrom('listings').select(['id', 'title', 'sale_price', 'source_option']).where('id', '=', o.listing_id).executeTakeFirst() : undefined;
       const events = await ctx.db.selectFrom('order_events').selectAll().where('order_id', '=', id).orderBy('id').execute();
+      // 고객이 고른 쿠팡 옵션의 공급처 옵션(여러 옵션 판매) — 사람이 구매할 때 이 옵션으로
+      const found = await findByVendorItem(ctx, o.vendor_item_id);
+      const option = found?.option ?? listing?.source_option ?? null;
+      const optPrice = option && sp ? ((sp.detail as { options?: Array<{ name: string; price: number }> } | null)?.options ?? []).find((x) => x.name === option)?.price : undefined;
       const r = o.pii_purged_at ? null : decryptReceiver(ctx, o);
       const s = await ctx.settings.get();
       const profitIfCost = sp ? computeProfit(s, o.sale_amount, { cost: (o.purchase_cost ?? sp.price * o.qty), shipping: o.purchase_shipping ?? sp.shipping_fee, categoryPath: sp.category_path, inputVatDeductible: sp.tax_invoice }) : null;
@@ -219,7 +224,7 @@ export async function buildServer(ctx: AppContext, scheduler: Scheduler | null, 
         ...safe,
         statusLabel: STATUS_LABEL[o.status as OrderStatus],
         receiverMasked: r ? { name: maskName(r.name), phone: maskPhone(r.phone), addr: maskAddress(r.addr1) } : null,
-        source: sp ? { id: sp.id, source: sp.source, sourceName: ctx.sources.get(sp.source)?.displayName ?? sp.source, title: sp.title, url: sp.url, option: listing?.source_option ?? null, price: sp.price, shippingFee: sp.shipping_fee, apiOrder: !!ctx.sources.get(sp.source)?.capabilities.apiOrder } : null,
+        source: sp ? { id: sp.id, source: sp.source, sourceName: ctx.sources.get(sp.source)?.displayName ?? sp.source, title: sp.title, url: sp.url, option, price: optPrice ?? sp.price, shippingFee: sp.shipping_fee, apiOrder: !!ctx.sources.get(sp.source)?.capabilities.apiOrder } : null,
         listing: listing ?? null,
         events,
         profitEstimate: profitIfCost,
@@ -296,10 +301,30 @@ export async function buildServer(ctx: AppContext, scheduler: Scheduler | null, 
         .select(['listings.id', 'listings.title', 'listings.status', 'listings.status_reason', 'listings.sale_price', 'listings.floor_price', 'listings.markup', 'listings.target_markup', 'listings.fee_rate_actual', 'listings.images', 'listings.vendor_item_id', 'listings.seller_product_id', 'listings.category_code', 'listings.category_name', 'listings.search_tags', 'listings.dry_run', 'listings.listed_at', 'listings.updated_at', 'listings.source_option', 'listings.checked_at', 'listings.order_checked_at', 'listings.check_fails', 'listings.repair_state', 'listings.repair_note',
           'source_products.source', 'source_products.price as source_price', 'source_products.shipping_fee as source_shipping', 'source_products.stock as source_stock', 'source_products.url as source_url', 'source_products.image_reuse_allowed'])
         .orderBy('listings.id', 'desc').limit(300);
-      if (q.status) query = query.where('listings.status', '=', q.status);
-      // 전체 보기에서는 Wing에서 삭제한 상품 숨김(판매종료 탭에서 확인)
-      else query = query.where((eb) => eb.not(eb.and([eb('listings.status', '=', 'stopped'), eb(eb.fn.coalesce('listings.status_reason', eb.val('')), 'like', '쿠팡에서 삭제됨%')])));
-      return query.execute();
+      // 쿠팡(Wing)에서 삭제한 상품은 [쿠팡 삭제] 탭에서만 보임
+      const deleted = (eb: any) => eb.and([eb('listings.status', '=', 'stopped'), eb(eb.fn.coalesce('listings.status_reason', eb.val('')), 'like', '쿠팡에서 삭제됨%')]);
+      if (q.status === 'deleted') query = query.where(deleted);
+      else if (q.status) query = query.where('listings.status', '=', q.status).where((eb) => eb.not(deleted(eb)));
+      else query = query.where((eb) => eb.not(deleted(eb)));
+      const rows = await query.execute();
+      // 여러 옵션 상품: 공급처 옵션별 판매 상태(1개 단위 기준)
+      const ids = rows.map((r) => r.id);
+      const items = ids.length
+        ? await ctx.db.selectFrom('listing_items').select(['listing_id', 'source_option', 'unit_qty', 'sale_price', 'item_status', 'item_reason'])
+          .where('listing_id', 'in', ids).where('source_option', '!=', '').orderBy('listing_id').orderBy('sale_price').execute()
+        : [];
+      const variants = new Map<number, { option: string; price: number; status: string; reason: string | null; units: number[] }[]>();
+      for (const it of items) {
+        const list = variants.get(it.listing_id) ?? [];
+        const v = list.find((x) => x.option === it.source_option);
+        if (v) {
+          v.units.push(it.unit_qty);
+          if (it.unit_qty === 1) v.price = it.sale_price;
+          if (it.item_status === 'paused') { v.status = 'paused'; v.reason ??= it.item_reason; }
+        } else list.push({ option: it.source_option, price: it.sale_price, status: it.item_status, reason: it.item_reason, units: [it.unit_qty] });
+        variants.set(it.listing_id, list);
+      }
+      return rows.map((r) => ({ ...r, variants: variants.get(r.id) ?? [] }));
     });
     api.patch('/api/listings/:id', async (req) => {
       const b = z.object({ title: z.string().optional(), salePrice: z.coerce.number().int().positive().optional(), images: z.array(z.string().url()).optional(), categoryCode: z.string().optional(), tags: z.array(z.string()).optional() }).parse(req.body);

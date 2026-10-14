@@ -15,7 +15,7 @@ export interface PayloadInput {
   title: string;
   categoryCode: string;
   /** 판매 옵션(묶음 수량별) */
-  options: Array<{ units: number; salePrice: number; itemName: string }>;
+  options: Array<{ units: number; salePrice: number; itemName: string; /** 공급처 옵션(여러 옵션 판매) */ option?: string; /** 그 옵션 재고 */ stock?: number | null }>;
   stock: number;
   images: string[];
   detailHtml: string;
@@ -31,7 +31,8 @@ export function buildCoupangPayload(s: Settings, p: PayloadInput): Record<string
   const prepDays = Math.min(30, (p.detail?.prepDays ?? 1) + s.listing.shippingBufferDays);
   const ten = (n: number) => Math.round(n / 10) * 10;
   // 구매옵션은 원래 상품명에서 뽑고(색상·사이즈 등), 상품명에서는 그 옵션 값을 뺀다(쿠팡: 상품명·옵션 단어 중복 금지)
-  const attrs = p.options.map((o) => buildAttributes(p.meta, p.title, o.units, p.detail));
+  // 여러 공급처 옵션을 함께 팔면 각 쿠팡 옵션의 구매옵션은 그 공급처 옵션에서
+  const attrs = p.options.map((o) => buildAttributes(p.meta, p.title, o.units, o.option && p.detail ? { ...p.detail, defaultOption: o.option } : p.detail));
   const name = truncate(productNameFor(p.title, attrs.flat().map((a) => a.attributeValueName)), 100);
   return {
     displayCategoryCode: Number(p.categoryCode),
@@ -65,7 +66,7 @@ export function buildCoupangPayload(s: Settings, p: PayloadInput): Record<string
         itemName: optionItemName(attrs[i]!, o.units),
         originalPrice: ten(Math.max(o.salePrice * s.pricing.originalPriceMultiplier, o.salePrice)),
         salePrice: ten(o.salePrice),
-        maximumBuyCount: Math.max(0, Math.min(99999, Math.floor(p.stock / o.units))),
+        maximumBuyCount: Math.max(0, Math.min(99999, Math.floor(Math.min(o.stock ?? p.stock, 999) / o.units))),
         maximumBuyForPerson: s.listing.maxBuyPerPerson,
         maximumBuyForPersonPeriod: 1,
         outboundShippingTimeDay: prepDays,

@@ -244,6 +244,7 @@ describe('쿠팡 클라이언트', () => {
 describe('옵션 상품 표시', () => {
   it('기본 옵션 하나만 파는 상품은 상품명·상세에 옵션을 밝힘(긴 상품명이어도 옵션은 안 잘림)', async () => {
     h = await makeHarness({ live: true });
+    await h.ctx.settings.update({ listing: { multiVariant: false } }); // 옵션 하나만 파는 모드
     const { createDraftFromCandidate } = await import('../src/modules/listing/service.js');
     const { upsertSourceProduct } = await import('../src/modules/catalog.js');
     const d = h.apiSource.add({ sourceItemId: 'OPT1', title: '깔끔한 목욕 바구니 헬스장 사우나 수납정리함 파스텔 목욕용품 정리 바구니 대용량 다용도 손잡이형', price: 6000, defaultOption: '그린', options: [{ name: '그린', price: 6000, stock: 10 }, { name: '핑크', price: 6000, stock: 5 }] });

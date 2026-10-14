@@ -6,7 +6,8 @@ import { maskName } from '../../lib/logger.js';
 import { addDays, errMessage, kstDate } from '../../lib/util.js';
 import type { MarketOrderLine } from '../../ports/market.js';
 import { upsertSourceProduct } from '../catalog.js';
-import { pauseListing } from '../listing/control.js';
+import { pauseItem, pauseListing } from '../listing/control.js';
+import { supplyProblem } from '../sync/service.js';
 import { canOrderQty, describeOrderQty, orderQtyIssue } from '../orderQty.js';
 import { findByVendorItem } from '../listing/items.js';
 import { computeProfit } from '../pricing/pricing.js';
@@ -153,13 +154,23 @@ export async function processOrder(ctx: AppContext, orderId: number, opts: { ove
   let shipping = sp.shipping_fee;
   if (source.capabilities.detail) {
     try {
-      // 쿠팡에 올린 옵션 그대로 확인(그 옵션이 품절이면 다른 옵션으로 보내지 않음)
-      const d = await source.getProduct(sp.source_item_id, { title: sp.title, ...(listing.source_option ? { option: listing.source_option } : {}) });
+      // 고객이 고른 쿠팡 옵션의 공급처 옵션 그대로 확인(그 옵션이 품절이면 다른 옵션으로 보내지 않음)
+      const d = await source.getProduct(sp.source_item_id, { title: sp.title, ...(found.option ? { option: found.option } : {}) });
       if (!d || d.status !== 'active' || d.marketSellable === false || (d.stock !== null && d.stock < units)) {
         if (d) await upsertSourceProduct(ctx, sp.source, d);
-        await pauseListing(ctx, listing, d?.unavailableReason ? `공급처 품절: ${d.unavailableReason}` : '공급처 품절');
+        const reason = d?.unavailableReason ? `공급처 품절: ${d.unavailableReason}` : '공급처 품절';
+        // 여러 옵션을 파는 상품에서 그 옵션만 품절이면 그 옵션만 판매중지(다른 색·사이즈는 계속 판매)
+        const item = await ctx.db.selectFrom('listing_items').selectAll().where('vendor_item_id', '=', o.vendor_item_id).executeTakeFirst();
+        // 상품 자체는 판매중인지(옵션 고정 없이 다시 조회) — 그렇다면 이 옵션만의 문제
+        const whole = item?.source_option ? await source.getProduct(sp.source_item_id, { title: sp.title }).catch(() => null) : null;
+        const onlyThisOption = !!item?.source_option && !!whole && !supplyProblem(s, { ...whole, stock: null });
+        if (onlyThisOption) {
+          for (const it of await ctx.db.selectFrom('listing_items').selectAll().where('listing_id', '=', listing.id).where('source_option', '=', item!.source_option).execute()) await pauseItem(ctx, it, reason);
+        } else {
+          await pauseListing(ctx, listing, reason);
+        }
         if (!opts.override) {
-          await ctx.notifications.notify('error', '품절 주문 발생', `${o.item_name} — 공급처 품절. 상품 판매중지함. 고객 취소 여부를 확인하세요.`, { path: `/orders/${o.id}` });
+          await ctx.notifications.notify('error', '품절 주문 발생', `${o.item_name} — 공급처 품절. ${onlyThisOption ? `이 옵션(${item!.source_option})만` : '상품'} 판매중지함. 고객 취소 여부를 확인하세요.`, { path: `/orders/${o.id}` });
           return transition(ctx, o, 'OUT_OF_STOCK', '공급처 품절/재고 부족', actor);
         }
       } else {
@@ -271,12 +282,12 @@ async function placeApiOrder(ctx: AppContext, o: OrderRow, sourceItemId: string,
   const r = decryptReceiver(ctx, o);
   const s = await ctx.settings.get();
   try {
-    // 발주 옵션 = 쿠팡에 올린 옵션(고정). 옛 상품(고정 옵션 없음)만 공급처 스냅샷의 기본 옵션
-    const listing = o.listing_id ? await ctx.db.selectFrom('listings').select('source_option').where('id', '=', o.listing_id).executeTakeFirst() : undefined;
+    // 발주 옵션 = 고객이 고른 쿠팡 옵션의 공급처 옵션(여러 옵션 판매) → 상품 고정 옵션 → 옛 상품만 공급처 스냅샷의 기본 옵션
+    const found = await findByVendorItem(ctx, o.vendor_item_id);
     const res = await source.placeOrder!({
       idempotencyKey: key,
       sourceItemId,
-      option: listing?.source_option ?? (sp.detail as { defaultOption?: string } | null)?.defaultOption,
+      option: found?.option ?? (sp.detail as { defaultOption?: string } | null)?.defaultOption,
       qty: units,
       receiver: { name: r.name, phone: r.phone, addr1: r.addr1, addr2: r.addr2, zip: r.zip },
       sender: { name: s.orders.senderName || r.name, phone: s.orders.senderPhone || s.coupang.companyContactNumber || r.phone },

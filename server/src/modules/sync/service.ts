@@ -1,12 +1,12 @@
 import type { Settings } from '../../config/settings.js';
 import type { AppContext } from '../../context.js';
-import type { ListingRow } from '../../db/schema.js';
+import type { ListingRow, SourceProductRow } from '../../db/schema.js';
 import { addDays, errMessage } from '../../lib/util.js';
 import type { SourceProductDetail } from '../../ports/source.js';
-import { upsertSourceProduct } from '../catalog.js';
+import { detailOf, upsertSourceProduct } from '../catalog.js';
 import { orderQtyIssue } from '../orderQty.js';
-import { PAUSE, pauseKind, pauseListing, resumeListing } from '../listing/control.js';
-import { reprice } from '../listing/items.js';
+import { PAUSE, pauseItem, pauseKind, pauseListing, resumeItem, resumeListing } from '../listing/control.js';
+import { getItems, listingVariants, reprice } from '../listing/items.js';
 import { getHalt } from '../guard/safety.js';
 import { computeProfit, markupCapForMarket } from '../pricing/pricing.js';
 
@@ -69,10 +69,27 @@ export async function syncListings(ctx: AppContext): Promise<{ checked: number; 
     if (!src?.capabilities.detail) continue;
     stats.checked++;
     try {
-      const d = await src.getProduct(sp.source_item_id, { title: sp.title, ...(l.source_option ? { option: l.source_option } : {}) });
+      // 여러 공급처 옵션을 함께 파는 상품은 옵션 고정 없이 전체 옵션을 읽어 옵션별로 판단
+      const variantNames = await listingVariants(ctx, l);
+      const d = await src.getProduct(sp.source_item_id, { title: sp.title, ...(!variantNames.length && l.source_option ? { option: l.source_option } : {}) });
       okSources.add(sp.source);
       await ctx.db.updateTable('listings').set({ checked_at: ctx.clock.now(), check_fails: 0 }).where('id', '=', l.id).execute();
+      const prevDetail = detailOf(sp);
       if (d) await upsertSourceProduct(ctx, sp.source, d);
+      if (variantNames.length && d) {
+        const r = await syncVariants(ctx, s, l, sp, prevDetail, d, halted);
+        if (r.pausedListing) {
+          stats.paused++;
+          pausedNow.push({ title: l.title, reason: r.pausedListing });
+        }
+        if (r.resumedListing) {
+          stats.resumed++;
+          resumedNow.push(l.title);
+        }
+        stats.repriced += r.repriced;
+        for (const x of r.itemChanges) pausedNow.push({ title: l.title, reason: x });
+        continue;
+      }
       // 옵션이 여러 개인 공급처 상품인데 판매할 옵션이 정해지지 않은 채 올라감(이전 버전·도매꾹) → 구매자가 다른 색·사이즈를 받을 수 있어 판매중지
       const variants = (d?.options ?? []).filter((o) => o.name).length;
       if (l.status === 'active' && !l.dry_run && !l.source_option && variants > 1) {
@@ -138,6 +155,63 @@ export async function syncListings(ctx: AppContext): Promise<{ checked: number; 
   }
   if (stats.resumed) await ctx.notifications.notify('info', `상품 ${stats.resumed}개 판매 재개`, resumedNow.slice(0, 8).map((t) => `• ${t.slice(0, 28)}`).join('\n'), { path: '/listings' });
   return stats;
+}
+
+/**
+ * 여러 공급처 옵션을 함께 파는 상품의 동기화.
+ *  - 상품 자체가 팔 수 없으면(단종·오픈마켓 금지·최소 구매수량·모든 옵션 품절) 상품 판매중지
+ *  - 옵션별: 공급처에서 없어졌거나 재고가 기준 미만·손실이면 그 쿠팡 옵션만 판매중지, 회복되면 재개
+ *  - 옵션 원가가 바뀌면 옵션별 하한가로 가격 재계산, 옵션별 재고 수량 반영
+ */
+async function syncVariants(ctx: AppContext, s: Settings, l: ListingRow, sp: SourceProductRow, prev: SourceProductDetail | null, d: SourceProductDetail, halted: boolean)
+  : Promise<{ pausedListing?: string; resumedListing?: boolean; repriced: number; itemChanges: string[] }> {
+  const out: { pausedListing?: string; resumedListing?: boolean; repriced: number; itemChanges: string[] } = { repriced: 0, itemChanges: [] };
+  const kind = pauseKind(l.status_reason);
+  const opts = new Map((d.options ?? []).filter((o) => o.name).map((o) => [o.name, o]));
+  // 상품 단위 문제(재고는 옵션별로 따로 봄)
+  const whole = supplyProblem(s, { ...d, stock: null, status: d.status === 'soldout' ? 'active' : d.status });
+  const minStock = s.monitor.enabled ? s.monitor.minSourceStock : 1;
+  let items = await getItems(ctx, l);
+  const usable = (name: string) => {
+    const o = opts.get(name);
+    return !!o && (o.stock === null || o.stock >= minStock);
+  };
+  if (whole || !items.some((it) => usable(it.source_option))) {
+    const reason = whole ?? `${PAUSE.soldout}: 판매 중인 옵션 모두 품절`;
+    if (l.status === 'active' && (await pauseListing(ctx, l, reason))) out.pausedListing = reason;
+    else if (l.status === 'paused' && kind === 'supply' && l.status_reason !== reason) await ctx.db.updateTable('listings').set({ status_reason: reason.slice(0, 300) }).where('id', '=', l.id).execute();
+    return out;
+  }
+  // 옵션 원가·배송비가 바뀌었으면 옵션별 하한가로 재계산
+  const prevOpts = new Map((prev?.options ?? []).map((o) => [o.name, o.price]));
+  const costChanged = d.shippingFee !== sp.shipping_fee || items.some((it) => it.source_option && opts.get(it.source_option) && prevOpts.get(it.source_option) !== opts.get(it.source_option)!.price);
+  if (costChanged || items.some((it) => it.floor_price > it.sale_price)) {
+    const r = await reprice(ctx, l, l.markup, '공급가 변동(옵션별)');
+    if (r.changed) out.repriced++;
+    items = await getItems(ctx, l);
+  }
+  const listingActive = l.status === 'active';
+  for (const it of items) {
+    const o = opts.get(it.source_option);
+    let problem: string | null = null;
+    if (!o) problem = `${PAUSE.notSellable}: 옵션(${it.source_option})이 공급처에서 없어짐`;
+    else if (o.stock !== null && o.stock < minStock) problem = o.stock <= 0 ? `${PAUSE.soldout}: 옵션(${o.name}) 품절` : `${PAUSE.lowStock}: 옵션(${o.name}) 재고 ${o.stock}개`;
+    else {
+      const units = it.unit_qty;
+      const shipping = d.shippingPerUnit ? d.shippingFee * units : d.maxPerBox && units > d.maxPerBox ? d.shippingFee * Math.ceil(units / d.maxPerBox) : d.shippingFee;
+      const profit = computeProfit(s, it.sale_price, { cost: o.price * units, shipping, categoryPath: d.categoryPath, inputVatDeductible: d.taxInvoice, feeRate: l.fee_rate_actual }).profit;
+      if (profit < 0) problem = `${PAUSE.margin}: 옵션(${o.name} ${units}개) 예상 손익 ${Math.round(profit).toLocaleString()}원`;
+    }
+    if (problem) {
+      if (await pauseItem(ctx, it, problem)) out.itemChanges.push(`${it.item_name}: ${problem}`);
+      continue;
+    }
+    if (it.item_status === 'paused' && pauseKind(it.item_reason) === 'supply' && !halted) await resumeItem(ctx, it, listingActive);
+    if (it.vendor_item_id && o!.stock !== null && listingActive) await ctx.market.updateQuantity(it.vendor_item_id, Math.min(Math.floor(o!.stock / it.unit_qty), 999));
+  }
+  // 공급처 사유로 멈췄던 상품: 판매 가능한 옵션이 있으니 재개(멈춘 옵션은 그대로)
+  if (l.status === 'paused' && kind === 'supply' && !halted && (await resumeListing(ctx, l))) out.resumedListing = true;
+  return out;
 }
 
 /**
