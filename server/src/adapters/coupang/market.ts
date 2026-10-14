@@ -225,7 +225,7 @@ export class CoupangMarket implements MarketPort {
     let token = '';
     for (let page = 0; page < 200; page++) {
       const res = await this.client.request('GET', `${OPEN}/v1/revenue-history`, {
-        query: { vendorId: this.v, recognitionDateFrom: fromDate, recognitionDateTo: toDate, token, maxPerPage: 50 },
+        query: { vendorId: this.v, recognitionDateFrom: fromDate, recognitionDateTo: toDate, token: token || null, maxPerPage: 50 },
       });
       for (const r of res?.data ?? []) {
         const items: any[] = r.items ?? [];

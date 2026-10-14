@@ -1,7 +1,7 @@
 import type { Logger } from '../../lib/logger.js';
 import { HttpError, RateLimiter, retry } from '../../lib/util.js';
 import type {
-  SourceAdapter, SourceOrderRequest, SourceOrderResult, SourceProductDetail, SourceProductSummary, SourceTracking,
+  SourceAdapter, SourceOrderRequest, SourceOrderResult, SourceOrderState, SourceProductDetail, SourceProductSummary, SourceTracking,
 } from '../../ports/source.js';
 
 /**
@@ -24,7 +24,7 @@ export interface OwnerclanOptions {
 
 const ITEM_FIELDS = `key name model production origin price pricePolicy fixedPrice
   category { key name fullName } content shippingFee shippingType images(size: large)
-  status options { optionAttributes { name value } price quantity } taxFree adultOnly
+  status options { optionAttributes { name value } price quantity status } taxFree adultOnly
   returnable guaranteedShippingPeriod openmarketSellable boxQuantity`;
 
 export class OwnerclanSource implements SourceAdapter {
@@ -125,7 +125,8 @@ export class OwnerclanSource implements SourceAdapter {
       `query($search:String,$first:Int,$minPrice:Int,$maxPrice:Int){ allItems(search:$search, first:$first, minPrice:$minPrice, maxPrice:$maxPrice, status: available, openmarketSellable:true, shippingLocationType: domestic){ edges { node { ${ITEM_FIELDS} } } } }`,
       { search: keyword, first: opts.limit ?? 20, minPrice: opts.minPrice, maxPrice: opts.maxPrice },
     );
-    return (data?.allItems?.edges ?? []).map((e: any) => toSummary(e.node));
+    // 착불(uponArrival) 상품은 고객이 배송비를 또 내게 되므로 제외
+    return (data?.allItems?.edges ?? []).filter((e: any) => e.node?.shippingType !== 'uponArrival').map((e: any) => toSummary(e.node));
   }
 
   async getProduct(key: string): Promise<SourceProductDetail | null> {
@@ -143,13 +144,15 @@ export class OwnerclanSource implements SourceAdapter {
     const opts = (it.options ?? []).map((o: any) => ({
       name: (o.optionAttributes ?? []).map((a: any) => a.value).filter(Boolean).join(' / '),
       price: Math.round(o.price ?? it.price),
-      stock: o.quantity ?? null,
+      // 옵션 상태가 판매중이 아니면 재고 0으로 취급(품절 옵션으로 발주 방지)
+      stock: o.status && o.status !== 'available' ? 0 : o.quantity ?? null,
     }));
     // 옵션이 여러 개면 기본 옵션 하나를 정해 그 가격·재고로 판매하고 그 옵션으로 발주(옵션 미지정 발주 실패 방지)
     const def = opts.length > 1 ? pickDefaultOption(opts) : undefined;
-    const stock = def ? Number(def.stock ?? 0) : (it.options ?? []).reduce((a: number, o: any) => a + (Number(o.quantity) || 0), 0);
+    const stock = def ? Number(def.stock ?? 0) : opts.reduce((a: number, o: { stock: number | null }) => a + (Number(o.stock) || 0), 0);
     const status: SourceProductDetail['status'] =
-      it.status === 'available' ? (stock > 0 || !(it.options ?? []).length ? 'active' : 'soldout')
+      it.shippingType === 'uponArrival' ? 'ended' // 착불로 바뀐 상품은 판매 불가
+      : it.status === 'available' ? (stock > 0 || !(it.options ?? []).length ? 'active' : 'soldout')
         : it.status === 'discontinued' ? 'ended' : 'soldout';
     return {
       ...s,
@@ -220,7 +223,7 @@ export class OwnerclanSource implements SourceAdapter {
     const cost = results.reduce((a, r) => a + (r.itemAmounts ?? []).reduce((b: number, x: any) => b + (x.amount ?? 0), 0), 0);
     const shippingCost = results.reduce((a, r) => a + (r.shippingAmount ?? 0), 0);
     const created = await this.gql(
-      `mutation($input:OrderInput!,$sim:[CreateOrderSimulationResultInput]){ createOrder(input:$input, simulationResult:$sim){ key status } }`,
+      `mutation($input:OrderInput!,$sim:[CreateOrderSimulationResultInput!]){ createOrder(input:$input, simulationResult:$sim){ key status } }`,
       { input, sim: results },
     );
     const orders: any[] = Array.isArray(created?.createOrder) ? created.createOrder : [created?.createOrder].filter(Boolean);
@@ -229,13 +232,45 @@ export class OwnerclanSource implements SourceAdapter {
     return { sourceOrderId: orders.map((o) => o.key).join(','), cost, shippingCost, needsPayment };
   }
 
-  async getTracking(sourceOrderId: string): Promise<SourceTracking | null> {
+  /**
+   * 공급처 주문 취소(고객이 쿠팡에서 취소했을 때). 결제완료(paid) 상태면 즉시 취소,
+   * 이미 준비중이면 취소 요청(requestOrderCancellation=true) → 공급사가 수락하면 취소.
+   */
+  async cancelOrder(sourceOrderId: string, reason: string): Promise<{ ok: boolean; status: string; message: string }> {
+    const results: string[] = [];
+    let ok = true;
     for (const key of sourceOrderId.split(',')) {
-      const data = await this.gql(`query($key:String!){ order(key:$key){ status products { trackingNumber shippingCompanyName } } }`, { key });
-      const p = (data?.order?.products ?? []).find((x: any) => x.trackingNumber);
-      if (p) return { courierName: p.shippingCompanyName ?? '', trackingNo: String(p.trackingNumber).replace(/\D/g, '') };
+      try {
+        const d = await this.gql(`mutation($key:ID!,$input:RequestOrderCancellationInput){ cancelOrder(key:$key, input:$input, requestOrderCancellation:true){ key status } }`,
+          { key, input: { cancelReason: reason.slice(0, 100) || '고객 취소' } });
+        results.push(String(d?.cancelOrder?.status ?? ''));
+      } catch (e) {
+        ok = false;
+        results.push(e instanceof Error ? e.message.slice(0, 120) : String(e));
+      }
     }
-    return null;
+    return { ok, status: results.join(','), message: results.join(' / ') };
+  }
+
+  async getTracking(sourceOrderId: string): Promise<SourceTracking | null> {
+    return (await this.getOrderInfo(sourceOrderId)).tracking;
+  }
+
+  /** 주문 상태 + 송장(한 번 조회). 여러 주문이면 가장 앞선 문제 상태(취소) 우선 */
+  async getOrderInfo(sourceOrderId: string): Promise<{ state: SourceOrderState; rawStatus: string; tracking: SourceTracking | null }> {
+    let tracking: SourceTracking | null = null;
+    const states: string[] = [];
+    for (const key of sourceOrderId.split(',')) {
+      const data = await this.gql(`query($key:String!){ order(key:$key){ status products { trackingNumber shippingCompanyName shippingCompanyCode } } }`, { key });
+      states.push(String(data?.order?.status ?? ''));
+      const p = (data?.order?.products ?? []).find((x: any) => x.trackingNumber);
+      if (p && !tracking) tracking = { courierName: p.shippingCompanyName || p.shippingCompanyCode || '', trackingNo: String(p.trackingNumber).replace(/[^0-9A-Za-z]/g, '') };
+    }
+    const state: SourceOrderState = states.some((x) => x === 'cancelled') ? 'cancelled'
+      : states.some((x) => x === 'cancelRequested') ? 'cancel_requested'
+        : states.some((x) => x === 'placed') ? 'unpaid'
+          : states.every((x) => ['paid', 'preparing', 'shipped'].includes(x)) ? 'ok' : 'other';
+    return { state, rawStatus: states.join(','), tracking };
   }
 }
 

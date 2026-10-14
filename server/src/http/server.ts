@@ -118,8 +118,16 @@ export async function buildServer(ctx: AppContext, scheduler: Scheduler | null, 
     return { started: name };
   });
 
+  // 이 Mac 안에서만(golive.sh): 실전 전환 준비 점검(조회만)
+  app.get('/healthz/golive', async (req, reply) => {
+    if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.ip) || req.headers['x-forwarded-for'] || req.headers['tailscale-user-login']) return reply.code(404).send();
+    const { goLiveReadiness } = await import('../modules/setup/golive.js');
+    return goLiveReadiness(ctx);
+  });
+
   app.get('/media/:key', async (req, reply) => {
     const { key } = req.params as { key: string };
+    if (key === '_ping') return reply.header('Cache-Control', 'no-store').send('ok'); // 공개 주소 접속 확인용
     const f = await ctx.storage.get(key);
     if (!f) return reply.code(404).send();
     return reply.header('Content-Type', f.contentType).header('Cache-Control', 'public, max-age=31536000, immutable').send(f.data);

@@ -193,6 +193,10 @@ export async function processOrder(ctx: AppContext, orderId: number, opts: { ove
     }
   }
 
+  // 실제 쿠팡 주문인데 주문 처리(상품준비중·송장)가 꺼져 있으면 모의 처리하면 안 됨 → 사람에게 넘김
+  const real = !listing.dry_run;
+  if (real && !isLive(ctx.env, 'LIVE_FULFILLMENT')) return handOver(ctx, o, units, breakdown.profit, 'LIVE_FULFILLMENT', actor);
+
   // 상품준비중 처리 → 고객 즉시취소 방지. 이후 배송지 재확인(결제완료 단계에서 변경 가능)
   if (!o.acked_at) {
     const ack = (await ctx.market.acknowledge([o.shipment_box_id]))[o.shipment_box_id];
@@ -211,12 +215,29 @@ export async function processOrder(ctx: AppContext, orderId: number, opts: { ove
 
   // 발주 전략 선택
   const canApi = source.capabilities.apiOrder && typeof source.placeOrder === 'function';
-  if (canApi && (s.orders.mode === 'auto' || opts.override)) return placeApiOrder(ctx, o, sp.source_item_id, actor, units);
+  if (canApi && (s.orders.mode === 'auto' || opts.override)) {
+    // 실제 주문은 모의 발주 금지(아무도 안 사는 사고 방지) → 자동 발주가 꺼져 있으면 사람에게
+    if (real && !isLive(ctx.env, 'LIVE_ORDERING')) return handOver(ctx, o, units, breakdown.profit, 'LIVE_ORDERING', actor);
+    return placeApiOrder(ctx, o, sp.source_item_id, actor, units);
+  }
 
   if (o.status !== 'AWAITING_PURCHASE') {
     o = await transition(ctx, o, 'AWAITING_PURCHASE', canApi ? '승인 모드: 구매 확인 필요' : '공급처 API 발주 불가 → 구매 대행 작업', actor, { purchase_strategy: 'assisted' });
     await ctx.notifications.notify('action', '구매할 주문이 있어요', `${o.item_name} — 공급처에서 ${units}개 구매 (${maskName(decryptReceiver(ctx, o).name)}) — 예상 이익 ${breakdown.profit.toLocaleString()}원`, { path: `/orders/${o.id}` });
   }
+  return o;
+}
+
+/** 실제 주문인데 자동 처리 스위치가 꺼져 있음 → 구매 필요(사람)로 넘기고 할 일을 구체적으로 알림 */
+async function handOver(ctx: AppContext, o: OrderRow, units: number, profit: number, flag: 'LIVE_FULFILLMENT' | 'LIVE_ORDERING', actor: string): Promise<OrderRow> {
+  if (o.status === 'AWAITING_PURCHASE') return o;
+  const steps = flag === 'LIVE_FULFILLMENT'
+    ? '① Wing 주문관리에서 [발주확인] ② 오너클랜에서 직접 주문 ③ 관리 화면 주문에 원주문번호 입력 ④ 송장은 Wing에 직접 입력'
+    : '① 오너클랜에서 직접 주문 ② 관리 화면 주문에 원주문번호 입력(송장은 자동 등록)';
+  o = await transition(ctx, o, 'AWAITING_PURCHASE', `실제 주문 — 자동 처리 꺼짐(${flag}=false)`, actor, { purchase_strategy: 'assisted' });
+  await ctx.notifications.notify('action', '실제 주문 — 직접 처리 필요',
+    `${o.item_name} ${units}개 (예상 이익 ${profit.toLocaleString()}원)\n.env 의 ${flag} 가 꺼져 있어 자동 처리하지 않았습니다.\n${steps}\n다음부터 자동으로 하려면 ${flag}=true 후 restart.sh`,
+    { path: `/orders/${o.id}` });
   return o;
 }
 
@@ -252,7 +273,9 @@ async function placeApiOrder(ctx: AppContext, o: OrderRow, sourceItemId: string,
     return transition(ctx, o, 'PURCHASED', `API 발주 완료(${source.displayName})`, actor, { ...patch, purchased_at: ctx.clock.now() });
   } catch (e) {
     const n = await sourceRetryCount(ctx, o.id);
-    if (n + 1 >= MAX_SOURCE_RETRIES) await ctx.notifications.notify('error', '자동 발주 반복 실패', `${o.item_name}: ${errMessage(e)}`, { path: `/orders/${o.id}` });
+    // 첫 실패부터 알림(예치금 부족 등은 사람이 바로 조치해야 함), 마지막 재시도 실패 시 다시 알림
+    if (n === 0) await ctx.notifications.notify('warn', '자동 발주 실패(자동 재시도 중)', `${o.item_name}: ${errMessage(e)}\n예치금 부족이면 오너클랜 예치금을 충전하세요. 충전 후 자동 재시도됩니다.`, { path: `/orders/${o.id}` });
+    else if (n + 1 >= MAX_SOURCE_RETRIES) await ctx.notifications.notify('error', '자동 발주 반복 실패 — 직접 처리 필요', `${o.item_name}: ${errMessage(e)}\n오너클랜에서 직접 주문 후 관리 화면에 원주문번호를 입력하세요.`, { path: `/orders/${o.id}` });
     return transition(ctx, o, 'SOURCE_ERROR', `발주 실패: ${errMessage(e)}`, actor);
   }
 }
@@ -312,9 +335,9 @@ export async function overrideAndProcess(ctx: AppContext, orderId: number, actor
 export function resolveCourierCode(aliases: Record<string, string>, courier: string): string | null {
   const c = courier.trim();
   if (!c) return null;
-  if (/^[A-Z0-9_]+$/.test(c)) return c;
   const norm = c.replace(/\s+/g, '');
   if (aliases[norm]) return aliases[norm]!;
+  if (/^[A-Z0-9_]+$/.test(c)) return c;
   for (const [name, code] of Object.entries(aliases)) if (norm.includes(name.replace(/\s+/g, ''))) return code;
   return null;
 }
@@ -330,6 +353,11 @@ export async function submitTracking(ctx: AppContext, orderId: number, courier: 
   if (!no) throw new OrderError('송장번호가 비었습니다');
   o = await ctx.db.updateTable('orders').set({ courier_code: code, tracking_no: no, updated_at: ctx.clock.now() }).where('id', '=', o.id).returningAll().executeTakeFirstOrThrow();
   if (s.killSwitch) return o;
+  if (!isLive(ctx.env, 'LIVE_FULFILLMENT') && (await isRealOrder(ctx, o))) {
+    // 실제 주문인데 송장 자동 등록이 꺼져 있음 → 모의 업로드로 '등록됨' 처리하면 쿠팡엔 송장이 없음
+    await ctx.notifications.notify('action', '송장 직접 입력 필요', `${o.item_name}: ${courier} ${no}\nWing 주문관리에서 송장을 입력하세요(LIVE_FULFILLMENT=false).`, { path: `/orders/${o.id}`, dedupeKey: `manual-invoice-${o.id}`, dedupeMinutes: 720 });
+    return o.status === 'MANUAL_REVIEW' ? o : transition(ctx, o, 'MANUAL_REVIEW', '송장 직접 입력 필요(자동 등록 꺼짐)', actor);
+  }
   const res = await ctx.market.uploadInvoice({ shipmentBoxId: o.shipment_box_id, marketOrderId: o.market_order_id, vendorItemId: o.vendor_item_id, courierCode: code, trackingNo: no });
   if (res.ok) return transition(ctx, o, 'TRACKING_UPLOADED', res.dryRun ? 'DRY_RUN 송장 업로드' : '송장 업로드', actor, { tracking_uploaded_at: ctx.clock.now() });
   if (res.retryable) {
@@ -340,12 +368,47 @@ export async function submitTracking(ctx: AppContext, orderId: number, courier: 
   return transition(ctx, o, 'MANUAL_REVIEW', `송장 업로드 실패: ${res.message}`, actor);
 }
 
+async function sourceOrderInfo(ctx: AppContext, o: OrderRow) {
+  if (!o.source_order_id || o.source_order_id.startsWith('DRY-') || !o.source_product_id) return null;
+  const sp = await ctx.db.selectFrom('source_products').select('source').where('id', '=', o.source_product_id).executeTakeFirst();
+  const src = sp ? ctx.sources.get(sp.source) : undefined;
+  return src?.getOrderInfo ? src.getOrderInfo(o.source_order_id) : null;
+}
+
+/** 공급사가 주문을 취소(품절 등) → 고객 주문 취소 처리 필요 + 상품 판매중지 */
+async function supplierCancelled(ctx: AppContext, o: OrderRow, raw: string): Promise<void> {
+  await transition(ctx, o, 'MANUAL_REVIEW', `공급처 주문 취소됨(${raw})`, SYSTEM);
+  if (o.listing_id) {
+    const l = await ctx.db.selectFrom('listings').selectAll().where('id', '=', o.listing_id).executeTakeFirst();
+    if (l) await pauseListing(ctx, l, '공급처 품절');
+  }
+  await ctx.notifications.notify('error', '공급처가 주문을 취소했어요', `${o.item_name}: 공급처 주문 ${o.source_order_id} 이 취소됐습니다(품절 등). 상품은 판매중지했습니다.\nWing에서 고객 주문을 취소(품절 사유)하거나 다른 곳에서 구매해 보내세요.`, { path: `/orders/${o.id}` });
+}
+
+/** 실제 쿠팡 상품의 주문인지(모의 등록 상품 주문이 아님) */
+async function isRealOrder(ctx: AppContext, o: OrderRow): Promise<boolean> {
+  if (o.vendor_item_id.startsWith('DRYVI-')) return false;
+  if (!o.listing_id) return true;
+  const l = await ctx.db.selectFrom('listings').select('dry_run').where('id', '=', o.listing_id).executeTakeFirst();
+  return !l?.dry_run;
+}
+
 // ── 4. 송장 회수·배송 추적 ────────────────────────────────────────
 
 export async function pollFulfillment(ctx: AppContext): Promise<{ tracked: number; uploaded: number; delivered: number }> {
   const s = await ctx.settings.get();
   let tracked = 0, uploaded = 0, delivered = 0;
   if (!s.killSwitch) {
+    // 결제 대기(공급처 주문 생성됨) → 결제되면 자동으로 구매완료
+    for (const o of await ctx.db.selectFrom('orders').selectAll().where('status', '=', 'PAYMENT_PENDING').execute()) {
+      try {
+        const info = await sourceOrderInfo(ctx, o);
+        if (info?.state === 'ok') await transition(ctx, o, 'PURCHASED', `공급처 결제 확인(${info.rawStatus})`, SYSTEM, { purchased_at: ctx.clock.now() });
+        else if (info?.state === 'cancelled') await supplierCancelled(ctx, o, info.rawStatus);
+      } catch (e) {
+        ctx.log.warn({ order: o.id, err: errMessage(e) }, '결제 상태 조회 실패');
+      }
+    }
     const purchased = await ctx.db.selectFrom('orders').selectAll().where('status', 'in', ['PURCHASED', 'SHIPPING_DELAYED']).execute();
     for (const o of purchased) {
       try {
@@ -358,7 +421,15 @@ export async function pollFulfillment(ctx: AppContext): Promise<{ tracked: numbe
         const sp = o.source_product_id ? await ctx.db.selectFrom('source_products').select(['source']).where('id', '=', o.source_product_id).executeTakeFirst() : undefined;
         const source = sp ? ctx.sources.get(sp.source) : undefined;
         if (!source?.getTracking || !source.capabilities.apiTracking || !o.source_order_id || o.source_order_id.startsWith('DRY-')) continue;
-        const t = await source.getTracking(o.source_order_id);
+        let t: Awaited<ReturnType<NonNullable<typeof source.getTracking>>>;
+        if (source.getOrderInfo) {
+          const info = await source.getOrderInfo(o.source_order_id);
+          if (info.state === 'cancelled' && !info.tracking) {
+            await supplierCancelled(ctx, o, info.rawStatus);
+            continue;
+          }
+          t = info.tracking;
+        } else t = await source.getTracking(o.source_order_id);
         if (t?.trackingNo) {
           tracked++;
           const r = await submitTracking(ctx, o.id, t.courierName, t.trackingNo, `source:${sp!.source}`);
@@ -366,6 +437,8 @@ export async function pollFulfillment(ctx: AppContext): Promise<{ tracked: numbe
         }
       } catch (e) {
         ctx.log.warn({ order: o.id, err: errMessage(e) }, '송장 처리 실패');
+        // 택배사 이름을 모르는 경우 등은 사람이 조치해야 함(하루 1회만 알림)
+        if (e instanceof OrderError) await ctx.notifications.notify('warn', '송장 자동 등록 실패', `${o.item_name}: ${errMessage(e)}`, { path: `/orders/${o.id}`, dedupeKey: `track-fail-${o.id}`, dedupeMinutes: 1440 });
       }
     }
   }
@@ -407,7 +480,9 @@ export async function pollClaims(ctx: AppContext): Promise<{ claims: number }> {
           await transition(ctx, o, 'CANCELLED', `고객 취소: ${c.reason}`, SYSTEM);
         } else {
           await transition(ctx, o, 'CANCEL_REQUESTED', `취소 요청(${c.status}): ${c.reason}`, SYSTEM);
-          await ctx.notifications.notify('warn', '구매 후 취소 요청', `${o.item_name}: 공급처 주문(${o.source_order_id ?? '-'}) 취소/반품 처리가 필요합니다.`, { path: `/orders/${o.id}` });
+          const cancel = await cancelAtSource(ctx, o, c.reason);
+          await ctx.notifications.notify('warn', '구매 후 취소 요청',
+            `${o.item_name}: 공급처 주문 ${o.source_order_id ?? '-'}\n${cancel}\nWing 반품/취소 관리에서 [출고중지 완료](아직 안 보냈을 때) 또는 [이미 출고](보냈을 때)를 처리하세요.`, { path: `/orders/${o.id}` });
         }
         n++;
       } else {
@@ -420,6 +495,22 @@ export async function pollClaims(ctx: AppContext): Promise<{ claims: number }> {
     }
   }
   return { claims: n };
+}
+
+/** 고객 취소 → 공급처 주문도 자동 취소(가능하면 즉시, 이미 준비중이면 취소 요청) */
+async function cancelAtSource(ctx: AppContext, o: OrderRow, reason: string): Promise<string> {
+  if (!o.source_order_id || o.source_order_id.startsWith('DRY-')) return '공급처 주문 없음(모의)';
+  if (!isLive(ctx.env, 'LIVE_ORDERING')) return '자동 발주가 꺼져 있어 공급처 취소도 직접 해야 합니다.';
+  const sp = o.source_product_id ? await ctx.db.selectFrom('source_products').select('source').where('id', '=', o.source_product_id).executeTakeFirst() : undefined;
+  const src = sp ? ctx.sources.get(sp.source) : undefined;
+  if (!src?.cancelOrder) return `${src?.displayName ?? '공급처'}에서 주문을 직접 취소하세요.`;
+  try {
+    const r = await src.cancelOrder(o.source_order_id, `고객 취소: ${reason}`);
+    await audit(ctx, SYSTEM, 'order.source_cancel', String(o.id), r);
+    return r.ok ? `${src.displayName} 주문 자동 취소 처리됨(상태: ${r.status}). 취소 요청 상태면 공급사 수락 후 환불됩니다.` : `${src.displayName} 자동 취소 실패: ${r.message} — 직접 취소하세요.`;
+  } catch (e) {
+    return `${src.displayName} 자동 취소 실패: ${errMessage(e)} — 직접 취소하세요.`;
+  }
 }
 
 // ── 6. 지연 경고·개인정보 파기 ───────────────────────────────────

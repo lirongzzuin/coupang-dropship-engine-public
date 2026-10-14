@@ -31,6 +31,11 @@ export function kstHour(d: Date): number {
   return new Date(d.getTime() + KST_OFFSET_MS).getUTCHours();
 }
 
+/** KST 요일(0=일 … 6=토) */
+export function kstWeekday(d: Date): number {
+  return new Date(d.getTime() + KST_OFFSET_MS).getUTCDay();
+}
+
 /** 쿠팡 발주서 조회 형식: yyyy-MM-ddTHH:mm+09:00 */
 export function kstIsoMinute(d: Date): string {
   const k = new Date(d.getTime() + KST_OFFSET_MS).toISOString();

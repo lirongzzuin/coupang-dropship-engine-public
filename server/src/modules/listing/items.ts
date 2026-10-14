@@ -99,7 +99,7 @@ export async function reprice(ctx: AppContext, l: ListingRow, markup: number, re
           continue;
         }
         if (it.unit_qty === 1) {
-          await ctx.db.insertInto('price_changes').values({ listing_id: l.id, old_price: it.sale_price, new_price: g.price, reason, dry_run: !!r.dryRun || !isLive(ctx.env, 'LIVE_PRICING'), at: ctx.clock.now() }).execute();
+          await ctx.db.insertInto('price_changes').values({ listing_id: l.id, old_price: it.sale_price, new_price: g.price, reason, dry_run: !!r.dryRun, at: ctx.clock.now() }).execute();
         }
       }
       newPrice = g.price;

@@ -85,6 +85,9 @@ export interface SourceOrderResult {
   needsPayment?: boolean;
 }
 
+/** ok=결제·준비·출고 정상, unpaid=결제 대기, cancelled=공급사/판매사 취소, cancel_requested=취소 요청 중 */
+export type SourceOrderState = 'ok' | 'unpaid' | 'cancelled' | 'cancel_requested' | 'other';
+
 export interface SourceTracking {
   courierName: string;
   trackingNo: string;
@@ -106,6 +109,10 @@ export interface SourceAdapter {
   getProduct(sourceItemId: string, hint?: { title?: string }): Promise<SourceProductDetail | null>;
   placeOrder?(req: SourceOrderRequest): Promise<SourceOrderResult>;
   getTracking?(sourceOrderId: string): Promise<SourceTracking | null>;
+  /** 공급처 주문 상태 + 송장(결제 확인·공급사 취소 감지) */
+  getOrderInfo?(sourceOrderId: string): Promise<{ state: SourceOrderState; rawStatus: string; tracking: SourceTracking | null }>;
+  /** 공급처 주문 취소(가능하면 즉시, 아니면 취소 요청) */
+  cancelOrder?(sourceOrderId: string, reason: string): Promise<{ ok: boolean; status: string; message: string }>;
   /** 키워드 자동 발굴용: 카테고리 목록 */
   listCategories?(): Promise<SourceCategory[]>;
   /** 키워드 자동 발굴용: 카테고리 인기 상품 */

@@ -36,9 +36,11 @@ export class CoupangClient {
     return this.opts.vendorId;
   }
 
-  async request<T = any>(method: string, path: string, opts: { query?: Record<string, string | number | boolean | undefined>; body?: unknown } = {}): Promise<T> {
+  async request<T = any>(method: string, path: string, opts: { query?: Record<string, string | number | boolean | null | undefined>; body?: unknown } = {}): Promise<T> {
     const qs = new URLSearchParams();
-    for (const [k, v] of Object.entries(opts.query ?? {})) if (v !== undefined && v !== '') qs.append(k, String(v));
+    // null = 빈 값으로라도 보내야 하는 파라미터(예: 정산 첫 페이지 token=)
+    for (const [k, v] of Object.entries(opts.query ?? {})) if (v === null) qs.append(k, '');
+      else if (v !== undefined && v !== '') qs.append(k, String(v));
     const query = qs.toString();
     return retry(
       async () => {

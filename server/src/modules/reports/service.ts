@@ -1,5 +1,5 @@
 import type { AppContext } from '../../context.js';
-import { addDays, kstDate } from '../../lib/util.js';
+import { addDays, kstDate, kstWeekday } from '../../lib/util.js';
 import { ACTION_STATUSES, EXCEPTION_STATUSES, STATUS_LABEL, type OrderStatus } from '../orders/stateMachine.js';
 
 export interface DashboardSummary {
@@ -77,7 +77,7 @@ export async function dashboard(ctx: AppContext): Promise<DashboardSummary> {
     dryRun: ctx.env.DRY_RUN,
     live: {
       listing: !ctx.env.DRY_RUN && ctx.env.LIVE_LISTING,
-      pricing: !ctx.env.DRY_RUN && ctx.env.LIVE_PRICING,
+      pricing: !ctx.env.DRY_RUN && (ctx.env.LIVE_PRICING || ctx.env.LIVE_LISTING),
       fulfillment: !ctx.env.DRY_RUN && ctx.env.LIVE_FULFILLMENT,
       ordering: !ctx.env.DRY_RUN && ctx.env.LIVE_ORDERING,
       cs: !ctx.env.DRY_RUN && ctx.env.LIVE_CS,
@@ -161,7 +161,10 @@ export async function sendDailyReport(ctx: AppContext): Promise<string> {
   if (!ctx.env.MEDIA_PUBLIC_BASE_URL && s.listing.convertImages) todo.push('이미지 공개 켜기: bash ~/dropship/bin/media-public.sh');
   // 시장가(경쟁가) 공급원이 없으면 가격 경쟁력 판단이 약함 → 11번가 키 권장
   const recentLowest = await ctx.db.selectFrom('market_signals').select('id').where('kind', 'in', ['market_lowest', 'coupang_lowest']).where('at', '>=', addDays(now, -7)).executeTakeFirst();
-  if (!recentLowest) todo.push('(권장) 11번가 키 입력 → 경쟁가 비교로 가격·선정 정확도 향상(ELEVENST_API_KEY)');
+  // 매일 반복하면 피로 → 월요일에만
+  if (!recentLowest && kstWeekday(now) === 1) todo.push('(권장) 11번가 키 입력 → 경쟁가 비교로 가격·선정 정확도 향상(ELEVENST_API_KEY)');
+  if (ctx.env.DRY_RUN) todo.push('지금은 모의 실행 중 — 실전 전환: bash ~/dropship/bin/golive.sh');
+  else if (d.live.listing && !(d.live.fulfillment && d.live.ordering)) todo.push('⚠️ 실등록은 켜졌지만 주문 자동 처리 일부가 꺼져 있음 — 주문은 직접 처리해야 함(bash ~/dropship/bin/golive.sh 로 모두 켜기)');
   if (d.keyExpiresInDays !== null && d.keyExpiresInDays <= 14) todo.push(`쿠팡 API 키 재발급(D-${d.keyExpiresInDays})`);
   if (d.keyExpiresInDays === null) todo.push('설정 > 쿠팡 API 키 발급일 입력(만료 알림용)');
   if (d.killSwitch) todo.push('🛑 긴급 정지 해제 여부 확인');

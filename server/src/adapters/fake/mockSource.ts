@@ -1,5 +1,5 @@
 import type {
-  SourceAdapter, SourceOrderRequest, SourceOrderResult, SourceProductDetail, SourceProductSummary, SourceTracking,
+  SourceAdapter, SourceOrderRequest, SourceOrderResult, SourceOrderState, SourceProductDetail, SourceProductSummary, SourceTracking,
 } from '../../ports/source.js';
 
 /** 테스트·데모용 공급처. apiOrder 여부를 생성자에서 정해 두 가지 흐름(API/작업함)을 모두 검증한다. */
@@ -81,6 +81,7 @@ export class MockSource implements SourceAdapter {
     if (!p || p.status !== 'active') throw new Error('품절');
     const id = `MO${++this.seq}`;
     this.orders.set(id, { req });
+    if (this.needsPayment) this.orderStates.set(id, 'unpaid');
     return { sourceOrderId: id, cost: p.price * req.qty, shippingCost: p.shippingFee, needsPayment: this.needsPayment };
   }
 
@@ -93,5 +94,21 @@ export class MockSource implements SourceAdapter {
 
   async getTracking(sourceOrderId: string): Promise<SourceTracking | null> {
     return this.orders.get(sourceOrderId)?.tracking ?? null;
+  }
+
+  /** 테스트: 공급처 주문 상태(기본 ok, needsPayment 로 만든 주문은 unpaid) */
+  orderStates = new Map<string, SourceOrderState>();
+  cancelled: string[] = [];
+
+  async getOrderInfo(sourceOrderId: string) {
+    const o = this.orders.get(sourceOrderId);
+    const state = this.orderStates.get(sourceOrderId) ?? (o ? 'ok' : 'other');
+    return { state, rawStatus: state, tracking: o?.tracking ?? null };
+  }
+
+  async cancelOrder(sourceOrderId: string, _reason: string) {
+    this.cancelled.push(sourceOrderId);
+    this.orderStates.set(sourceOrderId, 'cancelled');
+    return { ok: true, status: 'cancelled', message: 'ok' };
   }
 }

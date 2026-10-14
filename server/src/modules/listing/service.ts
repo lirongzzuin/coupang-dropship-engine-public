@@ -21,7 +21,10 @@ export async function createDraftFromCandidate(ctx: AppContext, candidateId: num
   if (existing) return existing;
   const sp = await ctx.db.selectFrom('source_products').selectAll().where('id', '=', cand.source_product_id).executeTakeFirstOrThrow();
   const d = detailOf(sp);
-  const title = sanitizeTitle(sp.title, s.listing.bannedTerms, s.listing.maxTitleLength);
+  // 옵션이 여러 개인 상품은 기본 옵션 하나만 판매 → 상품명에 옵션을 밝혀 "다른 색이 왔다" 클레임 방지
+  const opt = d?.defaultOption && !sp.title.replace(/\s/g, '').includes(d.defaultOption.replace(/\s/g, '')) ? ` ${d.defaultOption.replace(/\s*\/\s*/g, ' ')}` : '';
+  // 상품명이 길어도 옵션이 잘리지 않게 앞부분을 줄인다
+  const title = sanitizeTitle(`${sanitizeTitle(sp.title, s.listing.bannedTerms, Math.max(20, s.listing.maxTitleLength - opt.length))}${opt}`, s.listing.bannedTerms, s.listing.maxTitleLength);
   const tp = targetPrice(s, { cost: sp.price, shipping: sp.shipping_fee, categoryPath: sp.category_path, inputVatDeductible: sp.tax_invoice, minResalePrice: sp.min_resale_price });
   if (!tp.feasible) throw new ListingError('수익 가능한 판매가를 만들 수 없음');
   const images = sp.image_reuse_allowed ? (d?.images?.length ? d.images : sp.image_url ? [sp.image_url] : []) : [];
@@ -309,6 +312,7 @@ async function prepareRegistration(ctx: AppContext, l: ListingRow, sp: SourcePro
     title: l.title,
     images,
     facts: [
+      ...(d?.defaultOption ? [{ name: '옵션(구성)', value: `${d.defaultOption} — 이 옵션으로 발송됩니다` }] : []),
       { name: '원산지', value: d?.origin ?? '' },
       { name: '제조사', value: d?.manufacturer ?? '' },
       ...(d?.kc?.certNo ? [{ name: 'KC 인증', value: d.kc.certNo }] : []),

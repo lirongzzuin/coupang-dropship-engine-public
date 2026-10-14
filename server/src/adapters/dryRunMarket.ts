@@ -78,20 +78,28 @@ export class DryRunMarket implements MarketPort {
     return { sellerProductId: id, dryRun: true };
   }
 
+  /**
+   * 실제 쿠팡 상품(DRYVI 아님)의 가격·재고·판매중지는 실등록(LIVE_LISTING)만 켜도 실제로 반영한다.
+   * 그렇지 않으면 공급처 품절·공급가 상승을 쿠팡에 반영하지 못해 품절 주문·역마진이 생긴다.
+   */
+  private liveProduct(id: string): boolean {
+    return !id.startsWith('DRYVI-') && (this.live('LIVE_PRICING') || this.live('LIVE_LISTING'));
+  }
+
   async updatePrice(id: string, price: number): Promise<MarketResult> {
-    if (this.live('LIVE_PRICING') && !id.startsWith('DRYVI-')) return this.inner.updatePrice(id, price);
+    if (this.liveProduct(id)) return this.inner.updatePrice(id, price);
     return this.simulated('updatePrice', { id, price });
   }
   async updateQuantity(id: string, qty: number): Promise<MarketResult> {
-    if (this.live('LIVE_PRICING') && !id.startsWith('DRYVI-')) return this.inner.updateQuantity(id, qty);
+    if (this.liveProduct(id)) return this.inner.updateQuantity(id, qty);
     return this.simulated('updateQuantity', { id, qty });
   }
   async stopSale(id: string): Promise<MarketResult> {
-    if (this.live('LIVE_PRICING') && !id.startsWith('DRYVI-')) return this.inner.stopSale(id);
+    if (this.liveProduct(id)) return this.inner.stopSale(id);
     return this.simulated('stopSale', { id });
   }
   async resumeSale(id: string): Promise<MarketResult> {
-    if (this.live('LIVE_PRICING') && !id.startsWith('DRYVI-')) return this.inner.resumeSale(id);
+    if (this.liveProduct(id)) return this.inner.resumeSale(id);
     return this.simulated('resumeSale', { id });
   }
   async replyInquiry(inq: { inquiryId: string; kind: 'product' | 'callcenter' }, text: string): Promise<MarketResult> {
