@@ -77,6 +77,8 @@ export interface ItemSaleState {
   onSale: boolean;
   quantity: number | null;
   price: number | null;
+  /** 쿠팡에 이 옵션이 없음(Wing에서 삭제 등) — 상품 삭제 여부는 getProductStatus 로 확인 */
+  deleted?: boolean;
 }
 
 export interface CategoryNoticeMeta {

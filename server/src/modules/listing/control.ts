@@ -18,6 +18,8 @@ export const PAUSE = {
   unverifiable: '공급처 확인 불가',
   unorderable: '주문 불가',
   wing: '쿠팡에서 판매중지됨',
+  /** Wing에서 상품을 삭제함 → 판매종료로 정리(관리 화면 기본 목록에서 숨김, 다시 등록 안 함) */
+  deleted: '쿠팡에서 삭제됨',
 } as const;
 
 const SUPPLY = [PAUSE.soldout, PAUSE.lowStock, PAUSE.notSellable, PAUSE.margin, PAUSE.costUp, PAUSE.minResale, PAUSE.unverifiable];

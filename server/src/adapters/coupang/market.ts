@@ -243,7 +243,14 @@ export class CoupangMarket implements MarketPort {
 
   /** 아이템별 수량/가격/판매상태 조회(GET vendor-items/{id}/inventories → amountInStock·salePrice·onSale) */
   async getItemSaleState(vendorItemId: string): Promise<ItemSaleState | null> {
-    const res = await this.client.request('GET', `${SELLER}/vendor-items/${vendorItemId}/inventories`);
+    let res: any;
+    try {
+      res = await this.client.request('GET', `${SELLER}/vendor-items/${vendorItemId}/inventories`);
+    } catch (e) {
+      // 공식 오류(HTTP 400): "유효한 옵션이 없습니다 — 해당 옵션이 삭제되었는지 확인" → 삭제된 옵션
+      if (e instanceof HttpError && e.status === 400 && /유효한 옵션이 없/.test(e.message)) return { onSale: false, quantity: null, price: null, deleted: true };
+      throw e;
+    }
     const d = res?.data;
     // 응답 형식이 다르면 판단하지 않음(잘못된 판매중지·재개 방지)
     if (!d || typeof d.onSale !== 'boolean') return null;

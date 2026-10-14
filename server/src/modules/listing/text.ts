@@ -14,6 +14,37 @@ export function sanitizeTitle(raw: string, bannedTerms: string[], maxLen: number
   return truncate(t, maxLen).trim();
 }
 
+/**
+ * 쿠팡 노출상품명: 구매옵션 값(색상·사이즈·수량 등)과 겹치는 단어를 뺀다.
+ * 쿠팡 상품명 정책(2025-10): 옵션은 상위 상품명이 아니라 옵션에 넣고, 같은 단어는 2회 넘게 반복 금지.
+ * 겹치는 단어가 있으면 Wing에 "상품명에서 옵션과 중복된 단어를 지워주세요"가 뜨고, 고치지 않으면 노출 중지될 수 있다.
+ * 옵션 값은 구매옵션으로 그대로 보이므로 정보는 사라지지 않는다. 지운 뒤 너무 짧아지면 원래 이름을 쓴다.
+ */
+export function productNameFor(title: string, optionValues: string[]): string {
+  let t = title;
+  const words = [...new Set(optionValues.flatMap((v) => v.split(/\s*[/,]\s*/)).map((w) => w.trim()).filter(Boolean))].sort((a, b) => b.length - a.length);
+  for (const w of words) {
+    // '30x40cm' ↔ '30 x 40 cm' 처럼 띄어쓰기만 다른 것도 같은 단어로(앞뒤가 글자·숫자면 다른 단어의 일부라 두지 않음)
+    const pat = [...w.replace(/\s+/g, '')].map(escapeRe).join('\\s*');
+    t = t.replace(new RegExp(`(?<![\\p{L}\\p{N}])${pat}(?![\\p{L}\\p{N}])`, 'giu'), ' ');
+  }
+  t = t.replace(/\(\s*\)|\[\s*\]/g, ' ').replace(/(^|\s)[/,+&-](?=\s|$)/g, ' ').replace(/\s+/g, ' ').trim();
+  t = limitRepeats(t, 2);
+  return [...t.replace(/\s/g, '')].length >= 2 ? t : limitRepeats(title, 2);
+}
+
+/** 같은 단어(대소문자 무시)는 max 번까지만 남긴다 */
+export function limitRepeats(title: string, max: number): string {
+  const seen = new Map<string, number>();
+  return title.split(/\s+/).filter((w) => {
+    if (!w) return false;
+    const k = w.toLowerCase();
+    const n = (seen.get(k) ?? 0) + 1;
+    seen.set(k, n);
+    return n <= max;
+  }).join(' ');
+}
+
 /** 금지 문구 검출(정리 후에도 남아 있으면 등록 차단) */
 export function findBannedTerms(text: string, bannedTerms: string[]): string[] {
   const norm = text.replace(/\s+/g, '').toLowerCase();

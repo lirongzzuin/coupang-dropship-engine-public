@@ -113,8 +113,7 @@ export function targetPrice(settings: Settings, input: CostInput & { minResalePr
  */
 export function guardPriceChange(
   settings: Settings,
-  /** unit: 올림 단위(기본 roundUnit). 아이템위너 가격 맞춤은 10원 단위 — 100원 올림이면 위너와 같아지거나 비싸짐 */
-  opts: { current: number; desired: number; floor: number; changesToday: number; unit?: number },
+  opts: { current: number; desired: number; floor: number; changesToday: number },
 ): { price: number | null; reason: string } {
   const { current, floor, changesToday } = opts;
   let desired = Math.max(opts.desired, floor);
@@ -125,7 +124,7 @@ export function guardPriceChange(
   if (desired > maxUp) desired = maxUp;
   if (desired < maxDown) desired = maxDown;
   // 비율 제한으로 하한을 못 맞추면(=인상 폭 부족) 적용은 하되 상위에서 판매중지 판단
-  const unit = Math.max(10, opts.unit ?? settings.pricing.roundUnit);
+  const unit = Math.max(10, settings.pricing.roundUnit);
   desired = desired > current ? roundUp(desired, unit) : Math.max(roundUp(desired, unit), roundUp(floor, unit));
   if (desired === current) return { price: null, reason: 'no-change' };
   return { price: desired, reason: desired > current ? 'raise' : 'lower' };

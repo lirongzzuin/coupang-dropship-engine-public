@@ -194,3 +194,27 @@ describe('Scheduler', () => {
     expect(daily).toHaveLength(1);
   });
 });
+
+describe('상품 목록·상품명 정리 API', () => {
+  it('Wing에서 삭제한 상품은 전체 목록에서 숨기고 판매종료 탭에서 보임, 상품명 정리 제안·일괄 수정함', async () => {
+    const { totpSecret } = await setup();
+    const cookie = await login(totpSecret);
+    const del = await seedActiveListing(h);
+    const stopped = await seedActiveListing(h);
+    const fix = await seedActiveListing(h);
+    await h.ctx.db.updateTable('listings').set({ status: 'stopped', status_reason: '쿠팡에서 삭제됨(Wing에서 삭제)' }).where('id', '=', del.listing.id).execute();
+    await h.ctx.db.updateTable('listings').set({ status: 'stopped', status_reason: null }).where('id', '=', stopped.listing.id).execute();
+    const all = (await app.inject({ url: '/api/listings', headers: H(cookie) })).json().map((x: any) => x.id);
+    expect(all).not.toContain(del.listing.id);
+    expect(all).toContain(stopped.listing.id); // 사유 없는 판매종료는 그대로 보임
+    const tab = (await app.inject({ url: '/api/listings?status=stopped', headers: H(cookie) })).json().map((x: any) => x.id);
+    expect(tab).toEqual(expect.arrayContaining([del.listing.id, stopped.listing.id]));
+
+    await h.ctx.db.updateTable('listings').set({ dry_run: false, payload: JSON.stringify({ displayProductName: '정리함 블랙', items: [{ attributes: [{ attributeTypeName: '색상', attributeValueName: '블랙' }] }] }) }).where('id', '=', fix.listing.id).execute();
+    const fixes = (await app.inject({ url: '/api/listings/name-fixes', headers: H(cookie) })).json();
+    expect(fixes).toMatchObject([{ id: fix.listing.id, current: '정리함 블랙', suggested: '정리함' }]);
+    const done = await app.inject({ method: 'POST', url: '/api/listings/name-fixes/done', headers: H(cookie), payload: { ids: [fix.listing.id] } });
+    expect(done.statusCode).toBe(200);
+    expect((await app.inject({ url: '/api/listings/name-fixes', headers: H(cookie) })).json()).toEqual([]);
+  });
+});
