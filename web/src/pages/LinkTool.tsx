@@ -7,7 +7,7 @@ interface Quote {
   minResalePrice: number | null; suggestedTitle: string; suggestedTags: string[]; salePrice: number | null;
   profit: { profit: number; margin: number; fee: number; feeVat: number } | null; images: string[]; imageReuseAllowed: boolean;
   options: Array<{ units: number; itemName: string; salePrice: number; floor: number; profit: number }>;
-  prepDays: number; notice: { type?: string; items: Array<{ name: string; value: string }> } | null; apiOrder: boolean;
+  prepDays: number; notice: { type?: string; items: Array<{ name: string; value: string }> } | null; apiOrder: boolean; orderQtyIssue: string | null;
 }
 interface Meta { sources: Array<{ id: string; name: string; capabilities: { apiOrder: boolean } }> }
 
@@ -50,6 +50,7 @@ export function LinkTool({ onLinked }: { onLinked: () => void }) {
           {q && (
             <table className="kv">
               <tbody>
+                {q.orderQtyIssue && <tr><th>⛔ 등록 불가</th><td className="item-reason">{q.orderQtyIssue} — 쿠팡에서 1개씩 팔 수 없어 등록·연결할 수 없습니다</td></tr>}
                 <tr><th>상품명</th><td>{q.suggestedTitle} <CopyButton value={q.suggestedTitle} /></td></tr>
                 <tr><th>권장 판매가</th><td><b>{won(q.salePrice)}</b> (무료배송) {q.salePrice && <CopyButton value={String(q.salePrice)} />}</td></tr>
                 <tr><th>예상 이익</th><td>{won(q.profit?.profit)} ({q.profit ? Math.round(q.profit.margin * 100) : '-'}%)</td></tr>

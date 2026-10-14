@@ -7,6 +7,7 @@ import { addDays, errMessage, kstDate } from '../../lib/util.js';
 import type { MarketOrderLine } from '../../ports/market.js';
 import { upsertSourceProduct } from '../catalog.js';
 import { pauseListing } from '../listing/control.js';
+import { canOrderQty, describeOrderQty, orderQtyIssue } from '../orderQty.js';
 import { findByVendorItem } from '../listing/items.js';
 import { computeProfit } from '../pricing/pricing.js';
 import { canTransition, isPrePurchase, type OrderStatus, STATUS_LABEL } from './stateMachine.js';
@@ -165,6 +166,16 @@ export async function processOrder(ctx: AppContext, orderId: number, opts: { ove
         await upsertSourceProduct(ctx, sp.source, d);
         price = d.price;
         shipping = d.shippingFee;
+        // 공급처 최소 구매수량·구매 단위 때문에 이 수량을 그대로 살 수 없음 → 자동 구매하지 않고 사람에게(상품은 판매중지)
+        if (!canOrderQty(d, units)) {
+          const rule = describeOrderQty(d);
+          await pauseListing(ctx, listing, `공급처 판매 불가: ${orderQtyIssue(d) ?? `공급처 구매 수량 ${rule}`}`);
+          if (!opts.override) {
+            await ctx.notifications.notify('error', '공급처 최소 구매수량 때문에 발주 불가',
+              `${o.item_name} ${units}개 — 공급처는 ${rule}로만 판매합니다. 상품은 판매중지했습니다.\n더 많이 사서 보내거나(남는 수량은 손실) Wing에서 고객에게 안내 후 취소하세요.`, { path: `/orders/${o.id}` });
+            return transition(ctx, o, 'MANUAL_REVIEW', `공급처 구매 수량 ${rule} — ${units}개 발주 불가`, actor);
+          }
+        }
       }
     } catch (e) {
       const n = await sourceRetryCount(ctx, o.id);

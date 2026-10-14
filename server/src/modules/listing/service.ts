@@ -1,5 +1,7 @@
 import { isLive } from '../../config/env.js';
 import type { MarketPort } from '../../ports/market.js';
+import type { SourceProductDetail } from '../../ports/source.js';
+import { orderQtyIssue } from '../orderQty.js';
 import { type AppContext, audit } from '../../context.js';
 import type { ListingRow, SourceProductRow } from '../../db/schema.js';
 import { errMessage } from '../../lib/util.js';
@@ -23,6 +25,9 @@ export async function createDraftFromCandidate(ctx: AppContext, candidateId: num
   if (existing) return existing;
   const sp = await ctx.db.selectFrom('source_products').selectAll().where('id', '=', cand.source_product_id).executeTakeFirstOrThrow();
   const d = detailOf(sp);
+  // 후보 탭에서 직접 승인해도 1개씩 발주할 수 없는 상품(최소 구매수량·구매 단위)은 등록 불가
+  const qtyIssue = orderQtyIssue(d);
+  if (qtyIssue) throw new ListingError(`등록할 수 없는 상품: ${qtyIssue}`);
   // 옵션이 여러 개인 상품은 기본 옵션 하나만 판매 → 상품명에 옵션을 밝혀 "다른 색이 왔다" 클레임 방지
   const opt = d?.defaultOption && !sp.title.replace(/\s/g, '').includes(d.defaultOption.replace(/\s/g, '')) ? ` ${d.defaultOption.replace(/\s*\/\s*/g, ' ')}` : '';
   // 상품명이 길어도 옵션이 잘리지 않게 앞부분을 줄인다
@@ -101,6 +106,9 @@ export async function validateListing(ctx: AppContext, l: ListingRow): Promise<s
   if (banned.length) problems.push(`금지 문구 포함: ${banned.join(', ')}`);
   if (!l.title.trim()) problems.push('상품명이 비었습니다');
   if (l.sale_price < l.floor_price) problems.push('판매가가 하한가보다 낮습니다');
+  const sp = await ctx.db.selectFrom('source_products').select('detail').where('id', '=', l.source_product_id).executeTakeFirst();
+  const qtyIssue = orderQtyIssue(sp?.detail as SourceProductDetail | null);
+  if (qtyIssue) problems.push(qtyIssue);
   if (isLive(ctx.env, 'LIVE_LISTING')) {
     const c = s.coupang;
     const missing = (['vendorUserId', 'outboundShippingPlaceCode', 'returnCenterCode', 'companyContactNumber', 'returnZipCode', 'returnAddress'] as const).filter((k) => !c[k]);
@@ -310,6 +318,8 @@ export async function quoteSourceItem(ctx: AppContext, source: string, sourceIte
     notice: d.notice ?? null,
     kc: d.kc ?? null,
     apiOrder: src.capabilities.apiOrder,
+    /** 1개씩 발주할 수 없으면 사유(최소 구매수량·구매 단위) — 이 상품은 등록·연결 불가 */
+    orderQtyIssue: orderQtyIssue(d),
   };
 }
 
@@ -334,6 +344,9 @@ export async function linkExistingListing(
   if (!src) throw new ListingError(`등록되지 않은 공급처: ${input.source}`);
   const d = await src.getProduct(input.sourceItemId.trim());
   if (!d) throw new ListingError('공급처에서 상품을 찾을 수 없습니다');
+  // 연결하면 주문마다 이 공급처에서 1개씩 발주 → 최소 구매수량·구매 단위가 1이 아니면 연결 불가
+  const qtyIssue = orderQtyIssue(d);
+  if (qtyIssue) throw new ListingError(`연결할 수 없는 공급처 상품: ${qtyIssue}`);
   const { upsertSourceProduct } = await import('../catalog.js');
   const sp = await upsertSourceProduct(ctx, input.source, d);
   const tp = targetPrice(s, { cost: d.price, shipping: d.shippingFee, categoryPath: d.categoryPath, inputVatDeductible: d.taxInvoice, minResalePrice: d.minResalePrice });

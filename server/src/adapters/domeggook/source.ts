@@ -158,6 +158,8 @@ export class DomeggookSource implements SourceAdapter {
       sellerScore: Number.isFinite(Number.parseFloat(String(d.seller?.score?.avg))) ? Number.parseFloat(String(d.seller.score.avg)) : undefined,
       // 도매매(supply)는 낱개 위탁 판매 단위(supplyUnit), 도매꾹은 최소구매수량(domeMoq)
       minOrderQty: this.market === 'supply' ? Number(d.qty?.supplyUnit ?? 1) || 1 : Number(d.qty?.domeMoq ?? 1) || 1,
+      // 구매 단위(배수): 도매매 supplyUnit, 도매꾹 domeUnit(실측: 100개 단위 상품 있음)
+      orderUnit: this.market === 'supply' ? Number(d.qty?.supplyUnit ?? 1) || 1 : Number(d.qty?.domeUnit ?? 1) || 1,
       // 수량별 배송비 구간(tbl)이 있거나 묶음배송 불가면 배송비가 수량만큼 든다고 본다
       shippingPerUnit: !free && (String(d.deli?.merge?.enable ?? 'y').toLowerCase() === 'n' || perBox === 1),
       maxPerBox: free ? null : perBox,
