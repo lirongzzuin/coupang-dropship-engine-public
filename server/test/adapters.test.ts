@@ -315,6 +315,11 @@ describe('DomeggookSource', () => {
     const r = await dg.search('정리함', { limit: 10, minPrice: 5000 });
     expect(r).toHaveLength(1);
     expect(r[0]).toMatchObject({ sourceItemId: '101', price: 9000, shippingFee: 3000 });
+    // 도매매(배송대행) 시장이면 사람이 구매할 링크도 도매매 페이지(도매꾹 페이지는 최소구매수량·가격이 다름)
+    expect(r[0]!.url).toBe('https://domeme.domeggook.com/s/101');
+    expect((await dg.getProduct('101'))!.url).toBe('https://domeme.domeggook.com/s/101');
+    const dome = new DomeggookSource({ apiKey: 'KEY', market: 'dome', logger: log, fetchImpl });
+    expect((await dome.getProduct('101'))!.url).toBe('https://domeggook.com/101');
     const u = new URL(urls[0]!);
     expect(u.searchParams.get('market')).toBe('supply');
     expect(u.searchParams.get('kw')).toBe('정리함');

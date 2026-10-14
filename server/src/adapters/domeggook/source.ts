@@ -34,6 +34,14 @@ export class DomeggookSource implements SourceAdapter {
     return this.opts.market ?? 'supply';
   }
 
+  /**
+   * 사람이 구매할 상품 페이지. 도매매(supply)는 배송대행(고객 주소로 낱개 발송)·공급가 기준이라 도매매 페이지로 보낸다
+   * (도매꾹 페이지는 최소구매수량·가격이 달라 잘못 사기 쉬움 — 실측 2026-10-14: 60000001 도매꾹 최소 2개·3,000원, 도매매 3,030원)
+   */
+  private itemUrl(no: string): string {
+    return this.market === 'supply' ? `https://domeme.domeggook.com/s/${no}` : `https://domeggook.com/${no}`;
+  }
+
   private async call(params: Record<string, string | number>): Promise<any> {
     const qs = new URLSearchParams({ aid: this.opts.apiKey, om: 'json', ...Object.fromEntries(Object.entries(params).map(([k, v]) => [k, String(v)])) });
     return retry(
@@ -61,7 +69,7 @@ export class DomeggookSource implements SourceAdapter {
       .map((it) => ({
         sourceItemId: String(it.no),
         title: String(it.title ?? ''),
-        url: String(it.url ?? `https://domeggook.com/${it.no}`),
+        url: this.itemUrl(String(it.no)),
         imageUrl: it.thumb ? String(it.thumb) : undefined,
         price: Number(it.price) || 0,
         shippingFee: it.deli?.who === 'S' ? 0 : Number(it.deli?.fee) || 0,
@@ -122,7 +130,7 @@ export class DomeggookSource implements SourceAdapter {
     return {
       sourceItemId: String(no),
       title: String(d.basis.title ?? ''),
-      url: `https://domeggook.com/${no}`,
+      url: this.itemUrl(no),
       imageUrl: images[0],
       price: chosen ? chosen.price : unitPrice,
       shippingFee: free ? 0 : Number(deli?.fee) || tblFee,
