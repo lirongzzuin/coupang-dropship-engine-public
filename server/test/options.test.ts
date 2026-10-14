@@ -215,7 +215,9 @@ describe('옵션 없이 올라간 기존 상품 보호 + 옵션 지정해 다시
     const old = await h.ctx.db.selectFrom('listings').selectAll().where('id', '=', x.listing.id).executeTakeFirstOrThrow();
     expect(old.status).toBe('stopped');
     const sent = h.market.products.get(fresh.seller_product_id!)!.payload;
-    expect(sent.items[0].attributes).toEqual(expect.arrayContaining([{ attributeTypeName: '색상', attributeValueName: '화이트' }, { attributeTypeName: '사이즈', attributeValueName: '3호' }]));
+    // 여러 옵션 판매: 공급처 옵션마다 쿠팡 옵션(각자 색상·사이즈)
+    const attrsOf = (it: any) => Object.fromEntries(it.attributes.map((a: any) => [a.attributeTypeName, a.attributeValueName]));
+    expect(sent.items.map((it: any) => `${attrsOf(it)['색상']}/${attrsOf(it)['사이즈']}`)).toEqual(expect.arrayContaining(['화이트/3호', '화이트/4호', '차콜/3호', '차콜/4호']));
     expect(sent.displayProductName).not.toMatch(/3호|화이트/);
     // 승인 → 주문 → 그 옵션으로 발주
     const { refreshListingStatuses } = await import('../src/modules/listing/service.js');
@@ -223,7 +225,7 @@ describe('옵션 없이 올라간 기존 상품 보호 + 옵션 지정해 다시
     await refreshListingStatuses(h.ctx);
     const active = await h.ctx.db.selectFrom('listings').selectAll().where('id', '=', fresh.id).executeTakeFirstOrThrow();
     expect(active.status).toBe('active');
-    const vi = (await h.ctx.db.selectFrom('listing_items').select('vendor_item_id').where('listing_id', '=', fresh.id).where('unit_qty', '=', 1).executeTakeFirstOrThrow()).vendor_item_id!;
+    const vi = (await h.ctx.db.selectFrom('listing_items').select('vendor_item_id').where('listing_id', '=', fresh.id).where('unit_qty', '=', 1).where('source_option', '=', '심플바스켓 (3호 화이트)').executeTakeFirstOrThrow()).vendor_item_id!;
     const line = h.market.seedOrder({ vendorItemId: vi, paidAmount: active.sale_price, orderedAt: h.clock.now() });
     await pollNewOrders(h.ctx);
     await processPending(h.ctx);

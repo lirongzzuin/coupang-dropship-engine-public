@@ -288,6 +288,15 @@ export const settingsSchema = z.object({
       zeroSaleDays: z.number().int().default(14),
       /** 동시 운영(탐색) 상품 수 상한 */
       maxActiveListings: z.number().int().default(30),
+      /**
+       * 공급처 옵션(색상·사이즈 등)이 여러 개면 재고 있는 옵션을 모두 쿠팡 옵션으로 함께 판매(옵션별 원가로 가격, 옵션별 품절 관리).
+       * 꺼져 있으면 가장 싼 옵션 하나만 판매
+       */
+      multiVariant: z.boolean().default(true),
+      /** 한 상품에 올릴 공급처 옵션 최대 수(싼 순) */
+      maxVariants: z.number().int().min(1).default(10),
+      /** 한 상품의 쿠팡 옵션 최대 수(공급처 옵션 × 묶음 수량). 넘으면 큰 묶음부터 뺌 */
+      maxItems: z.number().int().min(1).default(30),
     })
     .default({}),
 

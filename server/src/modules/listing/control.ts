@@ -1,6 +1,6 @@
 import type { AppContext } from '../../context.js';
-import type { ListingRow } from '../../db/schema.js';
-import { findByVendorItem, vendorItemIds } from './items.js';
+import type { ListingItemRow, ListingRow } from '../../db/schema.js';
+import { findByVendorItem, getItems, vendorItemIds } from './items.js';
 
 /**
  * 자동 판매중지 사유. 사유 문자열은 "접두: 상세" 형식이고 접두로 분류한다.
@@ -58,13 +58,46 @@ export async function pauseListing(ctx: AppContext, listing: ListingRow, reason:
 }
 
 export async function resumeListing(ctx: AppContext, listing: ListingRow): Promise<boolean> {
-  const vids = await vendorItemIds(ctx, listing);
-  if (listing.status !== 'paused' || !vids.length) return false;
+  const all = await getItems(ctx, listing);
+  if (listing.status !== 'paused' || !all.some((i) => i.vendor_item_id)) return false;
+  // 옵션 단위로 멈춘 옵션(그 옵션만 품절 등)은 다시 켜지 않음
+  const vids = all.filter((i) => i.item_status !== 'paused').map((i) => i.vendor_item_id).filter((x): x is string => !!x);
   for (const vid of vids) {
     const r = await ctx.market.resumeSale(vid);
     if (!r.ok) return false;
   }
   await ctx.db.updateTable('listings').set({ status: 'active', status_reason: null, paused_at: null, updated_at: ctx.clock.now() }).where('id', '=', listing.id).execute();
+  return true;
+}
+
+/**
+ * 옵션 하나만 판매중지(여러 공급처 옵션을 함께 파는 상품에서 그 옵션만 품절 등). 상품 전체는 그대로.
+ * 반환: 실제로 멈췄는지
+ */
+export async function pauseItem(ctx: AppContext, item: ListingItemRow, reason: string): Promise<boolean> {
+  if (item.item_status === 'paused') {
+    if (item.item_reason !== reason && item.id) await ctx.db.updateTable('listing_items').set({ item_reason: reason.slice(0, 300) }).where('id', '=', item.id).execute();
+    return false;
+  }
+  if (item.vendor_item_id) {
+    const r = await ctx.market.stopSale(item.vendor_item_id);
+    if (!r.ok) {
+      ctx.log.warn({ item: item.vendor_item_id, msg: r.message }, '옵션 판매중지 실패');
+      return false;
+    }
+  }
+  if (item.id) await ctx.db.updateTable('listing_items').set({ item_status: 'paused', item_reason: reason.slice(0, 300) }).where('id', '=', item.id).execute();
+  return true;
+}
+
+/** 옵션 판매 재개(상품이 판매중일 때만 쿠팡에 반영) */
+export async function resumeItem(ctx: AppContext, item: ListingItemRow, listingActive: boolean): Promise<boolean> {
+  if (item.item_status !== 'paused') return false;
+  if (listingActive && item.vendor_item_id) {
+    const r = await ctx.market.resumeSale(item.vendor_item_id);
+    if (!r.ok) return false;
+  }
+  if (item.id) await ctx.db.updateTable('listing_items').set({ item_status: 'active', item_reason: null }).where('id', '=', item.id).execute();
   return true;
 }
 

@@ -158,6 +158,11 @@ export interface ListingItemsTable {
   sale_price: number;
   floor_price: number;
   created_at: Ts;
+  /** 이 쿠팡 옵션이 발주할 공급처 옵션('' = 상품의 고정 옵션 listings.source_option) */
+  source_option: Generated<string>;
+  /** 옵션별 판매 상태: active | paused(이 옵션만 공급처 품절 등) */
+  item_status: Generated<string>;
+  item_reason: string | null;
 }
 
 export interface PriceChangesTable {

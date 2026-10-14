@@ -13,6 +13,8 @@ interface Listing {
   source_url: string; image_reuse_allowed: boolean;
   source_option: string | null; checked_at: string | null; order_checked_at: string | null; check_fails: number;
   repair_state: 'requested' | 'failed' | null; repair_note: string | null;
+  /** 여러 옵션 상품: 공급처 옵션별 판매 상태 */
+  variants: { option: string; price: number; status: string; reason: string | null; units: number[] }[];
 }
 
 /** 공급처 확인·주문 가능 점검 시각(판매중·일시중지 상품만) */
@@ -24,8 +26,8 @@ function checkLine(l: Listing): string | null {
   return parts.join(' · ');
 }
 
-const STATUS_LABEL: Record<string, string> = { draft: '초안', pending_approval: '심사중', active: '판매중', paused: '일시중지', stopped: '판매종료', rejected: '반려' };
-const FILTERS = ['', 'draft', 'pending_approval', 'active', 'paused', 'stopped', 'rejected'];
+const STATUS_LABEL: Record<string, string> = { draft: '초안', pending_approval: '심사중', active: '판매중', paused: '일시중지', stopped: '판매종료', rejected: '반려', deleted: '쿠팡 삭제' };
+const FILTERS = ['', 'draft', 'pending_approval', 'active', 'paused', 'stopped', 'rejected', 'deleted'];
 
 export function Listings() {
   const [filter, setFilter] = useState('');
@@ -42,18 +44,20 @@ export function Listings() {
         {FILTERS.map((f) => <button key={f} className={filter === f ? 'on' : ''} onClick={() => setFilter(f)}>{f ? STATUS_LABEL[f] : '전체'}</button>)}
       </div>
       <Loading error={error} loading={loading && !data} />
-      {data?.length === 0 && <div className="muted pad">상품이 없습니다. 후보 탭에서 승인하거나 자동 선정을 기다리세요.</div>}
+      {filter === 'deleted' && <div className="muted small">Wing에서 삭제한 상품입니다(자동 감지). 다시 팔지 않으며, 같은 공급처 상품은 자동 선정에서 다시 고르지 않습니다.</div>}
+      {data?.length === 0 && <div className="muted pad">{filter === 'deleted' ? '쿠팡에서 삭제한 상품이 없습니다.' : '상품이 없습니다. 후보 탭에서 승인하거나 자동 선정을 기다리세요.'}</div>}
       {data?.map((l) => (
         <div key={l.id} className="item">
           <div className="item-head" onClick={() => setOpen(open === l.id ? null : l.id)}>
-            <Badge tone={statusTone(l.status)}>{STATUS_LABEL[l.status] ?? l.status}</Badge>
+            {l.status === 'stopped' && l.status_reason?.startsWith('쿠팡에서 삭제됨') ? <Badge tone="gray">쿠팡 삭제</Badge> : <Badge tone={statusTone(l.status)}>{STATUS_LABEL[l.status] ?? l.status}</Badge>}
+            {l.variants.length > 0 && <Badge tone="blue">옵션 {l.variants.length}개</Badge>}
             {l.dry_run && l.status !== 'draft' && <Badge tone="amber">모의</Badge>}
             {l.status === 'active' && l.listed_at && Date.now() - new Date(l.listed_at).getTime() < LAUNCH_DAYS * 86400_000 && <Badge tone="blue">출시 가격</Badge>}
             <span className="muted">{l.source}</span>
           </div>
           <div className="item-title" onClick={() => setOpen(open === l.id ? null : l.id)}>{l.title}</div>
           <div className="item-sub">판매가 {won(l.sale_price)} (하한 {won(l.floor_price)}, 마크업 {Math.round(l.markup * 100)}%{l.target_markup !== null && l.markup < l.target_markup ? ` → 목표 ${Math.round(l.target_markup * 100)}%` : ''}) · 공급가 {won(l.source_price)}+{won(l.source_shipping)} · 재고 {l.source_stock ?? '?'}{l.fee_rate_actual ? ` · 실수수료 ${(l.fee_rate_actual * 100).toFixed(1)}%` : ''}</div>
-          {l.source_option && <div className="item-sub">발주 옵션: {l.source_option}</div>}
+          {l.variants.length > 0 ? <Variants l={l} /> : l.source_option && <div className="item-sub">발주 옵션: {l.source_option}</div>}
           {checkLine(l) && <div className="item-sub muted">{checkLine(l)}</div>}
           {l.status_reason && <div className="item-reason">{l.status_reason}</div>}
           {l.repair_state === 'requested' && <div className="item-sub"><Badge tone="blue">설정 수정 심사중</Badge> {l.repair_note?.split('\n')[0]}</div>}
@@ -61,6 +65,21 @@ export function Listings() {
           {open === l.id && <ListingEditor l={l} act={act} onChange={reload} />}
         </div>
       ))}
+    </div>
+  );
+}
+
+/** 공급처 옵션별 판매가·상태(품절 옵션만 판매중지, 재입고되면 자동 재개) */
+function Variants({ l }: { l: Listing }) {
+  const paused = l.variants.filter((v) => v.status === 'paused');
+  return (
+    <div className="item-sub">
+      옵션: {l.variants.map((v, i) => (
+        <span key={v.option} className={v.status === 'paused' ? 'muted' : ''} title={v.reason ?? undefined}>
+          {i > 0 && ' · '}{v.status === 'paused' ? <s>{v.option}</s> : v.option} {won(v.price)}
+        </span>
+      ))}
+      {paused.length > 0 && <div className="muted small">옵션 판매중지 {paused.length}개: {paused.map((v) => `${v.option}(${v.reason ?? '-'})`).join(', ')}</div>}
     </div>
   );
 }

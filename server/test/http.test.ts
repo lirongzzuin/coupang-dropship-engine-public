@@ -254,7 +254,7 @@ describe('강제 판매중지·판매재개 API', () => {
 });
 
 describe('상품 목록·상품명 정리 API', () => {
-  it('Wing에서 삭제한 상품은 전체 목록에서 숨기고 판매종료 탭에서 보임, 상품명 정리 제안·일괄 수정함', async () => {
+  it('Wing에서 삭제한 상품은 전체·판매종료 목록에서 숨기고 쿠팡 삭제 탭에서 보임, 옵션별 상태, 상품명 정리 제안·일괄 수정함', async () => {
     const { totpSecret } = await setup();
     const cookie = await login(totpSecret);
     const del = await seedActiveListing(h);
@@ -266,7 +266,22 @@ describe('상품 목록·상품명 정리 API', () => {
     expect(all).not.toContain(del.listing.id);
     expect(all).toContain(stopped.listing.id); // 사유 없는 판매종료는 그대로 보임
     const tab = (await app.inject({ url: '/api/listings?status=stopped', headers: H(cookie) })).json().map((x: any) => x.id);
-    expect(tab).toEqual(expect.arrayContaining([del.listing.id, stopped.listing.id]));
+    expect(tab).toContain(stopped.listing.id);
+    expect(tab).not.toContain(del.listing.id);
+    const deleted = (await app.inject({ url: '/api/listings?status=deleted', headers: H(cookie) })).json();
+    expect(deleted.map((x: any) => x.id)).toEqual([del.listing.id]);
+    expect(deleted[0].variants).toEqual([]);
+    // 여러 옵션 상품: 옵션별 판매가·상태(1개 단위 가격, 멈춘 옵션 사유)
+    await h.ctx.db.insertInto('listing_items').values([
+      { listing_id: fix.listing.id, unit_qty: 1, item_name: '화이트 1개', source_option: '화이트', sale_price: 10000, floor_price: 9000, created_at: h.clock.now() },
+      { listing_id: fix.listing.id, unit_qty: 2, item_name: '화이트 2개', source_option: '화이트', sale_price: 19000, floor_price: 18000, created_at: h.clock.now() },
+      { listing_id: fix.listing.id, unit_qty: 1, item_name: '블랙 1개', source_option: '블랙', sale_price: 11000, floor_price: 9000, item_status: 'paused', item_reason: '옵션 품절', created_at: h.clock.now() },
+    ]).execute();
+    const row = (await app.inject({ url: '/api/listings', headers: H(cookie) })).json().find((x: any) => x.id === fix.listing.id);
+    expect(row.variants).toEqual([
+      { option: '화이트', price: 10000, status: 'active', reason: null, units: [1, 2] },
+      { option: '블랙', price: 11000, status: 'paused', reason: '옵션 품절', units: [1] },
+    ]);
 
     await h.ctx.db.updateTable('listings').set({ dry_run: false, payload: JSON.stringify({ displayProductName: '정리함 블랙', items: [{ attributes: [{ attributeTypeName: '색상', attributeValueName: '블랙' }] }] }) }).where('id', '=', fix.listing.id).execute();
     const fixes = (await app.inject({ url: '/api/listings/name-fixes', headers: H(cookie) })).json();

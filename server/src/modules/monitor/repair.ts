@@ -73,16 +73,19 @@ export async function auditListing(ctx: AppContext, l: ListingRow, metaCache = n
     meta = await ctx.market.getCategoryMeta(code);
     metaCache.set(code, meta);
   }
-  const unitsByVid = new Map((await getItems(ctx, l)).filter((i) => i.vendor_item_id).map((i) => [String(i.vendor_item_id), i.unit_qty]));
+  // 쿠팡 옵션ID → 묶음 수량 + 그 옵션이 발주할 공급처 옵션(여러 옵션 판매면 옵션마다 다름)
+  const byVid = new Map((await getItems(ctx, l)).filter((i) => i.vendor_item_id).map((i) => [String(i.vendor_item_id), { units: i.unit_qty, option: i.source_option }]));
   const body: Record<string, any> = structuredClone(detail);
   const values: string[] = [];
   let touched = false;
   for (const it of body.items ?? []) {
-    const units = unitsByVid.get(String(it.vendorItemId));
-    if (units === undefined) continue; // 이 시스템이 관리하지 않는 옵션은 그대로
+    const mine = byVid.get(String(it.vendorItemId));
+    if (!mine) continue; // 이 시스템이 관리하지 않는 옵션은 그대로
+    const units = mine.units;
+    const opt = mine.option || pin || '';
     let expected;
     try {
-      expected = buildAttributes(meta, `${sp.title} ${pin ?? ''}`.trim(), units, source);
+      expected = buildAttributes(meta, `${sp.title} ${opt}`.trim(), units, mine.option ? { ...d, defaultOption: mine.option } : source);
     } catch (e) {
       return { changes: [], unfixable: errMessage(e) };
     }

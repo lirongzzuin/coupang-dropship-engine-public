@@ -168,7 +168,9 @@ export async function reconcileMarketState(ctx: AppContext): Promise<ReconcileRe
       }
     }
     // Wing에서 상품을 삭제 → 판매종료로 정리(관리 화면 기본 목록에서 빠지고, 같은 상품은 다시 등록하지 않음)
-    if (states.some((x) => x.deleted)) {
+    // 실측(2026-10-14): 삭제된 상품의 옵션 조회는 오류가 아니라 정상 응답(onSale=false)이고 상품 조회가 '상품삭제'
+    // → 옵션이 모두 판매중이 아니면 상품 상태로 삭제 여부 확인
+    if (states.some((x) => x.deleted) || (states.length > 0 && states.length === vids.length && states.every((x) => !x.onSale))) {
       if (await productDeleted(ctx, l, states.every((x) => x.deleted) && states.length === vids.length)) {
         const now = ctx.clock.now();
         await ctx.db.updateTable('listings').set({ status: 'stopped', status_reason: `${PAUSE.deleted}(Wing에서 삭제)`, paused_at: null, updated_at: now }).where('id', '=', l.id).execute();
@@ -186,8 +188,10 @@ export async function reconcileMarketState(ctx: AppContext): Promise<ReconcileRe
       adopted.push(`• ${l.title.slice(0, 28)}`);
       continue;
     }
+    // 옵션 단위로 멈춘 옵션(그 옵션만 품절 등)이 쿠팡에서 판매중이면 그 옵션도 다시 멈춤
+    const pausedVids = new Set((await getItems(ctx, l)).filter((i) => i.item_status === 'paused' && i.vendor_item_id).map((i) => String(i.vendor_item_id)));
     for (const { vid, onSale: selling } of states) {
-      if (l.status !== 'active' && selling) {
+      if ((l.status !== 'active' || pausedVids.has(vid)) && selling) {
         const r = await ctx.market.stopSale(vid);
         if (r.dryRun) continue; // 모의 실행: 실제로 멈출 수 없음(LIVE_LISTING/LIVE_PRICING 꺼짐)
         if (r.ok) {
