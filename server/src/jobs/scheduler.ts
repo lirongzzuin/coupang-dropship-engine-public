@@ -12,6 +12,7 @@ import { safetyCheck } from '../modules/guard/safety.js';
 import { discoverKeywords } from '../modules/keywords/service.js';
 import { optimizePrices, reviewSlowListings, scoutCheaperSources, syncListings } from '../modules/sync/service.js';
 import { checkOrderability, reconcileMarketState, retireStalePaused } from '../modules/monitor/service.js';
+import { repairListings } from '../modules/monitor/repair.js';
 
 /**
  * 내장 스케줄러. 작업 추가는 JOBS 배열에 한 줄.
@@ -51,6 +52,11 @@ export const JOBS: JobDef[] = [
     name: 'listings.monitor', label: '주문 가능 점검·쿠팡 판매상태 대조',
     intervalMs: (s) => min(s.schedule.monitorMinutes),
     run: async (ctx) => ({ orderable: await checkOrderability(ctx), market: await reconcileMarketState(ctx) }),
+  },
+  {
+    name: 'listings.repair', label: '상품 설정 점검·자동 수정(구매옵션·상품명)',
+    intervalMs: (s) => min(s.schedule.repairMinutes),
+    run: repairListings,
   },
   {
     name: 'profit.optimize', label: '수익 최적화(가격·원가)',

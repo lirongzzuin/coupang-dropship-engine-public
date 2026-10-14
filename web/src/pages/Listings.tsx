@@ -12,6 +12,7 @@ interface Listing {
   dry_run: boolean; listed_at: string | null; source: string; source_price: number; source_shipping: number; source_stock: number | null;
   source_url: string; image_reuse_allowed: boolean;
   source_option: string | null; checked_at: string | null; order_checked_at: string | null; check_fails: number;
+  repair_state: 'requested' | 'failed' | null; repair_note: string | null;
 }
 
 /** 공급처 확인·주문 가능 점검 시각(판매중·일시중지 상품만) */
@@ -55,6 +56,8 @@ export function Listings() {
           {l.source_option && <div className="item-sub">발주 옵션: {l.source_option}</div>}
           {checkLine(l) && <div className="item-sub muted">{checkLine(l)}</div>}
           {l.status_reason && <div className="item-reason">{l.status_reason}</div>}
+          {l.repair_state === 'requested' && <div className="item-sub"><Badge tone="blue">설정 수정 심사중</Badge> {l.repair_note?.split('\n')[0]}</div>}
+          {l.repair_state === 'failed' && <div className="item-reason">설정 자동 수정 실패: {l.repair_note}</div>}
           {open === l.id && <ListingEditor l={l} act={act} onChange={reload} />}
         </div>
       ))}

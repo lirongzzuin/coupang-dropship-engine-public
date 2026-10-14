@@ -316,6 +316,23 @@ export const settingsSchema = z.object({
     })
     .default({}),
 
+  /**
+   * 상품 설정 자동 점검·수정: 쿠팡에 올라간 상품의 구매옵션(색상·사이즈·수량)·노출상품명을 공급처 옵션 기준으로 점검하고,
+   * 틀리면 쿠팡 상품 수정 API(승인필요)로 고친다. 승인되면 설정 오류 때문에 멈춘 상품(직접 중지·옵션 미지정)은 판매 재개.
+   */
+  repair: z
+    .object({
+      enabled: z.boolean().default(true),
+      /** 한 번에 수정 요청할 최대 상품 수(쿠팡 재심사가 몰리지 않게) */
+      perRun: z.number().int().min(0).default(3),
+      /** 실패한 상품을 다시 시도하기까지 간격(시간)·최대 횟수 */
+      retryHours: z.number().default(24),
+      maxAttempts: z.number().int().default(3),
+      /** 수정 심사가 이 시간 넘게 끝나지 않으면 알림 */
+      reviewAlertHours: z.number().default(72),
+    })
+    .default({}),
+
   /** 판매 상품 정리: 오래 판매할 수 없는 상품 종료, 우선순위에서 밀린 저성과 상품을 더 좋은 새 후보로 교체 */
   prune: z
     .object({
@@ -433,6 +450,8 @@ export const settingsSchema = z.object({
       syncMinutes: z.number().default(60),
       /** 주문 가능 점검(상품별은 monitor.simulateEveryHours 간격)·쿠팡 판매상태 대조 주기 */
       monitorMinutes: z.number().default(60),
+      /** 상품 설정 점검·자동 수정 주기 */
+      repairMinutes: z.number().default(60),
       listingStatusMinutes: z.number().default(30),
       csMinutes: z.number().default(30),
       reconcileHours: z.number().default(24),

@@ -194,6 +194,39 @@ export class CoupangMarket implements MarketPort {
     }
   }
 
+  /** 상품 조회(GET seller-products/{id}) data 전체 */
+  async getProductDetail(sellerProductId: string): Promise<Record<string, any> | null> {
+    let res: any;
+    for (let i = 0; ; i++) {
+      try {
+        res = await this.client.request('GET', `${SELLER}/seller-products/${sellerProductId}`);
+        break;
+      } catch (e) {
+        // 실측(2026-10-14): 정상 상품도 가끔 400 {code:'DEFAULT', "오류가 발생하였습니다"} → 잠시 후 한 번 더
+        const generic = e instanceof HttpError && e.status === 400 && (e.body as { code?: string } | undefined)?.code === 'DEFAULT';
+        if (!generic || i >= 1) throw e;
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    }
+    return res?.data && typeof res.data === 'object' ? res.data : null;
+  }
+
+  /**
+   * 상품 수정(승인필요, PUT seller-products): 상품 조회 JSON 전문에서 값만 바꿔 전체를 전송 → 승인 후 반영.
+   * 출처: https://developers.coupang.com/ko/api/products/modify-product (확인 2026-10-14)
+   */
+  async updateProduct(body: Record<string, any>): Promise<MarketResult> {
+    try {
+      const res = await this.client.request('PUT', `${SELLER}/seller-products`, { body });
+      const code = res?.data?.code ?? res?.code;
+      const ok = code === 'SUCCESS' || code === '200' || code === 200;
+      return { ok, retryable: false, message: String(res?.data?.message || res?.message || '') };
+    } catch (e) {
+      if (e instanceof HttpError) return { ok: false, retryable: e.status >= 500 || e.status === 429, message: e.message };
+      throw e;
+    }
+  }
+
   async getProductStatus(sellerProductId: string): Promise<MarketProductStatus> {
     const res = await this.client.request('GET', `${SELLER}/seller-products/${sellerProductId}`);
     const d = res?.data ?? {};
