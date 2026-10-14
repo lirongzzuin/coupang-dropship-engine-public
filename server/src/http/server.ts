@@ -16,8 +16,7 @@ import { errMessage } from '../lib/util.js';
 import { answerInquiry } from '../modules/cs/service.js';
 import { listingProfit, monthlyCsv } from '../modules/finance/service.js';
 import { pauseListing, resumeListing } from '../modules/listing/control.js';
-import { markWinner, respondToWinner } from '../modules/listing/winner.js';
-import { linkExistingListing, ListingError, quoteSourceItem, registerListing, updateDraft, validateListing } from '../modules/listing/service.js';
+import { linkExistingListing, ListingError, quoteSourceItem, listNameFixes, markNameFixed, registerListing, updateDraft, validateListing } from '../modules/listing/service.js';
 import { importCoupangSalesCsv } from '../modules/marketdata/csvImport.js';
 import { confirmPurchase, decryptReceiver, OrderError, overrideAndProcess, submitTracking, transition } from '../modules/orders/service.js';
 import { ACTION_STATUSES, EXCEPTION_STATUSES, ORDER_STATUSES, type OrderStatus, STATUS_LABEL } from '../modules/orders/stateMachine.js';
@@ -292,10 +291,12 @@ export async function buildServer(ctx: AppContext, scheduler: Scheduler | null, 
     api.get('/api/listings', async (req) => {
       const q = z.object({ status: z.string().optional() }).parse(req.query);
       let query = ctx.db.selectFrom('listings').innerJoin('source_products', 'source_products.id', 'listings.source_product_id')
-        .select(['listings.id', 'listings.title', 'listings.status', 'listings.status_reason', 'listings.sale_price', 'listings.floor_price', 'listings.markup', 'listings.target_markup', 'listings.fee_rate_actual', 'listings.images', 'listings.vendor_item_id', 'listings.seller_product_id', 'listings.category_code', 'listings.category_name', 'listings.search_tags', 'listings.dry_run', 'listings.listed_at', 'listings.updated_at', 'listings.source_option', 'listings.checked_at', 'listings.order_checked_at', 'listings.check_fails', 'listings.winner_status', 'listings.winner_price', 'listings.winner_checked_at',
+        .select(['listings.id', 'listings.title', 'listings.status', 'listings.status_reason', 'listings.sale_price', 'listings.floor_price', 'listings.markup', 'listings.target_markup', 'listings.fee_rate_actual', 'listings.images', 'listings.vendor_item_id', 'listings.seller_product_id', 'listings.category_code', 'listings.category_name', 'listings.search_tags', 'listings.dry_run', 'listings.listed_at', 'listings.updated_at', 'listings.source_option', 'listings.checked_at', 'listings.order_checked_at', 'listings.check_fails',
           'source_products.source', 'source_products.price as source_price', 'source_products.shipping_fee as source_shipping', 'source_products.stock as source_stock', 'source_products.url as source_url', 'source_products.image_reuse_allowed'])
         .orderBy('listings.id', 'desc').limit(300);
       if (q.status) query = query.where('listings.status', '=', q.status);
+      // 전체 보기에서는 Wing에서 삭제한 상품 숨김(판매종료 탭에서 확인)
+      else query = query.where((eb) => eb.not(eb.and([eb('listings.status', '=', 'stopped'), eb(eb.fn.coalesce('listings.status_reason', eb.val('')), 'like', '쿠팡에서 삭제됨%')])));
       return query.execute();
     });
     api.patch('/api/listings/:id', async (req) => {
@@ -323,14 +324,16 @@ export async function buildServer(ctx: AppContext, scheduler: Scheduler | null, 
       const l = await ctx.db.selectFrom('listings').selectAll().where('id', '=', idParam(req)).executeTakeFirstOrThrow();
       return { ok: await pauseListing(ctx, l, '관리자 중지') };
     });
-    // 아이템위너 대응: Wing 가격관리에서 본 위너 가격(판매가+배송비) 입력 → 미리보기(apply=false) / 적용
-    api.post('/api/listings/:id/winner', async (req) => {
-      const b = z.object({ winnerPrice: z.coerce.number().int().positive(), apply: z.boolean().default(false) }).parse(req.body);
-      return respondToWinner(ctx, idParam(req), b.winnerPrice, b.apply, actor(req));
-    });
-    api.post('/api/listings/:id/winner/ok', async (req) => {
-      await markWinner(ctx, idParam(req), actor(req));
-      return { ok: true };
+    // 이전 버전으로 올린 상품 중 노출상품명에 옵션 단어가 겹치는 상품 → 제안 이름(사람이 Wing에서 수정)
+    api.get('/api/listings/name-fixes', async () => listNameFixes(ctx));
+    api.post('/api/listings/name-fixes/done', async (req) => {
+      const b = z.object({ ids: z.array(z.coerce.number().int().positive()).min(1).max(200) }).parse(req.body);
+      const done: number[] = [];
+      for (const id of b.ids) {
+        await markNameFixed(ctx, id, actor(req));
+        done.push(id);
+      }
+      return { done };
     });
     api.post('/api/listings/:id/resume', async (req) => {
       const l = await ctx.db.selectFrom('listings').selectAll().where('id', '=', idParam(req)).executeTakeFirstOrThrow();

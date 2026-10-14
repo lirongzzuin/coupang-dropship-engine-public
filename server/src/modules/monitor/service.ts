@@ -1,7 +1,7 @@
 import type { Settings } from '../../config/settings.js';
 import { audit, type AppContext } from '../../context.js';
 import type { ListingRow, SourceProductRow } from '../../db/schema.js';
-import { addDays, errMessage } from '../../lib/util.js';
+import { addDays, errMessage, HttpError } from '../../lib/util.js';
 import type { SourceOrderCheck } from '../../ports/source.js';
 import { detailOf } from '../catalog.js';
 import { getHalt } from '../guard/safety.js';
@@ -135,9 +135,9 @@ export async function checkOrderability(ctx: AppContext): Promise<OrderabilityRe
  * - 우리가 멈춘(일시중지·최근 판매종료) 상품인데 쿠팡에서 판매중 → 다시 판매중지(품절·주문 불가 상품 주문 차단)
  * - 우리는 판매중인데 쿠팡에서 모든 옵션이 판매중지 → Wing·쿠팡 조치로 보고 '쿠팡에서 판매중지됨'으로 기록(자동 재개 안 함)
  */
-export async function reconcileMarketState(ctx: AppContext): Promise<{ checked: number; restopped: number; marketStopped: number; errors: number; priceAdopted?: number }> {
+export async function reconcileMarketState(ctx: AppContext): Promise<ReconcileResult> {
   const s = await ctx.settings.get();
-  const out: { checked: number; restopped: number; marketStopped: number; errors: number; priceAdopted?: number } = { checked: 0, restopped: 0, marketStopped: 0, errors: 0 };
+  const out: ReconcileResult = { checked: 0, restopped: 0, marketStopped: 0, errors: 0 };
   if (s.killSwitch || !s.monitor.enabled || !s.monitor.reconcileMarket || !ctx.market.getItemSaleState) return out;
   const recent = addDays(ctx.clock.now(), -7);
   const rows = await ctx.db.selectFrom('listings').selectAll().where('dry_run', '=', false)
@@ -148,21 +148,33 @@ export async function reconcileMarketState(ctx: AppContext): Promise<{ checked: 
   const marketStopped: string[] = [];
   const adopted: string[] = [];
   const priceAdopted: string[] = [];
+  const deleted: string[] = [];
   let lookups = 0;
   for (const l of rows) {
     const vids = await vendorItemIds(ctx, l);
     if (!vids.length) continue;
     out.checked++;
-    const states: Array<{ vid: string; onSale: boolean; price: number | null }> = [];
+    let states: Array<{ vid: string; onSale: boolean; price: number | null; deleted?: boolean }> = [];
     for (const vid of vids) {
       lookups++;
       try {
         const st = await ctx.market.getItemSaleState(vid);
-        if (st) states.push({ vid, onSale: st.onSale, price: st.price });
+        if (st) states.push({ vid, onSale: st.onSale, price: st.price, deleted: st.deleted });
       } catch (e) {
         out.errors++;
         ctx.log.warn({ listing: l.id, vid, err: errMessage(e) }, '쿠팡 판매상태 조회 실패');
       }
+    }
+    // Wing에서 상품을 삭제 → 판매종료로 정리(관리 화면 기본 목록에서 빠지고, 같은 상품은 다시 등록하지 않음)
+    if (states.some((x) => x.deleted)) {
+      if (await productDeleted(ctx, l, states.every((x) => x.deleted) && states.length === vids.length)) {
+        const now = ctx.clock.now();
+        await ctx.db.updateTable('listings').set({ status: 'stopped', status_reason: `${PAUSE.deleted}(Wing에서 삭제)`, paused_at: null, updated_at: now }).where('id', '=', l.id).execute();
+        out.deleted = (out.deleted ?? 0) + 1;
+        deleted.push(`• ${l.title.slice(0, 28)}`);
+        continue;
+      }
+      states = states.filter((x) => !x.deleted); // 일부 옵션만 삭제 → 나머지 옵션으로 판단
     }
     const seen = states.length;
     const onSale = states.filter((x) => x.onSale).length;
@@ -191,8 +203,8 @@ export async function reconcileMarketState(ctx: AppContext): Promise<{ checked: 
       marketStopped.push(`• ${l.title.slice(0, 28)}`);
       continue;
     }
-    // Wing에서 직접 바꾼 가격(아이템위너 맞춤·Wing 자동가격조정 등) → 시스템 가격으로 반영(덮어쓰지 않음), 손실이면 판매중지
-    if (l.status === 'active' && s.itemWinner.adoptMarketPrice) {
+    // Wing에서 직접 바꾼 가격(사람이 가격 조정 등) → 시스템 가격으로 반영(덮어쓰지 않음), 손실이면 판매중지
+    if (l.status === 'active' && s.monitor.adoptMarketPrice) {
       const r = await adoptMarketPrices(ctx, s, l, states);
       if (r) priceAdopted.push(r);
     }
@@ -202,6 +214,7 @@ export async function reconcileMarketState(ctx: AppContext): Promise<{ checked: 
     await ctx.notifications.notify('warn', '쿠팡 판매상태 조회 실패', `옵션 ${lookups}개 조회가 모두 실패해 쿠팡 판매상태 대조를 하지 못했습니다(판매중지 누락 감지 불가). 쿠팡 API 키 권한·허용 IP를 확인하세요(bash ~/dropship/bin/check.sh).`,
       { path: '/jobs', dedupeKey: 'reconcile-all-failed', dedupeMinutes: 24 * 60 });
   }
+  if (deleted.length) await ctx.notifications.notify('info', `쿠팡에서 삭제한 상품 ${deleted.length}개 정리`, `${deleted.slice(0, 8).join('\n')}\n판매종료로 정리했고 관리 화면 기본 목록에서 숨깁니다(판매종료 탭에서 확인). 같은 상품은 다시 등록하지 않습니다.`, { path: '/listings' });
   if (priceAdopted.length) {
     out.priceAdopted = priceAdopted.length;
     await ctx.notifications.notify('info', `쿠팡(Wing)에서 바뀐 가격 ${priceAdopted.length}개 반영`, `${priceAdopted.slice(0, 8).join('\n')}\n시스템 가격을 쿠팡 실제 가격에 맞췄습니다(손실 가격이면 판매중지).`, { path: '/listings' });
@@ -214,6 +227,33 @@ export async function reconcileMarketState(ctx: AppContext): Promise<{ checked: 
       `${marketStopped.slice(0, 8).join('\n')}\nWing에서 직접 멈췄거나 쿠팡이 판매를 막았습니다(정책·심사). 자동으로 재개하지 않습니다. Wing 상품관리에서 사유를 확인하고, 괜찮으면 관리 화면 [판매재개]를 누르세요.`, { path: '/listings' });
   }
   return out;
+}
+
+export interface ReconcileResult {
+  checked: number;
+  restopped: number;
+  marketStopped: number;
+  errors: number;
+  priceAdopted?: number;
+  /** Wing에서 삭제돼 판매종료로 정리한 상품 */
+  deleted?: number;
+}
+
+/**
+ * 상품 자체가 쿠팡에서 삭제됐는지 상품 조회로 확인(옵션 하나만 지운 경우와 구분).
+ * 상품 조회가 '상품삭제'이거나 없는 상품(400/404)이면 삭제. 일시 오류면 다음 실행에서 다시.
+ * 등록상품ID를 모르면(기존 상품 연결분) 모든 옵션이 삭제로 보일 때만 삭제로 본다.
+ */
+async function productDeleted(ctx: AppContext, l: ListingRow, allOptionsDeleted: boolean): Promise<boolean> {
+  if (!l.seller_product_id) return allOptionsDeleted;
+  try {
+    const st = await ctx.market.getProductStatus(l.seller_product_id);
+    return st.rawStatus === '상품삭제';
+  } catch (e) {
+    if (e instanceof HttpError && (e.status === 400 || e.status === 404)) return allOptionsDeleted;
+    ctx.log.warn({ listing: l.id, err: errMessage(e) }, '쿠팡 상품 조회 실패(삭제 확인 보류)');
+    return false;
+  }
 }
 
 /**

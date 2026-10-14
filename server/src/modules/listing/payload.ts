@@ -2,6 +2,7 @@ import type { Settings } from '../../config/settings.js';
 import type { AttributeSpec, CategoryMeta } from '../../ports/market.js';
 import type { SourceProductDetail } from '../../ports/source.js';
 import { truncate } from '../../lib/util.js';
+import { productNameFor } from './text.js';
 
 /**
  * 쿠팡 상품 생성 페이로드.
@@ -28,15 +29,18 @@ export function buildCoupangPayload(s: Settings, p: PayloadInput): Record<string
   const c = s.coupang;
   const prepDays = Math.min(30, (p.detail?.prepDays ?? 1) + s.listing.shippingBufferDays);
   const ten = (n: number) => Math.round(n / 10) * 10;
+  // 구매옵션은 원래 상품명에서 뽑고(색상·사이즈 등), 상품명에서는 그 옵션 값을 뺀다(쿠팡: 상품명·옵션 단어 중복 금지)
+  const attrs = p.options.map((o) => buildAttributes(p.meta, p.title, o.units, p.detail?.defaultOption));
+  const name = truncate(productNameFor(p.title, attrs.flat().map((a) => a.attributeValueName)), 100);
   return {
     displayCategoryCode: Number(p.categoryCode),
-    sellerProductName: truncate(p.title, 100),
+    sellerProductName: name,
     vendorId: p.vendorId,
     saleStartedAt: kstLocal(p.now),
     saleEndedAt: '2099-01-01T23:59:59',
-    displayProductName: truncate(p.title, 100),
+    displayProductName: name,
     brand: p.detail?.brand ?? '',
-    generalProductName: truncate(p.title, 100),
+    generalProductName: name,
     productGroup: '',
     deliveryMethod: 'SEQUENCIAL',
     deliveryCompanyCode: c.deliveryCompanyCode,
@@ -56,7 +60,7 @@ export function buildCoupangPayload(s: Settings, p: PayloadInput): Record<string
     outboundShippingPlaceCode: c.outboundShippingPlaceCode,
     vendorUserId: c.vendorUserId,
     requested: true,
-    items: p.options.map((o) => ({
+    items: p.options.map((o, i) => ({
         itemName: truncate(o.itemName, 150),
         originalPrice: ten(Math.max(o.salePrice * s.pricing.originalPriceMultiplier, o.salePrice)),
         salePrice: ten(o.salePrice),
@@ -82,7 +86,7 @@ export function buildCoupangPayload(s: Settings, p: PayloadInput): Record<string
         searchTags: p.tags.slice(0, 20),
         images: p.images.slice(0, 10).map((url, i) => ({ imageOrder: i, imageType: i === 0 ? 'REPRESENTATION' : 'DETAIL', vendorPath: url })),
         notices: buildNotices(p.meta, p.detail, c.companyContactNumber),
-        attributes: buildAttributes(p.meta, p.title, o.units, p.detail?.defaultOption),
+        attributes: attrs[i],
         contents: [{ contentsType: 'HTML', contentDetails: [{ content: p.detailHtml, detailType: 'TEXT' }] }],
         offerCondition: 'NEW',
       })),

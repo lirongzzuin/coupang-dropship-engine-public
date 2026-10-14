@@ -5,12 +5,12 @@ import type { ListingRow, SourceProductRow } from '../../db/schema.js';
 import { errMessage } from '../../lib/util.js';
 import { detailOf } from '../catalog.js';
 import { getHalt, HALT_REASON } from '../guard/safety.js';
-import { pauseListing } from './control.js';
+import { PAUSE, pauseListing } from './control.js';
 import { initialMarkup, targetMarkup, targetPrice } from '../pricing/pricing.js';
 import { getItems, planItems, saveItems } from './items.js';
 import { buildCoupangPayload, supportsBundles } from './payload.js';
 import { hostDetailHtml, prepareMainImages } from './media.js';
-import { buildDetailHtml, buildTags, findBannedTerms, sanitizeTitle } from './text.js';
+import { buildDetailHtml, buildTags, findBannedTerms, productNameFor, sanitizeTitle } from './text.js';
 
 export class ListingError extends Error {}
 
@@ -131,6 +131,8 @@ export async function registerListing(ctx: AppContext, id: number, actor = 'syst
       .updateTable('listings')
       .set({
         seller_product_id: res.sellerProductId,
+        // 쿠팡에 실제로 보낸 노출상품명(옵션 단어를 뺀 이름)으로 맞춘다
+        title: String((payload as { displayProductName?: string }).displayProductName || l.title),
         category_code: categoryCode,
         category_name: categoryName,
         detail_html: detailHtml,
@@ -181,7 +183,10 @@ export async function refreshListingStatuses(ctx: AppContext): Promise<{ approve
           await pauseListing(ctx, fresh, HALT_REASON);
           continue;
         }
-        await ctx.notifications.notify('info', '상품 판매 시작', `${l.title} (${l.sale_price.toLocaleString()}원)${l.dry_run ? '' : '\n👉 1~2일 안에 Wing > 상품관리 > 가격관리에서 아이템위너인지 확인하세요. 위너가 아니면 관리 화면 상품 > [아이템위너 대응]에 위너 가격(판매가+배송비)을 입력하면 하한가 안에서 맞추거나 정리합니다.'}`, { path: `/listings` });
+        await ctx.notifications.notify('info', '상품 판매 시작', `${l.title} (${l.sale_price.toLocaleString()}원)`, { path: `/listings` });
+      } else if (st.rawStatus === '상품삭제') {
+        // 심사 중에 Wing에서 삭제 → 판매종료로 정리(반려로 남기면 다시 등록 대상이 됨)
+        await ctx.db.updateTable('listings').set({ status: 'stopped', status_reason: `${PAUSE.deleted}(Wing에서 삭제)`, updated_at: ctx.clock.now() }).where('id', '=', l.id).execute();
       } else if (st.status === 'REJECTED') {
         await ctx.db.updateTable('listings').set({ status: 'rejected', status_reason: `쿠팡 승인 반려(${st.rawStatus}) — Wing에서 사유 확인`, updated_at: ctx.clock.now() }).where('id', '=', l.id).execute();
         rejected++;
@@ -192,6 +197,46 @@ export async function refreshListingStatuses(ctx: AppContext): Promise<{ approve
     }
   }
   return { approved, rejected };
+}
+
+/**
+ * 이미 쿠팡에 올린 상품 중 노출상품명에 구매옵션 값이 겹치는 상품(이전 버전으로 등록) → 고칠 이름 제안.
+ * 승인된 상품의 이름을 API로 바꾸면 쿠팡 재심사가 필요하고 그동안 판매가 유지되는지 공식 문서에 없어
+ * 자동으로 바꾸지 않는다. 관리 화면에 제안 이름을 보여 주고 사람이 Wing에서 고친 뒤 [수정함]을 누른다.
+ */
+export interface NameFix {
+  id: number;
+  status: string;
+  sellerProductId: string | null;
+  current: string;
+  suggested: string;
+}
+
+export async function listNameFixes(ctx: AppContext): Promise<NameFix[]> {
+  const rows = await ctx.db.selectFrom('listings').select(['id', 'status', 'seller_product_id', 'title', 'payload'])
+    .where('dry_run', '=', false).where('status', 'in', ['pending_approval', 'active', 'paused']).where('payload', 'is not', null).orderBy('id').execute();
+  const out: NameFix[] = [];
+  for (const r of rows) {
+    const p = (typeof r.payload === 'string' ? JSON.parse(r.payload) : r.payload) as { displayProductName?: string; items?: Array<{ attributes?: Array<{ attributeValueName?: string }> }> } | null;
+    const current = p?.displayProductName;
+    if (!current) continue;
+    const values = (p?.items ?? []).flatMap((it) => (it.attributes ?? []).map((a) => String(a.attributeValueName ?? '')));
+    const suggested = productNameFor(current, values);
+    if (suggested !== current) out.push({ id: r.id, status: r.status, sellerProductId: r.seller_product_id, current, suggested });
+  }
+  return out;
+}
+
+/** 사람이 Wing에서 노출상품명을 고쳤음 → 시스템 상품명·기록도 같은 이름으로(목록에서 빠짐) */
+export async function markNameFixed(ctx: AppContext, id: number, actor: string): Promise<{ title: string }> {
+  const fix = (await listNameFixes(ctx)).find((f) => f.id === id);
+  if (!fix) throw new ListingError('고칠 상품명이 없는 상품입니다');
+  const l = await ctx.db.selectFrom('listings').select(['payload']).where('id', '=', id).executeTakeFirstOrThrow();
+  const p = (typeof l.payload === 'string' ? JSON.parse(l.payload) : l.payload) as Record<string, unknown>;
+  const payload = { ...p, sellerProductName: fix.suggested, displayProductName: fix.suggested, generalProductName: fix.suggested };
+  await ctx.db.updateTable('listings').set({ title: fix.suggested, payload: JSON.stringify(payload), updated_at: ctx.clock.now() }).where('id', '=', id).execute();
+  await audit(ctx, actor, 'listing.name_fixed', String(id), { from: fix.current, to: fix.suggested });
+  return { title: fix.suggested };
 }
 
 /**

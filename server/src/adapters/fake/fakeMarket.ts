@@ -165,6 +165,8 @@ export class FakeMarket implements MarketPort {
   itemNames = new Map<string, string>();
 
   async getProductStatus(sellerProductId: string): Promise<MarketProductStatus> {
+    this.maybeFail('getProductStatus');
+    if (this.deletedInWing.has(sellerProductId)) return { sellerProductId, status: 'REJECTED', rawStatus: '상품삭제', vendorItemIds: [] };
     const p = this.products.get(sellerProductId);
     if (!p) return { sellerProductId, status: 'UNKNOWN', rawStatus: '', vendorItemIds: [] };
     if (this.autoApprove && p.status === 'IN_REVIEW') this.approve(sellerProductId);
@@ -197,8 +199,16 @@ export class FakeMarket implements MarketPort {
     this.item(id).onSale = true;
     return { ok: true, retryable: false, message: 'OK' };
   }
+  /** 테스트: Wing에서 상품을 삭제(옵션 조회는 '삭제됨', 상품 조회는 '상품삭제') */
+  deletedInWing = new Set<string>();
+  deleteInWing(sellerProductId: string, vendorItemIds: string[]): void {
+    this.deletedInWing.add(sellerProductId);
+    for (const v of vendorItemIds) this.deletedInWing.add(v);
+  }
+
   async getItemSaleState(id: string): Promise<ItemSaleState | null> {
     this.maybeFail('getItemSaleState');
+    if (this.deletedInWing.has(id)) return { onSale: false, quantity: null, price: null, deleted: true };
     const it = this.items.get(id);
     return it ? { onSale: it.onSale, quantity: it.qty, price: it.price } : null;
   }

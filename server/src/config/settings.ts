@@ -311,6 +311,8 @@ export const settingsSchema = z.object({
       systemicFailCount: z.number().int().default(3),
       /** 쿠팡 실제 판매상태와 대조(중지했는데 판매중이면 다시 중지, Wing에서 사람이 중지하면 자동 재개 안 함) */
       reconcileMarket: z.boolean().default(true),
+      /** 쿠팡(Wing)에서 직접 바꾼 가격을 시스템 가격으로 반영(두 번 연속 같은 가격일 때, 손실이면 판매중지) */
+      adoptMarketPrice: z.boolean().default(true),
     })
     .default({}),
 
@@ -332,23 +334,6 @@ export const settingsSchema = z.object({
       protectMonthlyProfitKrw: z.number().int().default(30000),
       /** 선정 1회당 교체 최대 수 */
       maxReplacePerRun: z.number().int().default(2),
-    })
-    .default({}),
-
-  /**
-   * 아이템위너 대응. 쿠팡 OPEN API는 위너 여부·카탈로그 매칭·자동가격조정을 지원하지 않음(쿠팡 개발자센터 FAQ, 확인 2026-10-14)
-   * → Wing 가격관리에서 본 위너 가격을 입력하면 하한가 안에서 맞추거나, 못 맞추면 판매종료.
-   */
-  itemWinner: z
-    .object({
-      /** 위너 가격보다 이만큼 싸게(10원 단위) */
-      undercutKrw: z.number().int().min(0).default(10),
-      /** 입력한 위너 가격을 가격 상한으로 쓰는 기간(일) — 지나면 다시 확인 필요 */
-      capDays: z.number().default(30),
-      /** 등록 후 이 기간(일)이 지나도 주문이 없고 위너 확인 전이면 리포트에 확인 요청 */
-      remindAfterDays: z.number().default(2),
-      /** 쿠팡(Wing)에서 직접 바꾼 가격을 시스템 가격으로 반영(두 번 연속 같은 가격일 때) */
-      adoptMarketPrice: z.boolean().default(true),
     })
     .default({}),
 
