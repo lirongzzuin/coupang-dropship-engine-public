@@ -127,7 +127,8 @@ export async function sendDailyReport(ctx: AppContext): Promise<string> {
   const stopped = await ctx.db.selectFrom('listings').select(['title', 'status_reason']).where('status', '=', 'stopped').where('updated_at', '>=', yStart).where('updated_at', '<', todayStart).execute();
   const lowered = await ctx.db.selectFrom('listings').select((eb) => eb.fn.countAll<number>().as('n')).where('status', '=', 'active').where('zero_sale_adjusted', '=', true).executeTakeFirst();
   L.push('', '🛍 상품');
-  L.push(`  · 판매중 ${d.listings.active ?? 0} · 심사중 ${d.listings.pending_approval ?? 0} · 일시중지 ${d.listings.paused ?? 0} · 상한 ${s.listing.maxActiveListings}`);
+  const dry = await ctx.db.selectFrom('listings').select((eb) => eb.fn.countAll<number>().as('n')).where('dry_run', '=', true).where('status', 'in', ['active', 'pending_approval', 'paused']).executeTakeFirst();
+  L.push(`  · 판매중 ${d.listings.active ?? 0} · 심사중 ${d.listings.pending_approval ?? 0} · 일시중지 ${d.listings.paused ?? 0} · 상한 ${s.listing.maxActiveListings}${Number(dry?.n ?? 0) ? ` (이 중 모의 ${dry!.n}개 — 실제 쿠팡엔 없음)` : ''}`);
   if (newListed.length) L.push(`  · 어제 새로 등록 ${newListed.length}개${newListed.some((x) => x.dry_run) ? '(모의)' : ''}: ${newListed.slice(0, 3).map((x) => `${x.title.slice(0, 16)} ${won(x.sale_price)}`).join(' · ')}`);
   if (stopped.length) L.push(`  · 어제 판매종료(교체 대상) ${stopped.length}개: ${stopped.slice(0, 3).map((x) => x.title.slice(0, 16)).join(' · ')}`);
   if (Number(lowered?.n ?? 0)) L.push(`  · 판매 부진으로 하한가 시험 중 ${lowered!.n}개(${s.listing.stopAfterLowerDays}일 더 안 팔리면 교체)`);
