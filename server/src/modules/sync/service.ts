@@ -1,54 +1,99 @@
+import type { Settings } from '../../config/settings.js';
 import type { AppContext } from '../../context.js';
 import type { ListingRow } from '../../db/schema.js';
-import { addDays, errMessage, kstDate } from '../../lib/util.js';
+import { addDays, errMessage } from '../../lib/util.js';
+import type { SourceProductDetail } from '../../ports/source.js';
 import { upsertSourceProduct } from '../catalog.js';
-import { pauseListing, resumeListing } from '../listing/control.js';
+import { PAUSE, pauseKind, pauseListing, resumeListing } from '../listing/control.js';
 import { reprice } from '../listing/items.js';
 import { getHalt } from '../guard/safety.js';
 import { computeProfit, markupCapForMarket } from '../pricing/pricing.js';
 
 /**
- * 운영 중 상품의 공급가·재고 동기화.
- * - 품절/단종 → 판매중지(paused), 재입고 → 재개
+ * 판매 중 상품이 공급처에서 지금도 팔 수 있는지 판단. 문제가 있으면 판매중지 사유, 없으면 null.
+ * (주문 가능 = 상품·옵션 판매중 + 오픈마켓 판매 허용 + 재고 여유)
+ */
+export function supplyProblem(s: Settings, d: SourceProductDetail | null): string | null {
+  if (!d) return `${PAUSE.notSellable}: 공급처에서 상품이 삭제됨`;
+  if (d.status === 'ended') return `${PAUSE.notSellable}: ${d.unavailableReason ?? '공급처 판매 종료'}`;
+  if (d.status !== 'active') return d.unavailableReason ? `${PAUSE.soldout}: ${d.unavailableReason}` : PAUSE.soldout;
+  if (d.marketSellable === false) return `${PAUSE.notSellable}: 오픈마켓 판매 금지 상품으로 변경됨`;
+  const minStock = s.monitor.enabled ? s.monitor.minSourceStock : 1;
+  if (d.stock !== null && d.stock < minStock) return d.stock <= 0 ? PAUSE.soldout : `${PAUSE.lowStock}: 재고 ${d.stock}개(기준 ${minStock}개)`;
+  return null;
+}
+
+/**
+ * 운영 중 상품의 공급가·재고 동기화 + 판매 가능 감시(구매자 보호).
+ * - 판매 불가(품절·단종·옵션 삭제·오픈마켓 판매 금지·재고 부족·공급처에서 삭제) → 판매중지, 회복 → 재개
+ * - 쿠팡에 올린 옵션(source_option)만 본다: 그 옵션이 품절이면 다른 옵션으로 바꾸지 않고 판매중지
  * - 공급가가 바뀌면 옵션별 하한가를 다시 계산하고 현재 마크업으로 판매가 재설정(하한 미만 금지)
- * - 가드(1회 변동률·하루 횟수) 때문에 하한을 못 맞추면 손실 방지를 위해 판매중지
+ * - 가드(1회 변동률·하루 횟수) 때문에 하한·최저판매준수가를 못 맞추면 판매중지
+ * - 같은 상품만 공급처 조회가 계속 실패하면(다른 상품은 정상) 확인 불가로 판매중지
  * - 재고 수량 반영
+ * 사람이 멈춘 상품·안전장치·쿠팡에서 멈춘 상품은 건드리지 않는다. 주문 불가로 멈춘 상품은 주문 점검이 재개한다.
  */
 export async function syncListings(ctx: AppContext): Promise<{ checked: number; paused: number; resumed: number; repriced: number; errors: number }> {
   const s = await ctx.settings.get();
   const stats = { checked: 0, paused: 0, resumed: 0, repriced: 0, errors: 0 };
   if (s.killSwitch) return stats;
   const halted = !!(await getHalt(ctx));
-  const listings = await ctx.db.selectFrom('listings').selectAll().where('status', 'in', ['active', 'paused']).execute();
+  const listings = await ctx.db.selectFrom('listings').selectAll().where('status', 'in', ['active', 'paused']).orderBy('id').execute();
+  const pausedNow: Array<{ title: string; reason: string }> = [];
+  const resumedNow: string[] = [];
+  const okSources = new Set<string>();
+  const failed: Array<{ l: ListingRow; source: string; fails: number }> = [];
+  const pause = async (l: ListingRow, reason: string) => {
+    // 이미 공급처 사유로 멈춘 상품: 사유만 최신으로(주문 불가로 멈춘 상품은 사유 유지 → 주문 점검이 재개 판단)
+    if (l.status === 'paused') {
+      if (pauseKind(l.status_reason) === 'supply' && l.status_reason !== reason) {
+        await ctx.db.updateTable('listings').set({ status_reason: reason.slice(0, 300) }).where('id', '=', l.id).execute();
+      }
+      return;
+    }
+    if (await pauseListing(ctx, l, reason)) {
+      stats.paused++;
+      pausedNow.push({ title: l.title, reason });
+    }
+  };
   for (const l of listings) {
-    if (l.status === 'paused' && l.status_reason && !['공급처 품절', '마진 역전', '공급가 상승'].includes(l.status_reason)) continue; // 수동 중지는 건드리지 않음
+    const kind = pauseKind(l.status_reason);
+    if (l.status === 'paused' && kind === 'other') continue; // 수동·안전장치·쿠팡에서 중지는 건드리지 않음
     const sp = await ctx.db.selectFrom('source_products').selectAll().where('id', '=', l.source_product_id).executeTakeFirstOrThrow();
     const src = ctx.sources.get(sp.source);
     if (!src?.capabilities.detail) continue;
     stats.checked++;
     try {
-      const d = await src.getProduct(sp.source_item_id, { title: sp.title });
-      if (!d) continue;
-      await upsertSourceProduct(ctx, sp.source, d);
-      const available = d.status === 'active' && (d.stock === null || d.stock > 0);
-      if (!available) {
-        if (await pauseListing(ctx, l, '공급처 품절')) stats.paused++;
+      const d = await src.getProduct(sp.source_item_id, { title: sp.title, ...(l.source_option ? { option: l.source_option } : {}) });
+      okSources.add(sp.source);
+      await ctx.db.updateTable('listings').set({ checked_at: ctx.clock.now(), check_fails: 0 }).where('id', '=', l.id).execute();
+      if (d) await upsertSourceProduct(ctx, sp.source, d);
+      const problem = supplyProblem(s, d);
+      if (problem || !d) {
+        await pause(l, problem ?? PAUSE.notSellable);
         continue;
       }
       const costChanged = d.price !== sp.price || d.shippingFee !== sp.shipping_fee;
       let current: ListingRow = l;
-      if (costChanged || l.floor_price > l.sale_price) {
+      if (costChanged || l.floor_price > l.sale_price || (d.minResalePrice ?? 0) > l.sale_price) {
         const r = await reprice(ctx, l, l.markup, d.price > sp.price ? '공급가 상승' : '공급가 변동');
         if (r.changed) stats.repriced++;
         current = { ...l, sale_price: r.price, floor_price: r.floor };
       }
       const profit = computeProfit(s, current.sale_price, { cost: d.price, shipping: d.shippingFee, categoryPath: d.categoryPath, inputVatDeductible: d.taxInvoice, feeRate: l.fee_rate_actual }).profit;
       if (profit < 0) {
-        if (await pauseListing(ctx, current, '마진 역전')) stats.paused++;
+        await pause(current, `${PAUSE.margin}: 예상 손익 ${profit.toLocaleString()}원`);
         continue;
       }
-      // 안전장치 판매 중지 중에는 자동 재개하지 않음
-      if (current.status === 'paused' && !halted && (await resumeListing(ctx, current))) stats.resumed++;
+      if (d.minResalePrice && current.sale_price < d.minResalePrice) {
+        await pause(current, `${PAUSE.minResale}: 판매가 ${current.sale_price.toLocaleString()}원 < 준수가 ${d.minResalePrice.toLocaleString()}원`);
+        continue;
+      }
+      // 공급처 사유로 멈춘 상품만 재개. 안전장치 판매 중지 중에는 재개하지 않음
+      if (current.status === 'paused' && kind === 'supply' && !halted && (await resumeListing(ctx, current))) {
+        stats.resumed++;
+        resumedNow.push(l.title);
+      }
       if (d.stock !== null) for (const it of await ctx.db.selectFrom('listing_items').selectAll().where('listing_id', '=', l.id).execute()) {
         if (it.vendor_item_id) await ctx.market.updateQuantity(it.vendor_item_id, Math.min(Math.floor(d.stock / it.unit_qty), 999));
       }
@@ -57,10 +102,25 @@ export async function syncListings(ctx: AppContext): Promise<{ checked: number; 
       }
     } catch (e) {
       stats.errors++;
-      ctx.log.warn({ listing: l.id, err: errMessage(e) }, '동기화 실패');
+      const fails = l.check_fails + 1;
+      await ctx.db.updateTable('listings').set({ check_fails: fails }).where('id', '=', l.id).execute();
+      failed.push({ l, source: sp.source, fails });
+      ctx.log.warn({ listing: l.id, fails, err: errMessage(e) }, '동기화 실패');
     }
   }
-  if (stats.paused) await ctx.notifications.notify('warn', `상품 ${stats.paused}개 자동 판매중지`, '품절 또는 마진 역전. 재입고/가격 회복 시 자동 재개됩니다.', { path: '/listings', dedupeKey: `sync-paused-${kstDate(ctx.clock.now())}`, dedupeMinutes: 180 });
+  // 같은 공급처의 다른 상품은 정상 조회되는데 이 상품만 계속 실패 → 이 상품을 확인할 수 없음(공급처 전체 장애는 제외)
+  if (s.monitor.enabled) {
+    for (const f of failed) {
+      if (f.l.status !== 'active' || f.fails < s.monitor.unverifiableStreak || !okSources.has(f.source)) continue;
+      await pause(f.l, `${PAUSE.unverifiable}: 공급처 조회 ${f.fails}회 연속 실패`);
+    }
+  }
+  if (stats.paused) {
+    const lines = pausedNow.slice(0, 8).map((x) => `• ${x.title.slice(0, 28)} — ${x.reason}`);
+    await ctx.notifications.notify('warn', `상품 ${stats.paused}개 자동 판매중지`,
+      `${lines.join('\n')}${pausedNow.length > 8 ? `\n외 ${pausedNow.length - 8}개` : ''}\n공급처에서 주문할 수 없는 상태라 쿠팡 판매를 멈췄습니다. 회복되면 자동 재개됩니다.`, { path: '/listings' });
+  }
+  if (stats.resumed) await ctx.notifications.notify('info', `상품 ${stats.resumed}개 판매 재개`, resumedNow.slice(0, 8).map((t) => `• ${t.slice(0, 28)}`).join('\n'), { path: '/listings' });
   return stats;
 }
 
@@ -184,8 +244,11 @@ export async function scoutCheaperSources(ctx: AppContext): Promise<{ checked: n
       const current = sp.price + sp.shipping_fee;
       const cheaper = found.filter((x) => x.price + x.shippingFee <= current * (1 - s.costScout.minSaving)).sort((a, b) => a.price + a.shippingFee - (b.price + b.shippingFee));
       for (const c of cheaper) {
-        const d = await src.getProduct(c.sourceItemId, { title: c.title });
-        if (!d || d.status !== 'active' || (d.stock !== null && d.stock < s.selection.minStock) || (d.minOrderQty ?? 1) > 1) continue;
+        // 쿠팡에 올린 옵션이 그대로 있고 주문 가능한 상품만(다른 옵션이 오면 안 됨)
+        const d = await src.getProduct(c.sourceItemId, { title: c.title, ...(l.source_option ? { option: l.source_option } : {}) });
+        if (supplyProblem(s, d) || !d || (d.stock !== null && d.stock < s.selection.minStock) || (d.minOrderQty ?? 1) > 1) continue;
+        if ((l.source_option ?? null) !== (d.defaultOption ?? null)) continue;
+        if (d.price + d.shippingFee > current * (1 - s.costScout.minSaving)) continue; // 옵션 가격 기준으로 다시 확인
         const np = await upsertSourceProduct(ctx, sp.source, d);
         await ctx.db.updateTable('listings').set({ source_product_id: np.id, updated_at: ctx.clock.now() }).where('id', '=', l.id).execute();
         await reprice(ctx, { ...l, source_product_id: np.id }, l.markup, '원가 절감(더 싼 동일 상품으로 교체)');
@@ -200,7 +263,10 @@ export async function scoutCheaperSources(ctx: AppContext): Promise<{ checked: n
   return out;
 }
 
-/** 판매 부진: 마크업 0(하한가)까지 내렸는데도 N일 판매 0이면 판매종료 → 다음 선정에서 교체 */
+/**
+ * 판매 부진: 등록 후 N일(최근 N일) 판매 0이면 하한가로 한 번 내려 보고, 그 뒤에도 0건이면 판매종료 → 다음 선정에서 교체.
+ * 취소된 주문은 판매로 치지 않는다. 다시 팔리면 하한가 시험 이력을 지워 다음 부진 때 다시 한 번 내려 본다.
+ */
 export async function reviewSlowListings(ctx: AppContext): Promise<{ lowered: number; stopped: number }> {
   const s = await ctx.settings.get();
   const out = { lowered: 0, stopped: 0 };
@@ -209,8 +275,13 @@ export async function reviewSlowListings(ctx: AppContext): Promise<{ lowered: nu
   const rows = await ctx.db.selectFrom('listings').selectAll().where('status', '=', 'active').where('listed_at', '<', cutoff).execute();
   for (const l of rows) {
     const since = new Date(l.listed_at!);
-    const sold = await ctx.db.selectFrom('orders').select((eb) => eb.fn.countAll<number>().as('n')).where('listing_id', '=', l.id).where('ordered_at', '>=', addDays(ctx.clock.now(), -s.listing.zeroSaleDays)).executeTakeFirst();
-    if (Number(sold?.n ?? 0) > 0 || since > cutoff) continue;
+    const sold = await ctx.db.selectFrom('orders').select((eb) => eb.fn.countAll<number>().as('n')).where('listing_id', '=', l.id)
+      .where('ordered_at', '>=', cutoff).where('status', '!=', 'CANCELLED').executeTakeFirst();
+    if (Number(sold?.n ?? 0) > 0) {
+      if (l.zero_sale_adjusted) await ctx.db.updateTable('listings').set({ zero_sale_adjusted: false }).where('id', '=', l.id).execute();
+      continue;
+    }
+    if (since > cutoff) continue;
     if (l.markup > 0 && !l.zero_sale_adjusted) {
       // 최적화가 꺼져 있어도 한 번은 하한가로 시도
       await reprice(ctx, l, 0, '판매 부진 인하');

@@ -209,7 +209,7 @@ export async function buildServer(ctx: AppContext, scheduler: Scheduler | null, 
       const o = await ctx.db.selectFrom('orders').selectAll().where('id', '=', id).executeTakeFirst();
       if (!o) throw Object.assign(new Error('주문 없음'), { statusCode: 404 });
       const sp = o.source_product_id ? await ctx.db.selectFrom('source_products').selectAll().where('id', '=', o.source_product_id).executeTakeFirst() : undefined;
-      const listing = o.listing_id ? await ctx.db.selectFrom('listings').select(['id', 'title', 'sale_price']).where('id', '=', o.listing_id).executeTakeFirst() : undefined;
+      const listing = o.listing_id ? await ctx.db.selectFrom('listings').select(['id', 'title', 'sale_price', 'source_option']).where('id', '=', o.listing_id).executeTakeFirst() : undefined;
       const events = await ctx.db.selectFrom('order_events').selectAll().where('order_id', '=', id).orderBy('id').execute();
       const r = o.pii_purged_at ? null : decryptReceiver(ctx, o);
       const s = await ctx.settings.get();
@@ -219,7 +219,7 @@ export async function buildServer(ctx: AppContext, scheduler: Scheduler | null, 
         ...safe,
         statusLabel: STATUS_LABEL[o.status as OrderStatus],
         receiverMasked: r ? { name: maskName(r.name), phone: maskPhone(r.phone), addr: maskAddress(r.addr1) } : null,
-        source: sp ? { id: sp.id, source: sp.source, sourceName: ctx.sources.get(sp.source)?.displayName ?? sp.source, title: sp.title, url: sp.url, price: sp.price, shippingFee: sp.shipping_fee, apiOrder: !!ctx.sources.get(sp.source)?.capabilities.apiOrder } : null,
+        source: sp ? { id: sp.id, source: sp.source, sourceName: ctx.sources.get(sp.source)?.displayName ?? sp.source, title: sp.title, url: sp.url, option: listing?.source_option ?? null, price: sp.price, shippingFee: sp.shipping_fee, apiOrder: !!ctx.sources.get(sp.source)?.capabilities.apiOrder } : null,
         listing: listing ?? null,
         events,
         profitEstimate: profitIfCost,
@@ -291,7 +291,7 @@ export async function buildServer(ctx: AppContext, scheduler: Scheduler | null, 
     api.get('/api/listings', async (req) => {
       const q = z.object({ status: z.string().optional() }).parse(req.query);
       let query = ctx.db.selectFrom('listings').innerJoin('source_products', 'source_products.id', 'listings.source_product_id')
-        .select(['listings.id', 'listings.title', 'listings.status', 'listings.status_reason', 'listings.sale_price', 'listings.floor_price', 'listings.markup', 'listings.target_markup', 'listings.fee_rate_actual', 'listings.images', 'listings.vendor_item_id', 'listings.seller_product_id', 'listings.category_code', 'listings.category_name', 'listings.search_tags', 'listings.dry_run', 'listings.listed_at', 'listings.updated_at',
+        .select(['listings.id', 'listings.title', 'listings.status', 'listings.status_reason', 'listings.sale_price', 'listings.floor_price', 'listings.markup', 'listings.target_markup', 'listings.fee_rate_actual', 'listings.images', 'listings.vendor_item_id', 'listings.seller_product_id', 'listings.category_code', 'listings.category_name', 'listings.search_tags', 'listings.dry_run', 'listings.listed_at', 'listings.updated_at', 'listings.source_option', 'listings.checked_at', 'listings.order_checked_at', 'listings.check_fails',
           'source_products.source', 'source_products.price as source_price', 'source_products.shipping_fee as source_shipping', 'source_products.stock as source_stock', 'source_products.url as source_url', 'source_products.image_reuse_allowed'])
         .orderBy('listings.id', 'desc').limit(300);
       if (q.status) query = query.where('listings.status', '=', q.status);

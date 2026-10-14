@@ -11,6 +11,16 @@ interface Listing {
   vendor_item_id: string | null; seller_product_id: string | null; category_code: string | null; category_name: string | null; search_tags: string[];
   dry_run: boolean; listed_at: string | null; source: string; source_price: number; source_shipping: number; source_stock: number | null;
   source_url: string; image_reuse_allowed: boolean;
+  source_option: string | null; checked_at: string | null; order_checked_at: string | null; check_fails: number;
+}
+
+/** 공급처 확인·주문 가능 점검 시각(판매중·일시중지 상품만) */
+function checkLine(l: Listing): string | null {
+  if (!['active', 'paused'].includes(l.status)) return null;
+  const parts = [`공급처 확인 ${l.checked_at ? dt(l.checked_at) : '전'}`];
+  if (l.order_checked_at) parts.push(`주문 가능 점검 ${dt(l.order_checked_at)}`);
+  if (l.check_fails) parts.push(`조회 실패 ${l.check_fails}회 연속`);
+  return parts.join(' · ');
 }
 
 const STATUS_LABEL: Record<string, string> = { draft: '초안', pending_approval: '심사중', active: '판매중', paused: '일시중지', stopped: '판매종료', rejected: '반려' };
@@ -41,6 +51,8 @@ export function Listings() {
           </div>
           <div className="item-title" onClick={() => setOpen(open === l.id ? null : l.id)}>{l.title}</div>
           <div className="item-sub">판매가 {won(l.sale_price)} (하한 {won(l.floor_price)}, 마크업 {Math.round(l.markup * 100)}%{l.target_markup !== null && l.markup < l.target_markup ? ` → 목표 ${Math.round(l.target_markup * 100)}%` : ''}) · 공급가 {won(l.source_price)}+{won(l.source_shipping)} · 재고 {l.source_stock ?? '?'}{l.fee_rate_actual ? ` · 실수수료 ${(l.fee_rate_actual * 100).toFixed(1)}%` : ''}</div>
+          {l.source_option && <div className="item-sub">발주 옵션: {l.source_option}</div>}
+          {checkLine(l) && <div className="item-sub muted">{checkLine(l)}</div>}
           {l.status_reason && <div className="item-reason">{l.status_reason}</div>}
           {open === l.id && <ListingEditor l={l} act={act} onChange={reload} />}
         </div>

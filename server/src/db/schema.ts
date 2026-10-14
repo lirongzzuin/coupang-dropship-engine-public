@@ -130,6 +130,16 @@ export interface ListingsTable {
   cost_scouted_at: TsNull;
   /** 출시 기간 후 목표 마크업(하한가와 경쟁가 사이 중간 지점) */
   target_markup: number | null;
+  /** 쿠팡에 올린 공급처 옵션(고정) — 이 옵션으로만 발주. 옵션 없는 상품은 null */
+  source_option: string | null;
+  /** 마지막 공급처 확인(가격·재고·판매 가능) 성공 시각 */
+  checked_at: TsNull;
+  /** 공급처 확인 연속 실패 수 */
+  check_fails: Generated<number>;
+  /** 마지막 주문 가능 점검(공급처 주문 시뮬레이션) 시각 */
+  order_checked_at: TsNull;
+  /** 판매중지 시각(장기 판매불가 정리 기준) */
+  paused_at: TsNull;
 }
 
 export interface ListingItemsTable {

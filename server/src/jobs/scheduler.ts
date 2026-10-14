@@ -11,6 +11,7 @@ import { syncShippingPlaces } from '../modules/setup/coupangPlaces.js';
 import { safetyCheck } from '../modules/guard/safety.js';
 import { discoverKeywords } from '../modules/keywords/service.js';
 import { optimizePrices, reviewSlowListings, scoutCheaperSources, syncListings } from '../modules/sync/service.js';
+import { checkOrderability, reconcileMarketState, retireStalePaused } from '../modules/monitor/service.js';
 
 /**
  * 내장 스케줄러. 작업 추가는 JOBS 배열에 한 줄.
@@ -44,7 +45,12 @@ export const JOBS: JobDef[] = [
   {
     name: 'listings.sync', label: '가격·재고 동기화',
     intervalMs: (s) => min(s.schedule.syncMinutes),
-    run: async (ctx) => ({ sync: await syncListings(ctx), slow: await reviewSlowListings(ctx) }),
+    run: async (ctx) => ({ sync: await syncListings(ctx), slow: await reviewSlowListings(ctx), retired: await retireStalePaused(ctx) }),
+  },
+  {
+    name: 'listings.monitor', label: '주문 가능 점검·쿠팡 판매상태 대조',
+    intervalMs: (s) => min(s.schedule.monitorMinutes),
+    run: async (ctx) => ({ orderable: await checkOrderability(ctx), market: await reconcileMarketState(ctx) }),
   },
   {
     name: 'profit.optimize', label: '수익 최적화(가격·원가)',

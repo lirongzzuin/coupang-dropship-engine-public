@@ -102,6 +102,11 @@ export class DryRunMarket implements MarketPort {
     if (this.liveProduct(id)) return this.inner.resumeSale(id);
     return this.simulated('resumeSale', { id });
   }
+  /** 조회 전용. 모의 등록 상품(DRYVI)은 실제 쿠팡에 없으므로 판단하지 않음 */
+  async getItemSaleState(id: string) {
+    if (id.startsWith('DRYVI-') || !this.inner.getItemSaleState) return null;
+    return this.inner.getItemSaleState(id);
+  }
   async replyInquiry(inq: { inquiryId: string; kind: 'product' | 'callcenter' }, text: string): Promise<MarketResult> {
     if (this.live('LIVE_CS')) return this.inner.replyInquiry(inq, text);
     return this.simulated('replyInquiry', { inquiryId: inq.inquiryId, length: text.length });

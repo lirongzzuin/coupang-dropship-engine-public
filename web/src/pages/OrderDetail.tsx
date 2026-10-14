@@ -9,7 +9,7 @@ interface Detail {
   source_order_id: string | null; purchase_cost: number | null; purchase_shipping: number | null; expected_cost: number | null; expected_profit: number | null;
   courier_code: string | null; tracking_no: string | null; purchase_strategy: string | null; profit: number | null; settlement_amount: number | null;
   receiverMasked: { name: string; phone: string; addr: string } | null;
-  source: { source: string; sourceName: string; title: string; url: string; price: number; shippingFee: number; apiOrder: boolean } | null;
+  source: { source: string; sourceName: string; title: string; url: string; option: string | null; price: number; shippingFee: number; apiOrder: boolean } | null;
   events: Array<{ id: number; from_status: string | null; to_status: string; reason: string | null; actor: string; at: string }>;
   profitEstimate: { profit: number; fee: number; feeVat: number; vatPayable: number; returnReserve: number } | null;
   courierAliases: string[];
@@ -54,6 +54,7 @@ export function OrderDetail() {
       {o.source && (
         <Card title={`공급처: ${o.source.sourceName}`} right={o.source.apiOrder ? <Badge tone="green">자동 발주</Badge> : <Badge tone="blue">직접 구매</Badge>}>
           <div>{o.source.title}</div>
+          {o.source.option && <div><b>옵션: {o.source.option}</b> <span className="muted">(쿠팡에 올린 옵션 — 이 옵션으로 구매)</span> <CopyButton value={o.source.option} /></div>}
           <div className="muted">공급가 {won(o.source.price)} · 배송비 {won(o.source.shippingFee)}</div>
           {o.source.url && <a className="btn primary block" href={o.source.url} target="_blank" rel="noreferrer">공급처 상품 페이지 열기</a>}
         </Card>

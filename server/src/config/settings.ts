@@ -291,6 +291,50 @@ export const settingsSchema = z.object({
     })
     .default({}),
 
+  /** 판매 중 상품 감시(구매자 보호): 공급처에서 실제로 주문할 수 있는 상품만 쿠팡에서 판매 */
+  monitor: z
+    .object({
+      enabled: z.boolean().default(true),
+      /** 공급처 재고가 이 수량 미만이면 판매중지(다른 판매자 주문으로 곧 품절 → 품절 주문 방지), 다시 쌓이면 재개 */
+      minSourceStock: z.number().int().min(1).default(3),
+      /** 공급처 주문 시뮬레이션(실제 주문 없음)으로 주문 가능 여부·실주문 금액 확인 */
+      simulateOrder: z.boolean().default(true),
+      /** 같은 상품을 다시 시뮬레이션하기까지 간격(시간) */
+      simulateEveryHours: z.number().default(24),
+      /** 한 번에 시뮬레이션할 최대 상품 수(공급처 호출 한도 보호) */
+      simulatePerRun: z.number().int().default(20),
+      /** 실주문 금액이 예상보다 이 금액 넘게 비싸면 알림(손실이면 판매중지) */
+      costDriftKrw: z.number().int().default(500),
+      /** 같은 상품만 공급처 조회가 이 횟수 연속 실패(다른 상품은 정상)하면 확인 불가로 판매중지 */
+      unverifiableStreak: z.number().int().min(1).default(6),
+      /** 한 번 점검에서 주문 불가가 이 개수 이상이고 점검의 절반 이상이면 상품 문제가 아니라 연동 문제로 보고 멈추지 않음(알림) */
+      systemicFailCount: z.number().int().default(3),
+      /** 쿠팡 실제 판매상태와 대조(중지했는데 판매중이면 다시 중지, Wing에서 사람이 중지하면 자동 재개 안 함) */
+      reconcileMarket: z.boolean().default(true),
+    })
+    .default({}),
+
+  /** 판매 상품 정리: 오래 판매할 수 없는 상품 종료, 우선순위에서 밀린 저성과 상품을 더 좋은 새 후보로 교체 */
+  prune: z
+    .object({
+      enabled: z.boolean().default(true),
+      /** 공급처 품절·주문 불가로 이 기간(일) 넘게 판매중지된 상품은 판매종료 */
+      stalePausedDays: z.number().default(14),
+      /** 교체: 운영 상품 수가 상한이고, 새 후보의 기대 월이익이 기존 상품 실제 월이익의 이 배수 이상일 때만 */
+      replaceAdvantage: z.number().default(2),
+      /** 교체: 새 후보의 기대 월이익 최소(원) — 근소한 차이로 갈아타지 않음 */
+      replaceMinGainKrw: z.number().int().default(10000),
+      /** 교체 대상은 등록 후 이 기간(일) 넘게 운영해 실적이 쌓인 상품만(출시·가격 조정 기간 보호) */
+      minAgeDays: z.number().default(30),
+      /** 실적 집계 기간(일) */
+      windowDays: z.number().default(30),
+      /** 실제 월이익이 이 금액 이상인 상품은 교체하지 않음 */
+      protectMonthlyProfitKrw: z.number().int().default(30000),
+      /** 선정 1회당 교체 최대 수 */
+      maxReplacePerRun: z.number().int().default(2),
+    })
+    .default({}),
+
   coupang: z
     .object({
       vendorUserId: z.string().default(''),
@@ -385,6 +429,8 @@ export const settingsSchema = z.object({
       orderPollMinutes: z.number().default(5),
       fulfillmentMinutes: z.number().default(10),
       syncMinutes: z.number().default(60),
+      /** 주문 가능 점검(상품별은 monitor.simulateEveryHours 간격)·쿠팡 판매상태 대조 주기 */
+      monitorMinutes: z.number().default(60),
       listingStatusMinutes: z.number().default(30),
       csMinutes: z.number().default(30),
       reconcileHours: z.number().default(24),

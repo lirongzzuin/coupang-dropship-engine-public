@@ -1,7 +1,9 @@
 import type { AppContext } from '../../context.js';
 import { addDays, errMessage } from '../../lib/util.js';
 import { upsertSourceProduct } from '../catalog.js';
-import { createDraftFromCandidate, registerListing } from '../listing/service.js';
+import { createDraftFromCandidate, registerListing, validateListing } from '../listing/service.js';
+import { pauseListing, resumeListing } from '../listing/control.js';
+import { activeListingCount, pickReplaceable, type Replaceable } from '../monitor/prune.js';
 import { pickKeywordsForRun, recordKeywordResults } from '../keywords/service.js';
 import { targetPrice } from '../pricing/pricing.js';
 import { DEFAULT_MODEL, expectedMonthly, keywordMatches, learnedFactor, looksBranded, looksBulk, median, productFamily, profitScore, rankScore, salesScore } from './demandModel.js';
@@ -186,6 +188,18 @@ export async function expandKeywords(ctx: AppContext, seeds: string[]): Promise<
   return out;
 }
 
+/**
+ * 이 공급처 상품을 다시 후보로 올리면 안 되는지: 운영 중(초안~일시중지)이거나, 실제 쿠팡에 올렸다가 판매종료한 상품.
+ * (모의 등록분 정리·승인 반려는 다시 시도 가능)
+ */
+export async function listedBefore(ctx: AppContext, source: string, sourceItemId: string): Promise<boolean> {
+  const row = await ctx.db.selectFrom('listings').innerJoin('source_products', 'source_products.id', 'listings.source_product_id').select('listings.id')
+    .where('source_products.source', '=', source).where('source_products.source_item_id', '=', sourceItemId)
+    .where((eb) => eb.or([eb('listings.status', 'not in', ['stopped', 'rejected']), eb.and([eb('listings.status', '=', 'stopped'), eb('listings.dry_run', '=', false)])]))
+    .executeTakeFirst();
+  return !!row;
+}
+
 export interface SelectionResult {
   runId: string;
   keywords: number;
@@ -244,11 +258,11 @@ export async function runSelection(ctx: AppContext, opts: { keywords?: string[] 
     for (const { src, found } of bySource) {
       for (const item of found) {
         try {
+          // 이미 운영 중이거나 실제로 팔아 보고 정리한 상품은 건너뜀(쿠팡 중복 등록 방지, 운영 상품의 옵션 스냅샷 보존)
+          if (await listedBefore(ctx, src.id, item.sourceItemId)) continue;
           const d = src.capabilities.detail ? await src.getProduct(item.sourceItemId, { title: item.title }) : null;
           if (!d) continue;
           const sp = await upsertSourceProduct(ctx, src.id, d);
-          const already = await ctx.db.selectFrom('listings').select('id').where('source_product_id', '=', sp.id).where('status', 'not in', ['stopped', 'rejected']).executeTakeFirst();
-          if (already) continue;
           const tp = targetPrice(s, { cost: d.price, shipping: d.shippingFee, categoryPath: d.categoryPath, inputVatDeductible: d.taxInvoice, minResalePrice: d.minResalePrice });
           const apiOrder = src.capabilities.apiOrder;
           const sig = { ...signals[kw] };
@@ -344,6 +358,8 @@ interface AutoListOutcome {
   /** 등록하지 않은 이유별 개수 */
   skipped: Record<string, number>;
   stopReason?: string;
+  /** 우선순위 교체로 판매종료한 기존 상품 */
+  replaced: Array<{ listingId: number; title: string; monthlyProfit: number; by: string; gain: number }>;
 }
 
 function demandOf(signals: unknown): { sales: number; profit: number } | undefined {
@@ -354,7 +370,7 @@ function demandOf(signals: unknown): { sales: number; profit: number } | undefin
 /** auto 모드: 무인 운영 조건을 만족하는 상위 후보만 자동 등록 */
 async function autoList(ctx: AppContext, runId: string): Promise<AutoListOutcome> {
   const s = await ctx.settings.get();
-  const out: AutoListOutcome = { listed: [], skipped: {} };
+  const out: AutoListOutcome = { listed: [], skipped: {}, replaced: [] };
   const skip = (why: string) => (out.skipped[why] = (out.skipped[why] ?? 0) + 1);
   const rows = await ctx.db
     .selectFrom('candidates')
@@ -401,9 +417,41 @@ async function autoList(ctx: AppContext, runId: string): Promise<AutoListOutcome
       continue;
     }
     seenProducts.add(r.title);
+    // 상한 도달: 실적이 쌓인 저성과 상품보다 이 후보가 확실히 나을 때만 자리를 바꾼다(초안을 쓸데없이 만들지 않음)
+    const gain = demandOf(r.signals)?.profit ?? 0;
+    let victim: Replaceable | null = null;
+    if ((await activeListingCount(ctx)) >= s.listing.maxActiveListings) {
+      if (out.replaced.length >= s.prune.maxReplacePerRun) {
+        skip(`운영 상품 상한(${s.listing.maxActiveListings}개) — 1회 교체 한도(${s.prune.maxReplacePerRun}개) 도달`);
+        continue;
+      }
+      victim = await pickReplaceable(ctx, gain, out.replaced.map((x) => x.listingId));
+      if (!victim) {
+        skip(`운영 상품 상한(${s.listing.maxActiveListings}개) — 교체할 저성과 상품 없음`);
+        continue;
+      }
+    }
     try {
       const draft = await createDraftFromCandidate(ctx, r.id, 'auto');
-      const l = await registerListing(ctx, draft.id, 'auto');
+      let reason = '';
+      if (victim) {
+        // 등록에 다른 문제가 없는지 먼저 확인 → 기존 상품을 멈추고 등록, 등록 실패면 기존 상품 되살림
+        const problems = (await validateListing(ctx, draft)).filter((p) => !p.includes('상한'));
+        if (problems.length) throw new Error(problems.join(' / '));
+        reason = `우선순위 밀림: 새 상품으로 교체(최근 ${s.prune.windowDays}일 주문 ${victim.orders}건·월이익 ${victim.monthlyProfit.toLocaleString()}원 < 새 후보 기대 월 ${Math.round(gain).toLocaleString()}원)`;
+        if (!(await pauseListing(ctx, victim.listing, reason))) throw new Error('교체할 상품 판매중지 실패');
+      }
+      let l;
+      try {
+        l = await registerListing(ctx, draft.id, 'auto');
+      } catch (e) {
+        if (victim) await resumeListing(ctx, { ...victim.listing, status: 'paused' });
+        throw e;
+      }
+      if (victim) {
+        await pauseListing(ctx, { ...victim.listing, status: 'paused' }, reason, true);
+        out.replaced.push({ listingId: victim.listing.id, title: victim.listing.title, monthlyProfit: victim.monthlyProfit, by: r.title, gain });
+      }
       out.listed.push({ keyword: r.keyword, title: r.title, price: l.sale_price, profit: r.est_profit, dryRun: !!l.dry_run, monthly: demandOf(r.signals)?.profit });
       if (fam) families.add(fam);
       perKeyword.set(r.keyword, (perKeyword.get(r.keyword) ?? 0) + 1);
@@ -445,6 +493,10 @@ async function notifySelectionSummary(ctx: AppContext, runId: string, result: Se
     for (const x of auto.listed) lines.push(`• ${x.title.slice(0, 30)} — ${won(x.price)} (개당 이익 ${won(x.profit)}${x.monthly !== undefined ? `, 기대 월이익 ${won(x.monthly)}` : ''})`);
   } else if (auto) {
     lines.push('', '등록한 상품 없음');
+  }
+  if (auto?.replaced.length) {
+    lines.push('', `🔁 우선순위 교체 ${auto.replaced.length}개(기존 상품 판매종료)`);
+    for (const x of auto.replaced) lines.push(`• ${x.title.slice(0, 24)}(월이익 ${won(x.monthlyProfit)}) → ${x.by.slice(0, 24)}(기대 월 ${won(x.gain)})`);
   }
   if (auto?.stopReason) lines.push(`⛔ 중단: ${auto.stopReason.slice(0, 120)}`);
   const skipped = Object.entries(auto?.skipped ?? {}).sort((a, b) => b[1] - a[1]).slice(0, 4);

@@ -1,6 +1,6 @@
 import type {
   CategoryMeta, InvoiceInput, MarketClaim, MarketInquiry, MarketOrderLine, MarketOrderStatus, MarketPort,
-  MarketProductStatus, MarketResult, RevenueLine,
+  ItemSaleState, MarketProductStatus, MarketResult, RevenueLine,
 } from '../../ports/market.js';
 
 /**
@@ -196,6 +196,11 @@ export class FakeMarket implements MarketPort {
   async resumeSale(id: string): Promise<MarketResult> {
     this.item(id).onSale = true;
     return { ok: true, retryable: false, message: 'OK' };
+  }
+  async getItemSaleState(id: string): Promise<ItemSaleState | null> {
+    this.maybeFail('getItemSaleState');
+    const it = this.items.get(id);
+    return it ? { onSale: it.onSale, quantity: it.qty, price: it.price } : null;
   }
 
   async listRevenue(fromDate: string, toDate: string): Promise<RevenueLine[]> {

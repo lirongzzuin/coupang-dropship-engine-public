@@ -73,6 +73,12 @@ export interface MarketProductStatus {
   reason?: string;
 }
 
+export interface ItemSaleState {
+  onSale: boolean;
+  quantity: number | null;
+  price: number | null;
+}
+
 export interface CategoryNoticeMeta {
   noticeCategoryName: string;
   details: Array<{ name: string; required: boolean }>;
@@ -140,6 +146,8 @@ export interface MarketPort {
   updateQuantity(vendorItemId: string, qty: number): Promise<MarketResult>;
   stopSale(vendorItemId: string): Promise<MarketResult>;
   resumeSale(vendorItemId: string): Promise<MarketResult>;
+  /** 옵션의 실제 판매 상태(쿠팡 기준). 확인할 수 없으면 null */
+  getItemSaleState?(vendorItemId: string): Promise<ItemSaleState | null>;
   // ── 정산·CS ──
   listRevenue(fromDate: string, toDate: string): Promise<RevenueLine[]>;
   listInquiries(from: Date, to: Date): Promise<MarketInquiry[]>;

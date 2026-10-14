@@ -193,6 +193,72 @@ describe('OwnerclanSource', () => {
   });
 });
 
+describe('OwnerclanSource 판매 가능 감시', () => {
+  const item = (over: Record<string, unknown> = {}) => ({
+    key: 'W9', name: '정리함', price: 12000, shippingFee: 3000, shippingType: 'inAdvance', images: [], status: 'available', openmarketSellable: true,
+    options: [
+      { optionAttributes: [{ name: '색상', value: '빨강' }], price: 12000, quantity: 0, status: 'available' },
+      { optionAttributes: [{ name: '색상', value: '파랑' }], price: 11000, quantity: 40, status: 'available' },
+    ],
+    ...over,
+  });
+  const make = (respond: (q: string, vars: any) => Response) => new OwnerclanSource({
+    username: 'u', password: 'p', logger: log, requestsPerSecond: 100,
+    fetchImpl: (async (url: string, init?: RequestInit) => {
+      if (url.includes('/auth')) return new Response('jwt', { status: 200 });
+      const b = JSON.parse(String(init?.body));
+      return respond(b.query, b.variables);
+    }) as unknown as typeof fetch,
+  });
+
+  it('고정 옵션: 그 옵션이 품절이면 다른 옵션으로 바꾸지 않고 품절, 없어지면 판매 종료', async () => {
+    let it = item();
+    const oc = make(() => jsonRes({ data: { item: it } }));
+    expect(await oc.getProduct('W9')).toMatchObject({ status: 'active', defaultOption: '파랑', price: 11000 }); // 새 선정: 재고 있는 옵션
+    expect(await oc.getProduct('W9', { option: '빨강' })).toMatchObject({ status: 'soldout', defaultOption: '빨강', stock: 0, unavailableReason: '옵션(빨강) 품절' });
+    expect(await oc.getProduct('W9', { option: ' 파랑 ' })).toMatchObject({ status: 'active', defaultOption: '파랑', stock: 40 });
+    it = item({ options: [{ optionAttributes: [{ name: '색상', value: '파랑' }], price: 11000, quantity: 40, status: 'available' }] });
+    expect(await oc.getProduct('W9', { option: '빨강' })).toMatchObject({ status: 'ended', unavailableReason: '판매 옵션(빨강)이 공급처에서 없어짐' });
+    it = item({ openmarketSellable: false });
+    expect(await oc.getProduct('W9', { option: '파랑' })).toMatchObject({ status: 'active', marketSellable: false });
+    it = item({ status: 'discontinued' });
+    expect(await oc.getProduct('W9', { option: '파랑' })).toMatchObject({ status: 'ended', unavailableReason: '공급처 단종' });
+  });
+
+  it('주문 가능 점검: 시뮬레이션만 호출(주문 생성 없음), 거부는 definitive, 권한 문제는 일시 오류', async () => {
+    const queries: string[] = [];
+    let mode: 'ok' | 'refuse' | 'denied' = 'ok';
+    const oc = make((q, vars) => {
+      queries.push(q);
+      if (mode === 'refuse') return jsonRes({ errors: [{ message: '품절된 옵션입니다' }] });
+      if (mode === 'denied') return jsonRes({ errors: [{ message: 'Access denied', detail: 'Not authorized to use API.' }] });
+      expect(vars.input.products[0]).toEqual({ quantity: 1, itemKey: 'W9', optionAttributes: ['빨강'] });
+      return jsonRes({ data: { simulateCreateOrder: [{ itemAmounts: [{ itemKey: 'W9', amount: 12000 }], shippingAmount: 3000, extraShippingFeeExists: false }] } });
+    });
+    const req = { sourceItemId: 'W9', option: '빨강', qty: 1, receiver: { name: '점검', phone: '1588', addr1: '서울', addr2: '', zip: '04524' } };
+    expect(await oc.checkOrderable(req)).toEqual({ ok: true, cost: 12000, shippingCost: 3000 });
+    mode = 'refuse';
+    expect(await oc.checkOrderable(req)).toEqual({ ok: false, definitive: true, reason: '품절된 옵션입니다' });
+    mode = 'denied';
+    expect(await oc.checkOrderable(req)).toMatchObject({ ok: false, definitive: false });
+    expect(queries.every((q) => q.includes('simulateCreateOrder') && !q.includes('createOrder(input'))).toBe(true);
+  });
+});
+
+describe('CoupangMarket 판매상태 조회', () => {
+  it('inventories 응답의 onSale 을 읽고, 형식이 다르면 판단하지 않음(null)', async () => {
+    const { CoupangMarket } = await import('../src/adapters/coupang/market.js');
+    let data: unknown = { sellerItemId: 1, amountInStock: 7, salePrice: 19900, onSale: false };
+    const paths: string[] = [];
+    const client = { vendorId: 'A0001', request: async (_m: string, path: string) => (paths.push(path), { code: 'SUCCESS', data }) };
+    const m = new CoupangMarket(client as never, async () => 'w');
+    expect(await m.getItemSaleState('123')).toEqual({ onSale: false, quantity: 7, price: 19900 });
+    expect(paths[0]).toContain('/vendor-items/123/inventories');
+    data = { amountInStock: 7 };
+    expect(await m.getItemSaleState('123')).toBeNull();
+  });
+});
+
 describe('OwnerclanSource 계정 유형·권한', () => {
   it('seller 아이디 없음이면 vendor 로 재시도, API 미승인은 명확한 안내', async () => {
     const types: string[] = [];

@@ -1,6 +1,7 @@
 import type { AppContext } from '../../context.js';
 import { addDays, kstDate, kstWeekday } from '../../lib/util.js';
 import { ACTION_STATUSES, EXCEPTION_STATUSES, STATUS_LABEL, type OrderStatus } from '../orders/stateMachine.js';
+import { pauseKind } from '../listing/control.js';
 
 export interface DashboardSummary {
   today: { orders: number; sales: number; expectedProfit: number };
@@ -137,6 +138,17 @@ export async function sendDailyReport(ctx: AppContext): Promise<string> {
   if (newListed.length) L.push(`  · 어제 새로 등록 ${newListed.length}개${newListed.some((x) => x.dry_run) ? '(모의)' : ''}: ${newListed.slice(0, 3).map((x) => `${x.title.slice(0, 16)} ${won(x.sale_price)}`).join(' · ')}`);
   if (stopped.length) L.push(`  · 어제 판매종료(교체 대상) ${stopped.length}개: ${stopped.slice(0, 3).map((x) => x.title.slice(0, 16)).join(' · ')}`);
   if (Number(lowered?.n ?? 0)) L.push(`  · 판매 부진으로 하한가 시험 중 ${lowered!.n}개(${s.listing.stopAfterLowerDays}일 더 안 팔리면 교체)`);
+  // 감시: 왜 멈춰 있는지 + 공급처 확인이 밀린 판매중 상품(주문 가능 여부를 모르는 상태)
+  const pausedRows = await ctx.db.selectFrom('listings').select('status_reason').where('status', '=', 'paused').execute();
+  if (pausedRows.length) {
+    const kinds = { supply: 0, order: 0, other: 0 };
+    for (const p of pausedRows) kinds[pauseKind(p.status_reason)]++;
+    L.push(`  · 일시중지 사유: 공급처 품절·판매불가 ${kinds.supply} · 주문 불가 ${kinds.order} · 사람/쿠팡/안전장치 ${kinds.other} (공급처 사유는 회복 시 자동 재개, ${s.prune.stalePausedDays}일 지나면 판매종료)`);
+  }
+  const staleCut = new Date(ctx.clock.now().getTime() - 3 * s.schedule.syncMinutes * 60_000);
+  const unchecked = await ctx.db.selectFrom('listings').select((eb) => eb.fn.countAll<number>().as('n')).where('status', '=', 'active').where('listed_at', '<', staleCut)
+    .where((eb) => eb.or([eb('checked_at', 'is', null), eb('checked_at', '<', staleCut)])).executeTakeFirst();
+  if (Number(unchecked?.n ?? 0)) L.push(`  · ⚠️ 공급처 확인이 밀린 판매중 상품 ${unchecked!.n}개(주문 가능 여부 미확인) — 관리 화면 [작업]에서 '가격·재고 동기화' 오류 확인`);
 
   // 4) 상품 선정
   const runs = await ctx.db.selectFrom('selection_runs').selectAll().where('at', '>=', yStart).execute();
