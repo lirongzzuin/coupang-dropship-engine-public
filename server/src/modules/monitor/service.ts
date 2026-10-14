@@ -1,11 +1,11 @@
 import type { Settings } from '../../config/settings.js';
-import type { AppContext } from '../../context.js';
+import { audit, type AppContext } from '../../context.js';
 import type { ListingRow, SourceProductRow } from '../../db/schema.js';
 import { addDays, errMessage } from '../../lib/util.js';
 import type { SourceOrderCheck } from '../../ports/source.js';
 import { detailOf } from '../catalog.js';
 import { getHalt } from '../guard/safety.js';
-import { vendorItemIds } from '../listing/items.js';
+import { getItems, vendorItemIds } from '../listing/items.js';
 import { PAUSE, pauseKind, pauseListing, resumeListing } from '../listing/control.js';
 import { computeProfit } from '../pricing/pricing.js';
 
@@ -135,9 +135,9 @@ export async function checkOrderability(ctx: AppContext): Promise<OrderabilityRe
  * - 우리가 멈춘(일시중지·최근 판매종료) 상품인데 쿠팡에서 판매중 → 다시 판매중지(품절·주문 불가 상품 주문 차단)
  * - 우리는 판매중인데 쿠팡에서 모든 옵션이 판매중지 → Wing·쿠팡 조치로 보고 '쿠팡에서 판매중지됨'으로 기록(자동 재개 안 함)
  */
-export async function reconcileMarketState(ctx: AppContext): Promise<{ checked: number; restopped: number; marketStopped: number; errors: number }> {
+export async function reconcileMarketState(ctx: AppContext): Promise<{ checked: number; restopped: number; marketStopped: number; errors: number; priceAdopted?: number }> {
   const s = await ctx.settings.get();
-  const out = { checked: 0, restopped: 0, marketStopped: 0, errors: 0 };
+  const out: { checked: number; restopped: number; marketStopped: number; errors: number; priceAdopted?: number } = { checked: 0, restopped: 0, marketStopped: 0, errors: 0 };
   if (s.killSwitch || !s.monitor.enabled || !s.monitor.reconcileMarket || !ctx.market.getItemSaleState) return out;
   const recent = addDays(ctx.clock.now(), -7);
   const rows = await ctx.db.selectFrom('listings').selectAll().where('dry_run', '=', false)
@@ -147,17 +147,18 @@ export async function reconcileMarketState(ctx: AppContext): Promise<{ checked: 
   const failed: string[] = [];
   const marketStopped: string[] = [];
   const adopted: string[] = [];
+  const priceAdopted: string[] = [];
   let lookups = 0;
   for (const l of rows) {
     const vids = await vendorItemIds(ctx, l);
     if (!vids.length) continue;
     out.checked++;
-    const states: Array<{ vid: string; onSale: boolean }> = [];
+    const states: Array<{ vid: string; onSale: boolean; price: number | null }> = [];
     for (const vid of vids) {
       lookups++;
       try {
         const st = await ctx.market.getItemSaleState(vid);
-        if (st) states.push({ vid, onSale: st.onSale });
+        if (st) states.push({ vid, onSale: st.onSale, price: st.price });
       } catch (e) {
         out.errors++;
         ctx.log.warn({ listing: l.id, vid, err: errMessage(e) }, '쿠팡 판매상태 조회 실패');
@@ -188,12 +189,22 @@ export async function reconcileMarketState(ctx: AppContext): Promise<{ checked: 
       await ctx.db.updateTable('listings').set({ status: 'paused', status_reason: `${PAUSE.wing}(Wing 또는 쿠팡 조치) — 확인 후 [판매재개]`, paused_at: now, updated_at: now }).where('id', '=', l.id).execute();
       out.marketStopped++;
       marketStopped.push(`• ${l.title.slice(0, 28)}`);
+      continue;
+    }
+    // Wing에서 직접 바꾼 가격(아이템위너 맞춤·Wing 자동가격조정 등) → 시스템 가격으로 반영(덮어쓰지 않음), 손실이면 판매중지
+    if (l.status === 'active' && s.itemWinner.adoptMarketPrice) {
+      const r = await adoptMarketPrices(ctx, s, l, states);
+      if (r) priceAdopted.push(r);
     }
   }
   // 모든 조회가 실패 → 대조가 사실상 꺼진 상태(키 권한·API 변경). 하루 한 번 알림
   if (out.errors > 0 && out.errors >= lookups) {
     await ctx.notifications.notify('warn', '쿠팡 판매상태 조회 실패', `옵션 ${lookups}개 조회가 모두 실패해 쿠팡 판매상태 대조를 하지 못했습니다(판매중지 누락 감지 불가). 쿠팡 API 키 권한·허용 IP를 확인하세요(bash ~/dropship/bin/check.sh).`,
       { path: '/jobs', dedupeKey: 'reconcile-all-failed', dedupeMinutes: 24 * 60 });
+  }
+  if (priceAdopted.length) {
+    out.priceAdopted = priceAdopted.length;
+    await ctx.notifications.notify('info', `쿠팡(Wing)에서 바뀐 가격 ${priceAdopted.length}개 반영`, `${priceAdopted.slice(0, 8).join('\n')}\n시스템 가격을 쿠팡 실제 가격에 맞췄습니다(손실 가격이면 판매중지).`, { path: '/listings' });
   }
   if (adopted.length) await ctx.notifications.notify('info', `Wing에서 판매 재개한 상품 ${adopted.length}개 반영`, `${adopted.slice(0, 8).join('\n')}\n공급처 상태는 다음 동기화에서 다시 확인합니다.`, { path: '/listings' });
   if (restopped.length) await ctx.notifications.notify('warn', `판매중지했던 상품 ${restopped.length}개가 쿠팡에서 판매중 → 다시 중지`, restopped.slice(0, 8).join('\n'), { path: '/listings' });
@@ -203,6 +214,52 @@ export async function reconcileMarketState(ctx: AppContext): Promise<{ checked: 
       `${marketStopped.slice(0, 8).join('\n')}\nWing에서 직접 멈췄거나 쿠팡이 판매를 막았습니다(정책·심사). 자동으로 재개하지 않습니다. Wing 상품관리에서 사유를 확인하고, 괜찮으면 관리 화면 [판매재개]를 누르세요.`, { path: '/listings' });
   }
   return out;
+}
+
+/**
+ * 쿠팡 실제 판매가가 시스템 가격과 다르면(사람이 Wing에서 바꿈) 반영.
+ * - 방금 우리가 바꾼 가격의 반영 지연을 사람 변경으로 오인하지 않게: 최근 3시간 내 가격을 바꾼 상품은 건너뛰고,
+ *   같은 다른 가격이 두 번 연속(1시간 간격) 보일 때만 반영
+ * - 반영한 가격이 손실이면 판매중지(공급처 사유 → 동기화가 하한가로 올린 뒤 재개)
+ */
+async function adoptMarketPrices(ctx: AppContext, s: Settings, l: ListingRow, states: Array<{ vid: string; price: number | null }>): Promise<string | null> {
+  const now = ctx.clock.now();
+  if (l.price_set_at && now.getTime() - new Date(l.price_set_at).getTime() < 3 * 3600_000) return null;
+  const items = await getItems(ctx, l);
+  const changes: string[] = [];
+  let lossReason: string | null = null;
+  const sp = await ctx.db.selectFrom('source_products').selectAll().where('id', '=', l.source_product_id).executeTakeFirstOrThrow();
+  const det = detailOf(sp);
+  for (const st of states) {
+    const key = `market.priceSeen.${st.vid}`;
+    const it = items.find((i) => i.vendor_item_id === st.vid);
+    if (!it || st.price === null || st.price <= 0 || st.price === it.sale_price) {
+      if (await ctx.kv.get<number | null>(key)) await ctx.kv.set(key, null);
+      continue;
+    }
+    if ((await ctx.kv.get<number | null>(key)) !== st.price) {
+      await ctx.kv.set(key, st.price); // 첫 관찰: 다음 실행에서 같은 가격이면 반영
+      continue;
+    }
+    await ctx.kv.set(key, null);
+    if (it.id) await ctx.db.updateTable('listing_items').set({ sale_price: st.price }).where('id', '=', it.id).execute();
+    if (it.unit_qty === 1) {
+      await ctx.db.updateTable('listings').set({ sale_price: st.price, markup: Math.max(0, st.price / it.floor_price - 1), price_set_at: now, updated_at: now }).where('id', '=', l.id).execute();
+    }
+    changes.push(`${it.unit_qty}개 ${it.sale_price.toLocaleString()}→${st.price.toLocaleString()}원`);
+    const units = it.unit_qty;
+    const shipping = det?.shippingPerUnit ? sp.shipping_fee * units : det?.maxPerBox && units > det.maxPerBox ? sp.shipping_fee * Math.ceil(units / det.maxPerBox) : sp.shipping_fee;
+    const profit = computeProfit(s, st.price, { cost: sp.price * units, shipping, categoryPath: sp.category_path, inputVatDeductible: sp.tax_invoice, feeRate: l.fee_rate_actual }).profit;
+    if (profit < 0 && !lossReason) lossReason = `${PAUSE.margin}: 쿠팡(Wing)에서 바뀐 가격 ${st.price.toLocaleString()}원(${units}개) 기준 손실 ${Math.round(profit).toLocaleString()}원`;
+  }
+  if (!changes.length) return null;
+  await audit(ctx, 'monitor', 'listing.market_price_adopted', String(l.id), { changes });
+  if (lossReason) {
+    const fresh = await ctx.db.selectFrom('listings').selectAll().where('id', '=', l.id).executeTakeFirstOrThrow();
+    await pauseListing(ctx, fresh, lossReason);
+    return `• ${l.title.slice(0, 24)}: ${changes.join(', ')} → ⛔ 손실이라 판매중지`;
+  }
+  return `• ${l.title.slice(0, 24)}: ${changes.join(', ')}`;
 }
 
 /** 공급처 품절·주문 불가로 stalePausedDays 넘게 판매중지된 상품 → 판매종료(상한·감시 대상에서 빠지고 새 상품으로 교체) */

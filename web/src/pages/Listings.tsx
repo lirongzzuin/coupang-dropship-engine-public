@@ -12,6 +12,7 @@ interface Listing {
   dry_run: boolean; listed_at: string | null; source: string; source_price: number; source_shipping: number; source_stock: number | null;
   source_url: string; image_reuse_allowed: boolean;
   source_option: string | null; checked_at: string | null; order_checked_at: string | null; check_fails: number;
+  winner_status: 'winner' | 'not_winner' | null; winner_price: number | null; winner_checked_at: string | null;
 }
 
 /** 공급처 확인·주문 가능 점검 시각(판매중·일시중지 상품만) */
@@ -47,6 +48,9 @@ export function Listings() {
             <Badge tone={statusTone(l.status)}>{STATUS_LABEL[l.status] ?? l.status}</Badge>
             {l.dry_run && l.status !== 'draft' && <Badge tone="amber">모의</Badge>}
             {l.status === 'active' && l.listed_at && Date.now() - new Date(l.listed_at).getTime() < LAUNCH_DAYS * 86400_000 && <Badge tone="blue">출시 가격</Badge>}
+            {l.winner_status === 'winner' && <Badge tone="green">위너</Badge>}
+            {l.winner_status === 'not_winner' && <Badge tone="amber">위너 아님 {l.winner_price ? won(l.winner_price) : ''}</Badge>}
+            {l.status === 'active' && !l.dry_run && !l.winner_status && <Badge tone="blue">위너 확인 필요</Badge>}
             <span className="muted">{l.source}</span>
           </div>
           <div className="item-title" onClick={() => setOpen(open === l.id ? null : l.id)}>{l.title}</div>
@@ -57,6 +61,40 @@ export function Listings() {
           {open === l.id && <ListingEditor l={l} act={act} onChange={reload} />}
         </div>
       ))}
+    </div>
+  );
+}
+
+interface WinnerPlan { action: 'keep' | 'reprice' | 'stop'; price: number; floor: number; target: number; message: string; applied: boolean; listingStatus: string }
+
+/** 아이템위너 대응: Wing 가격관리에서 본 위너 가격 입력 → 미리보기 → 적용 */
+function WinnerPanel({ l, act, onChange }: { l: Listing; act: ReturnType<typeof useAction>; onChange: () => void }) {
+  const [price, setPrice] = useState(l.winner_price ? String(l.winner_price) : '');
+  const [plan, setPlan] = useState<WinnerPlan | null>(null);
+  const call = (apply: boolean) => api.post<WinnerPlan>(`/api/listings/${l.id}/winner`, { winnerPrice: Number(price), apply });
+  const label = { keep: '가격 유지', reprice: '가격 맞춤', stop: '판매종료' } as const;
+  return (
+    <div className="form">
+      <div className="muted">
+        아이템위너 대응 — 쿠팡 API로는 위너 여부를 알 수 없어 직접 확인이 필요합니다. Wing &gt; 상품관리 &gt; 가격관리에서 이 상품이 위너가 아니면,
+        위너의 <b>판매가+배송비</b>를 입력하세요. 하한가({won(l.floor_price)}) 안에서 위너보다 10원 싸게 맞추고, 못 맞추면 판매종료합니다.
+      </div>
+      <div className="row">
+        <label>위너 가격(판매가+배송비)<input inputMode="numeric" value={price} onChange={(e) => { setPrice(e.target.value.replace(/[^\d]/g, '')); setPlan(null); }} /></label>
+        <button type="button" className="btn" disabled={act.busy || !Number(price)} onClick={() => void act.run(() => call(false).then(setPlan), '미리보기')}>미리보기</button>
+        <button type="button" className="btn" disabled={act.busy} onClick={() => void act.run(() => api.post(`/api/listings/${l.id}/winner/ok`).then(onChange), '위너로 기록')}>위너 맞음</button>
+      </div>
+      {plan && (
+        <div>
+          <div className={plan.action === 'stop' ? 'item-reason' : ''}>[{label[plan.action]}] {plan.message}</div>
+          {!plan.applied && (
+            <button type="button" className={`btn ${plan.action === 'stop' ? '' : 'primary'}`} disabled={act.busy}
+              onClick={() => void act.run(() => call(true).then((r) => { setPlan(r); onChange(); }), plan.action === 'stop' ? '판매종료함' : '적용됨')}>
+              {plan.action === 'stop' ? '판매종료 적용' : '적용'}
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -118,6 +156,7 @@ function ListingEditor({ l, act, onChange }: { l: Listing; act: ReturnType<typeo
           <a className="btn" href={l.source_url} target="_blank" rel="noreferrer">공급처 보기</a>
         </div>
       )}
+      {(l.status === 'active' || l.status === 'paused') && !l.dry_run && <WinnerPanel l={l} act={act} onChange={onChange} />}
       <div className="muted small">쿠팡 상품ID {l.seller_product_id ?? '-'} · 옵션ID {l.vendor_item_id ?? '-'} · 카테고리 {l.category_name ?? l.category_code ?? '-'} · 등록 {dt(l.listed_at)}</div>
     </div>
   );

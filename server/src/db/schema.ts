@@ -140,6 +140,11 @@ export interface ListingsTable {
   order_checked_at: TsNull;
   /** 판매중지 시각(장기 판매불가 정리 기준) */
   paused_at: TsNull;
+  /** 아이템위너: winner | not_winner | null(미확인) — Wing 가격관리에서 확인해 입력 */
+  winner_status: string | null;
+  /** 위너의 판매가+배송비(원). 가격 자동 조정이 이 가격 아래로 맞춤 */
+  winner_price: number | null;
+  winner_checked_at: TsNull;
 }
 
 export interface ListingItemsTable {

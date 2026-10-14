@@ -148,6 +148,12 @@ export async function sendDailyReport(ctx: AppContext): Promise<string> {
   const staleCut = new Date(ctx.clock.now().getTime() - 3 * s.schedule.syncMinutes * 60_000);
   const unchecked = await ctx.db.selectFrom('listings').select((eb) => eb.fn.countAll<number>().as('n')).where('status', '=', 'active').where('listed_at', '<', staleCut)
     .where((eb) => eb.or([eb('checked_at', 'is', null), eb('checked_at', '<', staleCut)])).executeTakeFirst();
+  // 아이템위너 확인 요청: 실제 쿠팡 상품 중 등록 후 며칠 지났는데 주문이 없고 위너 확인 전(위너가 아니면 노출이 거의 없음)
+  const wCut = new Date(ctx.clock.now().getTime() - s.itemWinner.remindAfterDays * 86400_000);
+  const wRows = await ctx.db.selectFrom('listings').select(['id', 'title']).where('status', '=', 'active').where('dry_run', '=', false)
+    .where('listed_at', '<', wCut).where('winner_checked_at', 'is', null)
+    .where((eb) => eb.not(eb.exists(eb.selectFrom('orders').select('orders.id').whereRef('orders.listing_id', '=', 'listings.id').where('orders.status', '!=', 'CANCELLED')))).execute();
+  if (wRows.length) L.push(`  · 🏷 아이템위너 확인 필요 ${wRows.length}개(주문 없음): ${wRows.slice(0, 3).map((x) => x.title.slice(0, 14)).join(' · ')} — Wing 가격관리에서 위너 여부 확인 → 관리 화면 [아이템위너 대응]`);
   if (Number(unchecked?.n ?? 0)) L.push(`  · ⚠️ 공급처 확인이 밀린 판매중 상품 ${unchecked!.n}개(주문 가능 여부 미확인) — 관리 화면 [작업]에서 '가격·재고 동기화' 오류 확인`);
 
   // 4) 상품 선정
