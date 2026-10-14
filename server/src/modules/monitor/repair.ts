@@ -7,7 +7,7 @@ import { upsertSourceProduct } from '../catalog.js';
 import { getHalt } from '../guard/safety.js';
 import { PAUSE, pauseKind, pauseListing, resumeListing } from '../listing/control.js';
 import { getItems } from '../listing/items.js';
-import { buildAttributes } from '../listing/payload.js';
+import { buildAttributes, optionItemName } from '../listing/payload.js';
 import { productNameFor } from '../listing/text.js';
 import { supplyProblem } from '../sync/service.js';
 
@@ -98,6 +98,13 @@ export async function auditListing(ctx: AppContext, l: ListingRow, metaCache = n
     }
     // 값 없는 선택 속성은 보내지 않음(쿠팡: attributes 에서 빼면 미입력)
     it.attributes = cur.filter((a) => String(a.attributeValueName ?? '').trim() !== '');
+    // 옵션명은 구매옵션 값만(상품명 전체가 들어 있으면 Wing "상품명에서 옵션과 중복된 단어를 지워주세요")
+    const itemName = optionItemName(expected, units);
+    if (String(it.itemName ?? '') !== itemName) {
+      changes.push(`${units}개 옵션명: "${it.itemName ?? ''}" → "${itemName}"`);
+      it.itemName = itemName;
+      touched = true;
+    }
   }
   const current = String(detail.displayProductName ?? '');
   const name = truncate(productNameFor(current, values), 100);
@@ -269,6 +276,10 @@ async function requestFix(ctx: AppContext, l: ListingRow, a: AuditResult): Promi
     ...(p ? { payload: JSON.stringify({ ...p, displayProductName: a.name, sellerProductName: a.name, generalProductName: a.name }) } : {}),
     updated_at: now,
   }).where('id', '=', l.id).execute();
+  // 시스템에 기록한 옵션명도 보낸 이름으로
+  for (const it of (a.body!.items ?? []) as Array<{ vendorItemId?: unknown; itemName?: string }>) {
+    if (it.vendorItemId && it.itemName) await ctx.db.updateTable('listing_items').set({ item_name: it.itemName }).where('listing_id', '=', l.id).where('vendor_item_id', '=', String(it.vendorItemId)).execute();
+  }
   await audit(ctx, 'repair', 'listing.repair_requested', String(l.id), { changes: a.changes, dryRun: !!r.dryRun });
   return { ok: true, message: a.changes.join(' / ') };
 }
