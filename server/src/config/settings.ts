@@ -403,6 +403,8 @@ export const settingsSchema = z.object({
       trackingAlertHours: z.number().default(36),
       /** 고객 취소 후 공급처 취소 수락을 기다리는 시간(넘으면 알림) */
       claimWaitHours: z.number().default(24),
+      /** 송장 등록 후 이 시간 넘게 배송이 시작되지 않으면 알림 */
+      trackingStuckHours: z.number().default(72),
       /** 배송완료 후 개인정보 보관일 */
       piiRetentionDays: z.number().int().default(90),
       /** 택배사 이름 → 쿠팡 코드. 출처: developers.coupang.com/ko/api/logistics/courier-code (2026-10-13) */

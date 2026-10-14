@@ -87,6 +87,11 @@ export class DryRunMarket implements MarketPort {
     return this.simulated('cancelOrder', input);
   }
 
+  async updateInvoice(input: InvoiceInput): Promise<MarketResult> {
+    if (this.live('LIVE_FULFILLMENT') && this.inner.updateInvoice) return this.inner.updateInvoice(input);
+    return this.simulated('updateInvoice', { shipmentBoxId: input.shipmentBoxId, courier: input.courierCode });
+  }
+
   async uploadInvoice(input: InvoiceInput): Promise<MarketResult> {
     if (this.live('LIVE_FULFILLMENT')) return this.inner.uploadInvoice(input);
     return this.simulated('uploadInvoice', { shipmentBoxId: input.shipmentBoxId, courier: input.courierCode });

@@ -128,6 +128,8 @@ export type SourceOrderState = 'ok' | 'unpaid' | 'cancelled' | 'cancel_requested
 export interface SourceTracking {
   courierName: string;
   trackingNo: string;
+  /** 공급처의 택배사 코드(있으면 이름을 못 맞출 때 보조로 사용) */
+  courierCode?: string;
 }
 
 export interface SourceCategory {

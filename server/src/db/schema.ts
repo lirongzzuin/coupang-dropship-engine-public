@@ -216,6 +216,11 @@ export interface OrdersTable {
   alerted_at: TsNull;
   /** 재발송 등 추가 비용(정산 손익에서 차감) */
   extra_cost: Generated<number>;
+  /** 공급처가 준 택배사 표기 */
+  courier_name: string | null;
+  invoice_attempts: Generated<number>;
+  invoice_error: string | null;
+  tracking_checked_at: TsNull;
   created_at: Ts;
   updated_at: Ts;
 }
@@ -241,6 +246,8 @@ export interface OrderClaimsTable {
   reship_source_order_id: string | null;
   reship_cost: number | null;
   reship_tracking: string | null;
+  /** 반품 회수 방식(전담택배·연동택배·수기관리) */
+  pickup_type: string | null;
   requested_at: Ts;
   closed_at: TsNull;
   created_at: Ts;

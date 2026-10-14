@@ -123,10 +123,10 @@ export class MockSource implements SourceAdapter {
   }
 
   /** 테스트: 공급처가 송장을 등록 */
-  ship(sourceOrderId: string, trackingNo = '123456789012', courierName = 'CJ대한통운'): void {
+  ship(sourceOrderId: string, trackingNo = '123456789012', courierName = 'CJ대한통운', courierCode?: string): void {
     const o = this.orders.get(sourceOrderId);
     if (!o) throw new Error('no order');
-    o.tracking = { courierName, trackingNo };
+    o.tracking = { courierName, trackingNo, ...(courierCode ? { courierCode } : {}) };
   }
 
   async getTracking(sourceOrderId: string): Promise<SourceTracking | null> {

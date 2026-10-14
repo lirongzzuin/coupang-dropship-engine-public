@@ -306,7 +306,7 @@ export class OwnerclanSource implements SourceAdapter {
       const data = await this.gql(`query($key:String!){ order(key:$key){ status products { trackingNumber shippingCompanyName shippingCompanyCode } } }`, { key });
       states.push(String(data?.order?.status ?? ''));
       const p = (data?.order?.products ?? []).find((x: any) => x.trackingNumber);
-      if (p && !tracking) tracking = { courierName: p.shippingCompanyName || p.shippingCompanyCode || '', trackingNo: String(p.trackingNumber).replace(/[^0-9A-Za-z]/g, '') };
+      if (p && !tracking) tracking = { courierName: p.shippingCompanyName || p.shippingCompanyCode || '', courierCode: p.shippingCompanyCode || undefined, trackingNo: String(p.trackingNumber).replace(/[^0-9A-Za-z]/g, '') };
     }
     const state: SourceOrderState = states.some((x) => x === 'cancelled') ? 'cancelled'
       : states.some((x) => x === 'cancelRequested') ? 'cancel_requested'

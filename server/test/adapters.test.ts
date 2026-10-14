@@ -116,7 +116,7 @@ describe('CoupangMarket (로컬 HTTP 목 서버)', () => {
 
   it('송장 업로드: 항목별 retryRequired 전달', async () => {
     const r = await make().uploadInvoice({ shipmentBoxId: '111', marketOrderId: '222', vendorItemId: '333', courierCode: 'CJGLS', trackingNo: '1' });
-    expect(r).toEqual({ ok: false, retryable: true, message: '송장번호 형식 오류' });
+    expect(r).toEqual({ ok: false, retryable: true, message: 'INVALID_INVOICE_NUMBER: 송장번호 형식 오류' });
     const body = seen.filter((s) => s.path.endsWith('/orders/invoices')).at(-1)!.body;
     expect(body.orderSheetInvoiceApplyDtos[0]).toMatchObject({ shipmentBoxId: 111, orderId: 222, vendorItemId: 333, deliveryCompanyCode: 'CJGLS', splitShipping: false });
   });

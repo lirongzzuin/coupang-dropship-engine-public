@@ -5,12 +5,14 @@ import { hashAddress } from '../../lib/crypto.js';
 import { maskName } from '../../lib/logger.js';
 import { addDays, errMessage, kstDate } from '../../lib/util.js';
 import type { MarketOrderLine } from '../../ports/market.js';
+import type { SourceTracking } from '../../ports/source.js';
 import { upsertSourceProduct } from '../catalog.js';
 import { pauseItem, pauseListing } from '../listing/control.js';
 import { supplyProblem } from '../sync/service.js';
 import { canOrderQty, describeOrderQty, orderQtyIssue } from '../orderQty.js';
 import { findByVendorItem } from '../listing/items.js';
 import { computeProfit } from '../pricing/pricing.js';
+import { COUPANG_COURIERS, courierName, resolveCourier } from './couriers.js';
 import { canTransition, isPrePurchase, type OrderStatus, STATUS_LABEL } from './stateMachine.js';
 
 const SYSTEM = 'system';
@@ -299,7 +301,9 @@ async function placeApiOrder(ctx: AppContext, o: OrderRow, sourceItemId: string,
       await ctx.notifications.notify('action', '공급처 결제가 필요해요', `${o.item_name}: ${source.displayName} 주문 ${res.sourceOrderId} 생성됨. 예치금 결제 후 [결제완료]를 눌러주세요.`, { path: `/orders/${o.id}` });
       return transition(ctx, o, 'PAYMENT_PENDING', '공급처 주문 생성, 결제 필요', actor, patch);
     }
-    return transition(ctx, o, 'PURCHASED', `API 발주 완료(${source.displayName})`, actor, { ...patch, purchased_at: ctx.clock.now() });
+    const done = await transition(ctx, o, 'PURCHASED', `API 발주 완료(${source.displayName})`, actor, { ...patch, purchased_at: ctx.clock.now() });
+    await ctx.notifications.notify('info', '새 주문 — 자동 발주 완료', `${o.item_name} ${units}개 — ${source.displayName} 주문 ${res.sourceOrderId} (원가 ${(res.cost + res.shippingCost).toLocaleString()}원, 예상 이익 ${(o.expected_profit ?? 0).toLocaleString()}원). 송장이 나오면 자동으로 쿠팡에 등록합니다.`, { path: `/orders/${o.id}` });
+    return done;
   } catch (e) {
     const n = await sourceRetryCount(ctx, o.id);
     // 첫 실패부터 알림(예치금 부족 등은 사람이 바로 조치해야 함), 마지막 재시도 실패 시 다시 알림
@@ -361,30 +365,53 @@ export async function overrideAndProcess(ctx: AppContext, orderId: number, actor
   return processOrder(ctx, back.id, { override: true, actor });
 }
 
-export function resolveCourierCode(aliases: Record<string, string>, courier: string): string | null {
-  const c = courier.trim();
-  if (!c) return null;
-  const norm = c.replace(/\s+/g, '');
-  if (aliases[norm]) return aliases[norm]!;
-  if (/^[A-Z0-9_]+$/.test(c)) return c;
-  for (const [name, code] of Object.entries(aliases)) if (norm.includes(name.replace(/\s+/g, ''))) return code;
-  return null;
+/** 택배사 이름(또는 코드) → 쿠팡 코드. 상세 규칙은 couriers.ts */
+export function resolveCourierCode(aliases: Record<string, string>, courier: string, sourceCode?: string | null): string | null {
+  return resolveCourier({ name: courier, code: sourceCode }, aliases)?.code ?? null;
 }
 
-/** 송장 등록(사람 입력 또는 공급처 API 조회 결과) → 쿠팡 업로드 */
-export async function submitTracking(ctx: AppContext, orderId: number, courier: string, trackingNo: string, actor: string): Promise<OrderRow> {
+/**
+ * 송장 등록(사람 입력 또는 공급처 API 조회 결과) → 쿠팡 업로드.
+ * - courierCode 를 직접 주면(관리 화면에서 택배사 선택) 그 코드로 올리고, 공급처 표기 → 코드를 별칭으로 저장(다음부터 자동)
+ * - 택배사를 못 맞추면 송장은 저장하고 "택배사 선택 필요" 알림(하루 1번), 사람이 고르면 진행
+ * - 쿠팡이 거절하면 사유별로 안내(형식·택배사 불일치는 공급처가 고치면 자동 재시도, 고객 취소 진행 중이면 취소 흐름에 맡김)
+ */
+export async function submitTracking(ctx: AppContext, orderId: number, courier: string, trackingNo: string, actor: string, opts: { courierCode?: string; sourceCode?: string | null } = {}): Promise<OrderRow> {
   const s = await ctx.settings.get();
   let o = await getOrder(ctx, orderId);
   if (!['PURCHASED', 'SHIPPING_DELAYED', 'ADDRESS_CHANGED', 'MANUAL_REVIEW'].includes(o.status)) throw new OrderError(`송장 등록할 수 없는 상태: ${STATUS_LABEL[o.status as OrderStatus]}`);
-  const code = resolveCourierCode(s.orders.courierAliases, courier);
-  if (!code) throw new OrderError(`택배사 코드를 알 수 없음: ${courier} (설정 > 택배사 별칭에 추가)`);
   const no = trackingNo.replace(/[^0-9A-Za-z]/g, '');
   if (!no) throw new OrderError('송장번호가 비었습니다');
-  o = await ctx.db.updateTable('orders').set({ courier_code: code, tracking_no: no, updated_at: ctx.clock.now() }).where('id', '=', o.id).returningAll().executeTakeFirstOrThrow();
+  const name = courier.trim();
+  const auto = actor.startsWith('source:') || actor === SYSTEM;
+  let code: string | null;
+  if (opts.courierCode) {
+    if (!COUPANG_COURIERS.some(([c]) => c === opts.courierCode)) throw new OrderError(`쿠팡 택배사 코드가 아닙니다: ${opts.courierCode}`);
+    code = opts.courierCode;
+    // 처음 보는 표기를 사람이 골랐으면 기억(다음 송장부터 자동)
+    if (!auto && name && resolveCourier({ name }, s.orders.courierAliases)?.code !== code) {
+      await ctx.settings.update({ orders: { courierAliases: { [name.replace(/\s+/g, '')]: code } } } as any);
+      await audit(ctx, actor, 'courier.alias', name, { code });
+    }
+  } else {
+    code = resolveCourierCode(s.orders.courierAliases, name, opts.sourceCode);
+  }
+  if (!code) {
+    const label = name || opts.sourceCode || '(이름 없음)';
+    o = await ctx.db.updateTable('orders').set({ courier_name: label, tracking_no: no, courier_code: null, invoice_error: `택배사 확인 필요: ${label}`, updated_at: ctx.clock.now() }).where('id', '=', o.id).returningAll().executeTakeFirstOrThrow();
+    await ctx.notifications.notify('action', '택배사 선택 필요', `${o.item_name}: 공급처 송장 ${no}의 택배사 "${label}"를 쿠팡 택배사로 맞추지 못했습니다.\n관리 화면 주문 > [송장 입력]에서 택배사를 고르면 쿠팡에 등록되고, 다음부터는 자동으로 처리됩니다.`, { path: `/orders/${o.id}`, dedupeKey: `courier-${o.id}-${label}`, dedupeMinutes: 1440 });
+    if (auto) return o;
+    throw new OrderError(`택배사를 알 수 없음: ${label} — 목록에서 택배사를 고르세요`);
+  }
+  const changed = o.tracking_no !== no || o.courier_code !== code;
+  o = await ctx.db.updateTable('orders').set({
+    courier_name: name || o.courier_name, courier_code: code, tracking_no: no, updated_at: ctx.clock.now(),
+    ...(changed ? { invoice_attempts: 0, invoice_error: null } : {}),
+  }).where('id', '=', o.id).returningAll().executeTakeFirstOrThrow();
   if (s.killSwitch) return o;
   if (!isLive(ctx.env, 'LIVE_FULFILLMENT') && (await isRealOrder(ctx, o))) {
     // 실제 주문인데 송장 자동 등록이 꺼져 있음 → 모의 업로드로 '등록됨' 처리하면 쿠팡엔 송장이 없음
-    await ctx.notifications.notify('action', '송장 직접 입력 필요', `${o.item_name}: ${courier} ${no}\nWing 주문관리에서 송장을 입력하세요(LIVE_FULFILLMENT=false).`, { path: `/orders/${o.id}`, dedupeKey: `manual-invoice-${o.id}`, dedupeMinutes: 720 });
+    await ctx.notifications.notify('action', '송장 직접 입력 필요', `${o.item_name}: ${courierName(code)} ${no}\nWing 주문관리에서 송장을 입력하세요(LIVE_FULFILLMENT=false).`, { path: `/orders/${o.id}`, dedupeKey: `manual-invoice-${o.id}`, dedupeMinutes: 720 });
     return o.status === 'MANUAL_REVIEW' ? o : transition(ctx, o, 'MANUAL_REVIEW', '송장 직접 입력 필요(자동 등록 꺼짐)', actor);
   }
   // 같은 묶음배송에 다른 상품이 있으면(공급처별로 따로 출고) 분리배송으로 등록
@@ -394,13 +421,35 @@ export async function submitTracking(ctx: AppContext, orderId: number, courier: 
     splitShipping: siblings.length > 0,
     preSplitShipped: siblings.some((x) => ['TRACKING_UPLOADED', 'IN_TRANSIT', 'DELIVERED', 'SETTLED'].includes(x.status)),
   });
-  if (res.ok) return transition(ctx, o, 'TRACKING_UPLOADED', res.dryRun ? 'DRY_RUN 송장 업로드' : '송장 업로드', actor, { tracking_uploaded_at: ctx.clock.now() });
-  if (res.retryable) {
-    ctx.log.warn({ order: o.id, msg: res.message }, '송장 업로드 재시도 예정');
+  if (res.ok) {
+    return transition(ctx, o, 'TRACKING_UPLOADED', `${res.dryRun ? 'DRY_RUN 송장 업로드' : '송장 업로드'}: ${courierName(code)} ${no}`, actor, { tracking_uploaded_at: ctx.clock.now(), tracking_checked_at: ctx.clock.now(), invoice_error: null, invoice_attempts: 0 });
+  }
+  const attempts = o.invoice_attempts + 1;
+  o = await ctx.db.updateTable('orders').set({ invoice_attempts: attempts, invoice_error: res.message }).where('id', '=', o.id).returningAll().executeTakeFirstOrThrow();
+  // 고객 취소(출고중지요청) 진행 중 → 송장을 올리지 않고 취소 흐름(claims)에 맡김
+  if (/ORDER_DELIVERY_(CANCELED|PARTIAL_STOP)/.test(res.message)) {
+    ctx.log.warn({ order: o.id, msg: res.message }, '취소 진행 중이라 송장 등록 보류');
     return o;
   }
-  await ctx.notifications.notify('error', '송장 업로드 실패', `${o.item_name}: ${res.message}`, { path: `/orders/${o.id}` });
+  const hint = invoiceHint(res.message, courierName(code));
+  if (res.retryable) {
+    ctx.log.warn({ order: o.id, msg: res.message, attempts }, '송장 업로드 재시도 예정');
+    // 3번 연속 실패하면 알림(공급처가 송장을 고치면 자동으로 다시 시도)
+    if (attempts >= 3) await ctx.notifications.notify('error', '송장 등록 반복 실패', `${o.item_name}: ${courierName(code)} ${no} — ${res.message}\n${hint}`, { path: `/orders/${o.id}`, dedupeKey: `invoice-fail-${o.id}-${no}`, dedupeMinutes: 1440 });
+    return o;
+  }
+  await ctx.notifications.notify('error', '송장 업로드 실패', `${o.item_name}: ${courierName(code)} ${no} — ${res.message}\n${hint}`, { path: `/orders/${o.id}`, dedupeKey: `invoice-fail-${o.id}-${no}`, dedupeMinutes: 1440 });
+  // 공급처 송장 형식 오류는 공급처가 고치면 자동 회수가 새 송장으로 재시도하도록 구매완료에 둠
+  if (auto && /INVALID_FORMAT|INVALID_INVOICE_NUMBER|DUPLICATE_INVOICE_NUMBER/.test(res.message)) return o;
   return transition(ctx, o, 'MANUAL_REVIEW', `송장 업로드 실패: ${res.message}`, actor);
+}
+
+/** 쿠팡 송장 거절 사유 → 할 일 */
+function invoiceHint(message: string, courier: string): string {
+  if (/INVALID_FORMAT|INVALID_INVOICE_NUMBER/.test(message)) return `송장번호가 ${courier} 형식과 맞지 않습니다. 공급처 송장이 틀렸거나 택배사가 다를 수 있어요 — 공급처 주문에서 택배사·송장을 확인하고 관리 화면 [송장 입력]에서 바로잡으세요(공급처가 고치면 자동 재시도).`;
+  if (/DUPLICATE_INVOICE_NUMBER|NOT_ALLOW_INVOICE_NUMBER_RE_UPLOAD/.test(message)) return '이미 다른 주문에 쓰인 송장번호입니다(공급처 송장 재사용·오입력). 공급처에 올바른 송장을 요청하세요.';
+  if (/INVALID_STATUS|ORDER_DELIVERY/.test(message)) return '쿠팡 주문 상태가 송장을 받을 수 없는 상태입니다(취소·출고중지 등). Wing 주문 상태를 확인하세요.';
+  return 'Wing 주문관리에서 직접 송장을 입력하거나 잠시 후 다시 시도하세요.';
 }
 
 async function sourceOrderInfo(ctx: AppContext, o: OrderRow) {
@@ -447,32 +496,35 @@ export async function pollFulfillment(ctx: AppContext): Promise<{ tracked: numbe
     const purchased = await ctx.db.selectFrom('orders').selectAll().where('status', 'in', ['PURCHASED', 'SHIPPING_DELAYED']).execute();
     for (const o of purchased) {
       try {
-        // 이미 입력된 송장(업로드 재시도 대상)
-        if (o.tracking_no && o.courier_code) {
-          const r = await submitTracking(ctx, o.id, o.courier_code, o.tracking_no, SYSTEM);
-          if (r.status === 'TRACKING_UPLOADED') uploaded++;
-          continue;
-        }
         const sp = o.source_product_id ? await ctx.db.selectFrom('source_products').select(['source']).where('id', '=', o.source_product_id).executeTakeFirst() : undefined;
         const source = sp ? ctx.sources.get(sp.source) : undefined;
-        if (!source?.getTracking || !source.capabilities.apiTracking || !o.source_order_id || o.source_order_id.startsWith('DRY-')) continue;
-        let t: Awaited<ReturnType<NonNullable<typeof source.getTracking>>>;
+        const apiTracking = !!source?.getTracking && !!source.capabilities.apiTracking && !!o.source_order_id && !o.source_order_id.startsWith('DRY-');
+        if (!source || !apiTracking) {
+          // 사람이 입력한 송장(업로드 재시도 대상)
+          if (o.tracking_no && o.courier_code) {
+            const r = await submitTracking(ctx, o.id, o.courier_name ?? o.courier_code, o.tracking_no, SYSTEM, { courierCode: o.courier_code });
+            if (r.status === 'TRACKING_UPLOADED') uploaded++;
+          }
+          continue;
+        }
+        let t: SourceTracking | null;
         if (source.getOrderInfo) {
-          const info = await source.getOrderInfo(o.source_order_id);
+          const info = await source.getOrderInfo(o.source_order_id!);
           if (info.state === 'cancelled' && !info.tracking) {
             await supplierCancelled(ctx, o, info.rawStatus);
             continue;
           }
           t = info.tracking;
-        } else t = await source.getTracking(o.source_order_id);
+        } else t = await source.getTracking!(o.source_order_id!);
         if (t?.trackingNo) {
           tracked++;
-          const r = await submitTracking(ctx, o.id, t.courierName, t.trackingNo, `source:${sp!.source}`);
+          // 공급처 표기를 못 맞춰 사람이 택배사를 골라 둔 같은 송장이면 그 코드로
+          const manualCode = o.tracking_no === t.trackingNo && o.courier_code ? o.courier_code : undefined;
+          const r = await submitTracking(ctx, o.id, t.courierName, t.trackingNo, `source:${sp!.source}`, { sourceCode: t.courierCode, courierCode: manualCode });
           if (r.status === 'TRACKING_UPLOADED') uploaded++;
         }
       } catch (e) {
         ctx.log.warn({ order: o.id, err: errMessage(e) }, '송장 처리 실패');
-        // 택배사 이름을 모르는 경우 등은 사람이 조치해야 함(하루 1회만 알림)
         if (e instanceof OrderError) await ctx.notifications.notify('warn', '송장 자동 등록 실패', `${o.item_name}: ${errMessage(e)}`, { path: `/orders/${o.id}`, dedupeKey: `track-fail-${o.id}`, dedupeMinutes: 1440 });
       }
     }
@@ -486,14 +538,56 @@ export async function pollFulfillment(ctx: AppContext): Promise<{ tracked: numbe
       if (line.status === 'FINAL_DELIVERY') {
         await transition(ctx, o, 'DELIVERED', '배송완료', SYSTEM, { delivered_at: ctx.clock.now(), market_status: line.status });
         delivered++;
-      } else if (line.status === 'DELIVERING' && o.status === 'TRACKING_UPLOADED') {
-        await transition(ctx, o, 'IN_TRANSIT', '배송중', SYSTEM, { market_status: line.status });
+        continue;
       }
+      if (line.status === 'DELIVERING' && o.status === 'TRACKING_UPLOADED') {
+        await transition(ctx, o, 'IN_TRANSIT', '배송중', SYSTEM, { market_status: line.status });
+        continue;
+      }
+      if (o.market_status !== line.status) await ctx.db.updateTable('orders').set({ market_status: line.status }).where('id', '=', o.id).execute();
+      if (o.status === 'TRACKING_UPLOADED' && !s.killSwitch) await watchStuckShipment(ctx, o, line.status);
     } catch (e) {
       ctx.log.warn({ order: o.id, err: errMessage(e) }, '배송상태 조회 실패');
     }
   }
   return { tracked, uploaded, delivered };
+}
+
+/**
+ * 송장 등록 후 배송이 움직이지 않음(쿠팡 배송지시에 머묾):
+ * - 12시간 뒤부터 6시간마다 공급처 송장을 다시 확인 → 공급처가 송장·택배사를 고쳤으면 쿠팡 송장 수정
+ * - orders.trackingStuckHours(기본 72시간) 넘게 그대로면 알림(틀린 송장으로 고객이 취소하면 배송비 판매자 부담)
+ * 업체직송(DIRECT)은 배송조회가 없으므로 제외
+ */
+async function watchStuckShipment(ctx: AppContext, o: OrderRow, marketStatus: string): Promise<void> {
+  const s = await ctx.settings.get();
+  if (o.courier_code === 'DIRECT' || marketStatus === 'NONE_TRACKING') return;
+  const now = ctx.clock.now();
+  const since = o.tracking_uploaded_at ? new Date(o.tracking_uploaded_at).getTime() : now.getTime();
+  const hours = (now.getTime() - since) / 3600_000;
+  if (hours < 12) return;
+  if (!o.tracking_checked_at || now.getTime() - new Date(o.tracking_checked_at).getTime() >= 6 * 3600_000) {
+    await ctx.db.updateTable('orders').set({ tracking_checked_at: now }).where('id', '=', o.id).execute();
+    const info = await sourceOrderInfo(ctx, o).catch(() => null);
+    const t = info?.tracking;
+    if (t?.trackingNo) {
+      const code = resolveCourierCode(s.orders.courierAliases, t.courierName, t.courierCode);
+      if (code && (t.trackingNo !== o.tracking_no || code !== o.courier_code) && ctx.market.updateInvoice) {
+        const r = await ctx.market.updateInvoice({ shipmentBoxId: o.shipment_box_id, marketOrderId: o.market_order_id, vendorItemId: o.vendor_item_id, courierCode: code, trackingNo: t.trackingNo });
+        await audit(ctx, SYSTEM, 'order.invoice_update', String(o.id), { from: `${o.courier_code} ${o.tracking_no}`, to: `${code} ${t.trackingNo}`, ...r });
+        if (r.ok) {
+          await ctx.db.updateTable('orders').set({ courier_code: code, courier_name: t.courierName, tracking_no: t.trackingNo, tracking_uploaded_at: now }).where('id', '=', o.id).execute();
+          await ctx.db.insertInto('order_events').values({ order_id: o.id, from_status: o.status, to_status: o.status, reason: `공급처 송장 변경 → 쿠팡 송장 수정: ${courierName(code)} ${t.trackingNo}`, actor: SYSTEM, at: now }).execute();
+          await ctx.notifications.notify('info', '송장 수정 반영', `${o.item_name}: 공급처가 송장을 바꿔 쿠팡 송장도 수정했습니다(${courierName(o.courier_code ?? '')} ${o.tracking_no} → ${courierName(code)} ${t.trackingNo}).`, { path: `/orders/${o.id}` });
+          return;
+        }
+        await ctx.notifications.notify('error', '송장 수정 실패', `${o.item_name}: 공급처 송장이 ${courierName(code)} ${t.trackingNo}로 바뀌었지만 쿠팡 수정 실패(${r.message}). Wing 주문관리에서 송장을 수정하세요.`, { path: `/orders/${o.id}`, dedupeKey: `invoice-update-${o.id}-${t.trackingNo}`, dedupeMinutes: 1440 });
+      }
+    }
+  }
+  if (hours >= s.orders.trackingStuckHours) {
+    await ctx.notifications.notify('warn', '배송 조회가 안 돼요', `${o.item_name}: 송장 ${courierName(o.courier_code ?? '')} ${o.tracking_no} 등록 후 ${Math.floor(hours)}시간째 쿠팡에 배송 시작이 잡히지 않습니다.\n공급처에 실제 발송 여부·송장번호·택배사를 확인하세요(틀린 송장으로 고객이 취소하면 배송비는 판매자 부담). 공급처가 송장을 고치면 자동으로 쿠팡 송장을 수정합니다.`, { path: `/orders/${o.id}`, dedupeKey: `stuck-${o.id}`, dedupeMinutes: 1440 * 3 });
+  }
 }
 
 // ── 5. 취소·반품·교환 → claims.ts ─────────────────────────────────

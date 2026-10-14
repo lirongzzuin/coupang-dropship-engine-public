@@ -13,6 +13,12 @@ interface Detail {
   events: Array<{ id: number; from_status: string | null; to_status: string; reason: string | null; actor: string; at: string }>;
   profitEstimate: { profit: number; fee: number; feeVat: number; vatPayable: number; returnReserve: number } | null;
   courierAliases: string[];
+  couriers: Array<{ code: string; name: string }>;
+  courierGuess: string | null;
+  courier_name: string | null;
+  invoice_error: string | null;
+  invoice_attempts: number;
+  market_status: string | null;
   extra_cost: number;
   claims: Claim[];
 }
@@ -37,7 +43,6 @@ export function OrderDetail() {
   const { data: o, error, loading, reload } = useLoad<Detail>(`/api/orders/${id}`);
   const [rcv, setRcv] = useState<Receiver | null>(null);
   const [buy, setBuy] = useState({ sourceOrderId: '', cost: '', shippingCost: '' });
-  const [trk, setTrk] = useState({ courier: '', trackingNo: '' });
   const [armed, setArmed] = useState<string | null>(null);
   const act = useAction();
 
@@ -59,7 +64,8 @@ export function OrderDetail() {
             {o.profit !== null && o.profit !== undefined && <tr><th>확정 이익</th><td>{won(o.profit)} (정산 {won(o.settlement_amount)})</td></tr>}
             <tr><th>주문 시각</th><td>{dt(o.ordered_at)}{o.ship_by && ` · 출고기한 ${o.ship_by}`}</td></tr>
             {o.source_order_id && <tr><th>공급처 주문번호</th><td>{o.source_order_id}</td></tr>}
-            {o.tracking_no && <tr><th>송장</th><td>{o.courier_code} {o.tracking_no}</td></tr>}
+            {o.tracking_no && <tr><th>송장</th><td>{o.courier_code ? (o.couriers.find((c) => c.code === o.courier_code)?.name ?? o.courier_code) : <Badge tone="amber">택배사 확인 필요</Badge>} {o.tracking_no} <CopyButton value={o.tracking_no} />{o.courier_name && o.courier_code && <span className="muted small"> (공급처 표기: {o.courier_name})</span>}{o.market_status && <span className="muted small"> · 쿠팡 {o.market_status}</span>}</td></tr>}
+            {o.invoice_error && <tr><th>송장 오류</th><td className="item-reason">{o.invoice_error}{o.invoice_attempts > 1 ? ` (${o.invoice_attempts}회)` : ''}</td></tr>}
             {o.extra_cost > 0 && <tr><th>추가 비용</th><td>{won(o.extra_cost)} (재발송 — 손익에서 차감)</td></tr>}
           </tbody>
         </table>
@@ -114,22 +120,7 @@ export function OrderDetail() {
         </Card>
       )}
 
-      {TRACKABLE.includes(o.status) && (
-        <Card title="송장 입력">
-          <form
-            className="form"
-            onSubmit={(e) => {
-              e.preventDefault();
-              void act.run(() => api.post(`/api/orders/${o.id}/tracking`, trk).then(reload), '송장 등록됨');
-            }}
-          >
-            <label>택배사<input list="couriers" value={trk.courier} onChange={(e) => setTrk({ ...trk, courier: e.target.value })} placeholder="CJ대한통운" /></label>
-            <datalist id="couriers">{o.courierAliases.map((c) => <option key={c} value={c} />)}</datalist>
-            <label>송장번호<input inputMode="numeric" value={trk.trackingNo} onChange={(e) => setTrk({ ...trk, trackingNo: e.target.value })} /></label>
-            <button className="btn primary" disabled={act.busy}>쿠팡에 송장 등록</button>
-          </form>
-        </Card>
-      )}
+      {TRACKABLE.includes(o.status) && <TrackingCard o={o} act={act} reload={reload} />}
 
       {OVERRIDABLE.includes(o.status) && (
         <Card title="예외 처리">
@@ -222,5 +213,37 @@ function ClaimRow({ o, c, act, reload, couriers }: { o: Detail; c: Claim; act: R
         <button className="btn small" disabled={act.busy} onClick={() => run({ action: 'close' })}>처리 끝(Wing에서 처리함)</button>
       )}
     </div>
+  );
+}
+
+/**
+ * 송장 입력: 택배사는 쿠팡 공식 목록에서 고름(공급처 표기를 못 맞춘 경우 추정값이 비어 있음).
+ * 공급처 표기가 있으면 고른 택배사를 그 표기의 별칭으로 기억 → 다음부터 자동 등록.
+ */
+function TrackingCard({ o, act, reload }: { o: Detail; act: ReturnType<typeof useAction>; reload: () => void }) {
+  const [code, setCode] = useState(o.courierGuess ?? '');
+  const [no, setNo] = useState(o.tracking_no ?? '');
+  const needPick = !!o.tracking_no && !o.courier_code;
+  return (
+    <Card title={needPick ? '택배사 선택 필요' : '송장 입력'}>
+      {needPick && <p className="item-reason">공급처가 알려준 택배사 "{o.courier_name}"를 쿠팡 택배사로 맞추지 못했습니다. 공급처 주문 화면에서 택배사를 확인하고 아래에서 고르세요. 한 번 고르면 다음부터 자동으로 처리됩니다.</p>}
+      <form
+        className="form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void act.run(() => api.post(`/api/orders/${o.id}/tracking`, { courier: o.courier_name ?? '', courierCode: code, trackingNo: no }).then(reload), '쿠팡에 송장 등록됨');
+        }}
+      >
+        <label>택배사
+          <select value={code} onChange={(e) => setCode(e.target.value)} required>
+            <option value="">택배사 선택</option>
+            {o.couriers.map((c) => <option key={c.code} value={c.code}>{c.name} ({c.code})</option>)}
+          </select>
+        </label>
+        <label>송장번호<input inputMode="numeric" value={no} onChange={(e) => setNo(e.target.value)} /></label>
+        <button className="btn primary" disabled={act.busy || !code || no.replace(/[^0-9A-Za-z]/g, '').length < 4}>쿠팡에 송장 등록</button>
+      </form>
+      <p className="muted small">오너클랜처럼 송장을 알려주는 공급처는 자동으로 등록됩니다. 직접 구매(도매꾹 등)는 공급처 주문 화면의 택배사·송장번호를 그대로 입력하세요. 업체가 직접 배송해 송장이 없으면 "업체직송"(쿠팡 배송조회 불가).</p>
+    </Card>
   );
 }
