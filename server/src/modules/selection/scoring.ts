@@ -1,5 +1,6 @@
 import { keywordMatches, similarProduct } from './demandModel.js';
 import { extractImageUrls } from '../listing/text.js';
+import { orderQtyIssue } from '../orderQty.js';
 import type { Settings } from '../../config/settings.js';
 import type { SourceProductDetail } from '../../ports/source.js';
 import type { TargetPrice } from '../pricing/pricing.js';
@@ -116,7 +117,9 @@ export function evaluateGates(
     const ok = !top || s.discovery.allowTopCategories.includes(top);
     g.push({ name: 'allowedCategory', hard: true, pass: ok, detail: ok ? top || '미상' : `허용 안 된 분류: ${top}` });
   }
-  g.push({ name: 'moq', hard: true, pass: (d.minOrderQty ?? 1) <= 1, detail: `최소주문 ${d.minOrderQty ?? 1}개` });
+  // 최소 구매수량·구매 단위: 1개씩 발주할 수 없으면 탈락(orderQty.ts)
+  const qtyIssue = orderQtyIssue(d);
+  g.push({ name: 'moq', hard: true, pass: !qtyIssue, detail: qtyIssue ?? '1개 발주 가능' });
   // 상품성: 출고가 늦으면 도착예정일이 늦어 전환·판매자점수에 불리
   if (d.prepDays !== undefined && Number.isFinite(d.prepDays)) g.push({ name: 'prepDays', hard: true, pass: d.prepDays <= sel.maxPrepDays, detail: `출고 준비 ${d.prepDays}일` });
   if (d.sellerScore !== undefined && Number.isFinite(d.sellerScore) && (d.sellerReviews ?? 0) >= 10) {

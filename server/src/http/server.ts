@@ -267,6 +267,8 @@ export async function buildServer(ctx: AppContext, scheduler: Scheduler | null, 
     api.post('/api/candidates/:id/reject', async (req) => decideCandidate(ctx, idParam(req), false, actor(req)));
     api.post('/api/selection/run', async (req) => {
       const b = z.object({ keywords: z.array(z.string()).optional() }).parse(req.body ?? {});
+      // 자동 선정과 동시에 돌면 같은 후보를 두 번 평가·등록할 수 있음
+      if (scheduler?.isRunning('selection.run')) throw Object.assign(new Error('자동 상품 선정이 실행 중입니다 — 끝난 뒤 다시 시도하세요'), { statusCode: 409 });
       return runSelection(ctx, { keywords: b.keywords?.length ? b.keywords : undefined });
     });
 
@@ -405,10 +407,17 @@ export async function buildServer(ctx: AppContext, scheduler: Scheduler | null, 
       const runs = await ctx.db.selectFrom('job_runs').selectAll().orderBy('id', 'desc').limit(100).execute();
       return { jobs: JOBS.map((j) => ({ name: j.name, label: j.label, running: scheduler?.isRunning(j.name) ?? false, last: runs.find((r) => r.job === j.name) ?? null })), runs };
     });
+    // 지금 실행(= bash ~/dropship/bin/run-job.sh <작업>): 스케줄러로 백그라운드 시작 후 바로 응답
+    // (상품 선정처럼 10분 넘게 걸리는 작업도 화면이 기다리다 끊기지 않게). 결과는 텔레그램·작업 화면
     api.post('/api/jobs/:name/run', async (req) => {
       if (!scheduler) throw Object.assign(new Error('스케줄러 비활성'), { statusCode: 503 });
       const { name } = req.params as { name: string };
-      return scheduler.runJob(name);
+      const job = JOBS.find((j) => j.name === name);
+      if (!job) throw Object.assign(new Error(`없는 작업: ${name}`), { statusCode: 404 });
+      if (scheduler.isRunning(name)) throw Object.assign(new Error(`'${job.label}' 이미 실행 중입니다`), { statusCode: 409 });
+      void scheduler.runJob(name).catch(() => undefined);
+      await audit(ctx, actor(req), 'job.run', name, {});
+      return { started: name, label: job.label };
     });
     // ── 체험 모드: 가짜 쿠팡에 주문 생성·배송 진행 ──
     const fake = ctx.env.DEMO_MODE ? (ctx.market instanceof DryRunMarket ? ctx.market.innerFake() : ctx.market instanceof FakeMarket ? ctx.market : undefined) : undefined;

@@ -4,6 +4,7 @@ import type { ListingRow } from '../../db/schema.js';
 import { addDays, errMessage } from '../../lib/util.js';
 import type { SourceProductDetail } from '../../ports/source.js';
 import { upsertSourceProduct } from '../catalog.js';
+import { orderQtyIssue } from '../orderQty.js';
 import { PAUSE, pauseKind, pauseListing, resumeListing } from '../listing/control.js';
 import { reprice } from '../listing/items.js';
 import { getHalt } from '../guard/safety.js';
@@ -18,6 +19,9 @@ export function supplyProblem(s: Settings, d: SourceProductDetail | null): strin
   if (d.status === 'ended') return `${PAUSE.notSellable}: ${d.unavailableReason ?? '공급처 판매 종료'}`;
   if (d.status !== 'active') return d.unavailableReason ? `${PAUSE.soldout}: ${d.unavailableReason}` : PAUSE.soldout;
   if (d.marketSellable === false) return `${PAUSE.notSellable}: 오픈마켓 판매 금지 상품으로 변경됨`;
+  // 등록 뒤 공급처가 최소 구매수량·구매 단위를 올림 → 1개 주문을 발주할 수 없음(다시 1개가 되면 재개)
+  const qtyIssue = orderQtyIssue(d);
+  if (qtyIssue) return `${PAUSE.notSellable}: ${qtyIssue}`;
   const minStock = s.monitor.enabled ? s.monitor.minSourceStock : 1;
   if (d.stock !== null && d.stock < minStock) return d.stock <= 0 ? PAUSE.soldout : `${PAUSE.lowStock}: 재고 ${d.stock}개(기준 ${minStock}개)`;
   return null;
@@ -258,7 +262,7 @@ export async function scoutCheaperSources(ctx: AppContext): Promise<{ checked: n
       for (const c of cheaper) {
         // 쿠팡에 올린 옵션이 그대로 있고 주문 가능한 상품만(다른 옵션이 오면 안 됨)
         const d = await src.getProduct(c.sourceItemId, { title: c.title, ...(l.source_option ? { option: l.source_option } : {}) });
-        if (supplyProblem(s, d) || !d || (d.stock !== null && d.stock < s.selection.minStock) || (d.minOrderQty ?? 1) > 1) continue;
+        if (supplyProblem(s, d) || !d || (d.stock !== null && d.stock < s.selection.minStock) || orderQtyIssue(d)) continue;
         if ((l.source_option ?? null) !== (d.defaultOption ?? null)) continue;
         if (d.price + d.shippingFee > current * (1 - s.costScout.minSaving)) continue; // 옵션 가격 기준으로 다시 확인
         const np = await upsertSourceProduct(ctx, sp.source, d);

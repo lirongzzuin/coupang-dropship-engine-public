@@ -1,13 +1,29 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api, dt } from '../api';
 import { Badge, Card, Loading, Msg, useAction, useLoad } from '../ui';
 
 interface Run { id: number; job: string; started_at: string; finished_at: string | null; ok: boolean | null; error: string | null; stats: unknown }
 interface Jobs { jobs: Array<{ name: string; label: string; running: boolean; last: Run | null }>; runs: Run[] }
 
+/** 실행 중인 작업이 있으면 끝날 때까지 몇 초마다 새로고침 */
+export function useRefreshWhile(active: boolean, reload: () => void, ms = 5000): void {
+  useEffect(() => {
+    if (!active) return;
+    const t = setInterval(reload, ms);
+    return () => clearInterval(t);
+  }, [active, reload, ms]);
+}
+
+/** 작업 지금 실행(= bash ~/dropship/bin/run-job.sh <작업>) — 백그라운드로 시작하고 바로 돌아옴 */
+export async function startJob(name: string): Promise<string> {
+  const r = await api.post<{ started: string; label: string }>(`/api/jobs/${name}/run`);
+  return `'${r.label}' 시작했습니다 — 끝나면 텔레그램으로 결과가 옵니다(이 화면에서도 진행 상태 확인)`;
+}
+
 export function Jobs() {
   const { data, error, loading, reload } = useLoad<Jobs>('/api/jobs');
   const act = useAction();
+  useRefreshWhile(!!data?.jobs.some((j) => j.running), reload);
   const [month, setMonth] = useState(new Date().toISOString().slice(0, 7));
   const [tool, setTool] = useState('itemscout');
   return (
@@ -22,10 +38,10 @@ export function Jobs() {
               <div className="muted small">마지막 {dt(j.last?.started_at)} {j.last?.error && `· ${j.last.error}`}</div>
             </div>
             <button className="btn small" disabled={act.busy || j.running} onClick={() => void act.run(async () => {
-              const r = await api.post<{ ok: boolean; error?: string }>(`/api/jobs/${j.name}/run`);
+              const msg = await startJob(j.name);
               reload();
-              if (!r.ok) throw new Error(r.error ?? '실패');
-            }, `${j.label} 완료`)}>지금 실행</button>
+              return msg;
+            })}>{j.running ? '실행 중…' : '지금 실행'}</button>
           </div>
         ))}
         <Msg msg={act.msg} />

@@ -69,6 +69,8 @@ export interface SourceProductDetail extends SourceProductSummary {
   returnable?: boolean;
   /** 최소 주문 수량(위탁은 1이어야 함) */
   minOrderQty?: number;
+  /** 주문 수량 배수(구매 단위, 예: 100개 단위). 1이 아니면 1개씩 보낼 수 없음 */
+  orderUnit?: number;
   /** 배송비가 수량만큼 늘어나는지(true면 묶음 옵션 이점 없음) */
   shippingPerUnit?: boolean;
   /** 한 상자에 함께 보낼 수 있는 최대 수량 */
