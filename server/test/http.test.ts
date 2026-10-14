@@ -195,6 +195,25 @@ describe('Scheduler', () => {
   });
 });
 
+describe('강제 판매중지·판매재개 API', () => {
+  it('pause = 강제 중지(자동 재개 안 함), resume = 검토 후 재개(결과 메시지)', async () => {
+    const { totpSecret } = await setup();
+    const cookie = await login(totpSecret);
+    const x = await seedActiveListing(h);
+    const p = await app.inject({ method: 'POST', url: `/api/listings/${x.listing.id}/pause`, headers: H(cookie) });
+    expect(p.statusCode).toBe(200);
+    let l = await h.ctx.db.selectFrom('listings').selectAll().where('id', '=', x.listing.id).executeTakeFirstOrThrow();
+    expect(l.status_reason).toBe('관리자 중지(강제)');
+    const r = await app.inject({ method: 'POST', url: `/api/listings/${x.listing.id}/resume`, headers: H(cookie) });
+    expect(r.statusCode).toBe(200);
+    expect(r.json()).toMatchObject({ state: 'resumed' });
+    l = await h.ctx.db.selectFrom('listings').selectAll().where('id', '=', x.listing.id).executeTakeFirstOrThrow();
+    expect(l.status).toBe('active');
+    const again = await app.inject({ method: 'POST', url: `/api/listings/999999/pause`, headers: H(cookie) });
+    expect(again.statusCode).toBe(404);
+  });
+});
+
 describe('상품 목록·상품명 정리 API', () => {
   it('Wing에서 삭제한 상품은 전체 목록에서 숨기고 판매종료 탭에서 보임, 상품명 정리 제안·일괄 수정함', async () => {
     const { totpSecret } = await setup();

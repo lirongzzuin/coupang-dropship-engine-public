@@ -145,8 +145,14 @@ function ListingEditor({ l, act, onChange }: { l: Listing; act: ReturnType<typeo
         </form>
       ) : (
         <div className="row">
-          {l.status === 'active' && <button className="btn" disabled={act.busy} onClick={() => void act.run(() => api.post(`/api/listings/${l.id}/pause`).then(onChange), '판매중지')}>판매중지</button>}
-          {(l.status === 'paused' || l.status === 'stopped') && <button className="btn primary" disabled={act.busy} onClick={() => void act.run(() => api.post(`/api/listings/${l.id}/resume`).then(onChange), '판매재개')}>판매재개</button>}
+          {(l.status === 'active' || (l.status === 'paused' && !l.status_reason?.startsWith('관리자 중지'))) && (
+            <button className="btn" disabled={act.busy} title="자동으로는 다시 팔지 않습니다([판매재개]로만)"
+              onClick={() => void act.run(() => api.post(`/api/listings/${l.id}/pause`).then(onChange), '강제 판매중지 — 자동으로 재개하지 않습니다')}>강제 판매중지</button>
+          )}
+          {(l.status === 'paused' || l.status === 'stopped') && !l.status_reason?.startsWith('쿠팡에서 삭제됨') && (
+            <button className="btn primary" disabled={act.busy} title="설정 점검(필요하면 쿠팡 수정·승인)과 공급처 확인을 거쳐 재개합니다"
+              onClick={() => void act.run(() => api.post<{ state: string; message: string }>(`/api/listings/${l.id}/resume`).then((r) => { onChange(); return r.message; }))}>판매재개(검토 후)</button>
+          )}
           {(l.status === 'active' || l.status === 'paused') && l.status_reason?.startsWith('옵션 미지정') && (
             <button className="btn primary" disabled={act.busy} onClick={() => void act.run(() => api.post<{ title: string; source_option: string | null }>(`/api/listings/${l.id}/relist`).then((r) => { onChange(); return r; }), '옵션을 정해 새로 등록했습니다(심사중 탭) — 이전 쿠팡 상품은 Wing에서 삭제하세요')}>옵션 지정해 다시 등록</button>
           )}

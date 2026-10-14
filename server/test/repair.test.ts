@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { parseDomeggookOptions } from '../src/adapters/domeggook/source.js';
 import { CoupangMarket } from '../src/adapters/coupang/market.js';
-import { repairListings } from '../src/modules/monitor/repair.js';
+import { forceStop, repairListings, requestResume } from '../src/modules/monitor/repair.js';
 import { syncListings } from '../src/modules/sync/service.js';
 import type { CategoryMeta } from '../src/ports/market.js';
 import { makeHarness, seedActiveListing, type TestHarness } from './helpers.js';
@@ -64,10 +64,10 @@ async function setup() {
 }
 
 describe('상품 설정 자동 점검·수정', () => {
-  it('직접 멈춘 바스켓(멀티/FREE·옵션 미지정): 옵션 지정 + 구매옵션 수정 요청 → 심사 중엔 그대로 → 승인되면 다시 점검해 판매 재개', async () => {
+  it('(이전 버전에서 재개 예약된 상품) 바스켓: 옵션 지정 + 구매옵션 수정 요청 → 심사 중엔 그대로 → 승인되면 다시 점검해 판매 재개', async () => {
     await setup();
     const b = await seedCoupang({
-      sourceTitle: '수납 바스켓 주방리빙박스', name: '수납 바스켓 주방리빙박스', options: BASKET, status: 'paused', reason: '쿠팡에서 판매중지됨(Wing 또는 쿠팡 조치) — 확인 후 [판매재개]',
+      sourceTitle: '수납 바스켓 주방리빙박스', name: '수납 바스켓 주방리빙박스', options: BASKET, status: 'paused', reason: '옵션 미지정: 공급처 옵션 3개',
       attrs: (u) => [{ attributeTypeName: '색상', attributeValueName: '멀티' }, { attributeTypeName: '수량', attributeValueName: `${u}개` }, { attributeTypeName: '사이즈', attributeValueName: 'FREE' }],
     });
     let r = await repairListings(h.ctx);
@@ -105,10 +105,10 @@ describe('상품 설정 자동 점검·수정', () => {
     expect(h.market.updates).toHaveLength(1);
   });
 
-  it('직접 멈춘 등산가방(상품명에 옵션 색상 중복): 상품명 수정 → 승인 후 재개', async () => {
+  it('강제 중지 상품(상품명에 옵션 색상 중복): 설정은 고치지만 자동 재개 안 함 → [판매재개]를 누르면 점검 후 재개', async () => {
     await setup();
     const g = await seedCoupang({
-      sourceTitle: '휴대용 경량 방수 등산가방 오렌지', name: '휴대용 경량 방수 등산가방 오렌지', units: [1], status: 'paused', reason: '관리자 중지',
+      sourceTitle: '휴대용 경량 방수 등산가방 오렌지', name: '휴대용 경량 방수 등산가방 오렌지', units: [1], status: 'paused', reason: '관리자 중지(강제)',
       attrs: () => [{ attributeTypeName: '색상', attributeValueName: '오렌지' }, { attributeTypeName: '사이즈', attributeValueName: 'FREE' }, { attributeTypeName: '수량', attributeValueName: '1개' }],
     });
     await repairListings(h.ctx);
@@ -116,10 +116,14 @@ describe('상품 설정 자동 점검·수정', () => {
     expect(body.displayProductName).toBe('휴대용 경량 방수 등산가방');
     expect(body.sellerProductName).toBe('휴대용 경량 방수 등산가방');
     expect(attrsOf(body, 0)).toMatchObject({ 색상: '오렌지' });
-    expect((await listingOf(g.listingId)).title).toBe('휴대용 경량 방수 등산가방');
+    expect(await listingOf(g.listingId)).toMatchObject({ title: '휴대용 경량 방수 등산가방', repair_resume: false });
     h.market.approve(g.sid);
     await repairListings(h.ctx);
+    expect((await listingOf(g.listingId)).status).toBe('paused'); // 강제 중지는 자동 재개 안 함
+    const r = await requestResume(h.ctx, g.listingId, 'admin');
+    expect(r.state).toBe('resumed');
     expect((await listingOf(g.listingId)).status).toBe('active');
+    expect(h.market.items.get(g.vids[0]!)!.onSale).toBe(true);
   });
 
   it('판매중 상품도 고치되 판매는 그대로(심사 중에도 판매중 유지)', async () => {
@@ -134,7 +138,7 @@ describe('상품 설정 자동 점검·수정', () => {
     expect(h.market.items.get(a.vids[0]!)!.onSale).toBe(true);
   });
 
-  it('설정이 맞는 상품은 수정하지 않음, 오류 없는 직접 중지 상품은 재개하지 않고 알림만', async () => {
+  it('설정이 맞는 상품은 수정하지 않음, 직접 중지 상품은 그대로 둠', async () => {
     await setup();
     await seedCoupang({ sourceTitle: '수납 바구니 소형', name: '수납 바구니', units: [1], attrs: () => [{ attributeTypeName: '색상', attributeValueName: '멀티' }, { attributeTypeName: '사이즈', attributeValueName: '소형' }, { attributeTypeName: '수량', attributeValueName: '1개' }] });
     const p = await seedCoupang({ sourceTitle: '수납 바구니 대형', name: '수납 바구니', units: [1], status: 'paused', reason: '관리자 중지', attrs: () => [{ attributeTypeName: '색상', attributeValueName: '멀티' }, { attributeTypeName: '사이즈', attributeValueName: '대형' }, { attributeTypeName: '수량', attributeValueName: '1개' }] });
@@ -142,13 +146,12 @@ describe('상품 설정 자동 점검·수정', () => {
     expect(r.requested).toBe(0);
     expect(h.market.updates).toHaveLength(0);
     expect((await listingOf(p.listingId)).status).toBe('paused');
-    expect(h.notifier.titles()).toContain('직접 멈춘 상품 1개 — 설정 오류 없음');
   });
 
-  it('수정 후 공급처가 품절이면 재개하지 않고 공급처 사유로 → 재입고되면 동기화가 재개', async () => {
+  it('재개 검토 중 쿠팡 수정이 승인됐는데 공급처가 품절이면 재개하지 않고 공급처 사유로 → 재입고되면 동기화가 재개', async () => {
     await setup();
-    const b = await seedCoupang({ sourceTitle: '등산가방 오렌지', name: '등산가방 오렌지', units: [1], status: 'paused', reason: '관리자 중지', attrs: () => [{ attributeTypeName: '색상', attributeValueName: '오렌지' }, { attributeTypeName: '사이즈', attributeValueName: 'FREE' }, { attributeTypeName: '수량', attributeValueName: '1개' }] });
-    await repairListings(h.ctx);
+    const b = await seedCoupang({ sourceTitle: '등산가방 오렌지', name: '등산가방 오렌지', units: [1], status: 'paused', reason: '관리자 중지(강제)', attrs: () => [{ attributeTypeName: '색상', attributeValueName: '오렌지' }, { attributeTypeName: '사이즈', attributeValueName: 'FREE' }, { attributeTypeName: '수량', attributeValueName: '1개' }] });
+    expect((await requestResume(h.ctx, b.listingId, 'admin')).state).toBe('reviewing');
     h.market.approve(b.sid);
     h.apiSource.products.get(b.d.sourceItemId)!.status = 'soldout';
     const r = await repairListings(h.ctx);
@@ -225,6 +228,133 @@ describe('상품 설정 자동 점검·수정', () => {
     await h.ctx.settings.update({ repair: { enabled: true }, killSwitch: true });
     expect((await repairListings(h.ctx)).checked).toBe(0);
     expect(h.market.updates).toHaveLength(0);
+  });
+});
+
+describe('강제 판매중지 · 판매재개(검토 후 재개)', () => {
+  const ok = (u: number) => [{ attributeTypeName: '색상', attributeValueName: '멀티' }, { attributeTypeName: '사이즈', attributeValueName: 'FREE' }, { attributeTypeName: '수량', attributeValueName: `${u}개` }];
+  const bad = (u: number) => [{ attributeTypeName: '색상', attributeValueName: '블랙' }, { attributeTypeName: '사이즈', attributeValueName: 'FREE' }, { attributeTypeName: '수량', attributeValueName: `${u}개` }];
+
+  it('강제 판매중지: 쿠팡 판매중지 + 동기화·점검·대조 어느 것도 재개하지 않음, 진행 중인 자동 재개 예약도 취소', async () => {
+    await setup();
+    const a = await seedCoupang({ sourceTitle: '수납 바구니', name: '수납 바구니', units: [1], attrs: ok });
+    await forceStop(h.ctx, a.listingId, 'admin');
+    let l = await listingOf(a.listingId);
+    expect(l).toMatchObject({ status: 'paused', status_reason: '관리자 중지(강제)', repair_resume: false });
+    expect(h.market.items.get(a.vids[0]!)!.onSale).toBe(false);
+    const { reconcileMarketState } = await import('../src/modules/monitor/service.js');
+    await syncListings(h.ctx);
+    await repairListings(h.ctx);
+    await reconcileMarketState(h.ctx);
+    expect((await listingOf(a.listingId)).status).toBe('paused');
+    // 이전 버전에서 재개 예약된 상품(수정 심사 중)도 강제 중지하면 승인 후 재개 안 함
+    const b = await seedCoupang({ sourceTitle: '가방 블랙', name: '가방 블랙', units: [1], status: 'paused', reason: '쿠팡에서 판매중지됨(Wing)', attrs: bad });
+    await h.ctx.db.updateTable('listings').set({ repair_resume: true }).where('id', '=', b.listingId).execute();
+    await repairListings(h.ctx);
+    expect((await listingOf(b.listingId)).repair_state).toBe('requested');
+    await forceStop(h.ctx, b.listingId, 'admin');
+    h.market.approve(b.sid);
+    await repairListings(h.ctx);
+    l = await listingOf(b.listingId);
+    expect(l).toMatchObject({ status: 'paused', repair_state: null });
+  });
+
+  it('이전 버전에서 재개 예약된 상품은 약속대로 승인 후 재개(배포 영향 없음)', async () => {
+    await setup();
+    const b = await seedCoupang({ sourceTitle: '가방 블랙', name: '가방 블랙', units: [1], status: 'paused', reason: '쿠팡에서 판매중지됨(Wing)', attrs: bad });
+    await h.ctx.db.updateTable('listings').set({ repair_state: 'requested', repair_resume: true, repair_requested_at: h.clock.now() }).where('id', '=', b.listingId).execute();
+    h.market.products.get(b.sid)!.payload.displayProductName = '가방'; // 이미 고쳐서 보낸 상태
+    h.market.approve(b.sid);
+    const r = await repairListings(h.ctx);
+    expect(r).toMatchObject({ completed: 1, resumed: 1 });
+    expect((await listingOf(b.listingId)).status).toBe('active');
+  });
+
+  it('판매재개: 설정 정상 + 공급처 판매 가능 → 바로 재개', async () => {
+    await setup();
+    const a = await seedCoupang({ sourceTitle: '수납 바구니', name: '수납 바구니', units: [1], status: 'paused', reason: '관리자 중지(강제)', attrs: ok });
+    const r = await requestResume(h.ctx, a.listingId, 'admin');
+    expect(r).toMatchObject({ state: 'resumed' });
+    expect(r.message).toContain('설정 점검 정상');
+    expect(await listingOf(a.listingId)).toMatchObject({ status: 'active', status_reason: null, repair_resume: false });
+    expect(h.market.updates).toHaveLength(0);
+  });
+
+  it('판매재개: 설정 오류 → 쿠팡 수정 요청(검토 중, 판매중지 유지) → 승인 후 다시 점검 → 자동 재개', async () => {
+    await setup();
+    const a = await seedCoupang({ sourceTitle: '수납 바스켓', name: '수납 바스켓', options: BASKET, status: 'paused', reason: '관리자 중지(강제)', attrs: ok });
+    const r = await requestResume(h.ctx, a.listingId, 'admin');
+    expect(r.state).toBe('reviewing');
+    expect(r.message).toContain('색상: 멀티 → 화이트');
+    let l = await listingOf(a.listingId);
+    expect(l).toMatchObject({ status: 'paused', repair_state: 'requested', repair_resume: true });
+    expect(l.status_reason).toContain('재개 검토중');
+    expect(h.market.items.get(a.vids[0]!)!.onSale).toBe(false);
+    // 심사 중 다시 눌러도 중복 요청 안 함
+    expect((await requestResume(h.ctx, a.listingId, 'admin')).state).toBe('reviewing');
+    expect(h.market.updates).toHaveLength(1);
+    // 대조가 판매중으로 되돌리지 않음
+    const { reconcileMarketState } = await import('../src/modules/monitor/service.js');
+    await reconcileMarketState(h.ctx);
+    expect((await listingOf(a.listingId)).status).toBe('paused');
+    h.market.approve(a.sid);
+    await repairListings(h.ctx);
+    l = await listingOf(a.listingId);
+    expect(l).toMatchObject({ status: 'active', repair_state: null });
+    expect(h.market.items.get(a.vids[0]!)!.onSale).toBe(true);
+  });
+
+  it('판매재개: 고칠 수 없으면 재개 보류(사유) + 알림, 쿠팡 수정 반려도 재개 보류', async () => {
+    await setup();
+    const opts = JSON.stringify({ type: 'combination', set: [{ name: '옵션', opts: [] }], data: { '00': { name: '블랙 소형', sup: '1', qty: '9', hid: '0' }, '01': { name: '화이트 소형', sup: '1', qty: '9', hid: '0' }, '02': { name: '대형', sup: '1', supPrice: '-1000', qty: '9', hid: '0' } } });
+    const a = await seedCoupang({ sourceTitle: '정리함', name: '정리함', options: opts, status: 'paused', reason: '관리자 중지(강제)', attrs: ok });
+    const r = await requestResume(h.ctx, a.listingId, 'admin');
+    expect(r.state).toBe('held');
+    let l = await listingOf(a.listingId);
+    expect(l.status).toBe('paused');
+    expect(l.status_reason).toContain('재개 보류');
+    expect(h.notifier.titles()).toContain('판매 재개 보류');
+    await repairListings(h.ctx);
+    expect((await listingOf(a.listingId)).status).toBe('paused');
+
+    const b = await seedCoupang({ sourceTitle: '가방 블랙', name: '가방 블랙', units: [1], status: 'paused', reason: '관리자 중지(강제)', attrs: bad });
+    expect((await requestResume(h.ctx, b.listingId, 'admin')).state).toBe('reviewing');
+    h.market.products.get(b.sid)!.status = 'REJECTED';
+    await repairListings(h.ctx);
+    l = await listingOf(b.listingId);
+    expect(l.status).toBe('paused');
+    expect(l.status_reason).toContain('재개 보류');
+    expect(l.status_reason).toContain('반려');
+  });
+
+  it('판매재개: 공급처 품절이면 공급처 사유로 두고 재입고 시 동기화가 재개', async () => {
+    await setup();
+    const a = await seedCoupang({ sourceTitle: '수납 바구니', name: '수납 바구니', units: [1], status: 'paused', reason: '관리자 중지(강제)', attrs: ok });
+    h.apiSource.products.get(a.d.sourceItemId)!.status = 'soldout';
+    const r = await requestResume(h.ctx, a.listingId, 'admin');
+    expect(r.state).toBe('reviewing');
+    expect(r.message).toContain('공급처 품절');
+    h.apiSource.products.get(a.d.sourceItemId)!.status = 'active';
+    await syncListings(h.ctx);
+    expect((await listingOf(a.listingId)).status).toBe('active');
+  });
+
+  it('판매재개: 직접 연결 상품은 설정 점검 없이 공급처 확인 후 재개, 판매종료 상품도 검토 후 재개, 삭제·안전장치·긴급정지는 거부', async () => {
+    await setup();
+    const linked = await seedCoupang({ sourceTitle: '지갑 블랙', name: '지갑 블랙', units: [1], status: 'paused', reason: '관리자 중지(강제)', attrs: bad, linked: true });
+    expect((await requestResume(h.ctx, linked.listingId, 'admin')).state).toBe('resumed');
+    expect(h.market.updates).toHaveLength(0);
+    const stopped = await seedCoupang({ sourceTitle: '수납 바구니', name: '수납 바구니', units: [1], attrs: ok });
+    await h.ctx.db.updateTable('listings').set({ status: 'stopped', status_reason: '판매 부진' }).where('id', '=', stopped.listingId).execute();
+    for (const v of stopped.vids) h.market.items.get(v)!.onSale = false;
+    expect((await requestResume(h.ctx, stopped.listingId, 'admin')).state).toBe('resumed');
+    expect((await listingOf(stopped.listingId)).status).toBe('active');
+    const del = await seedCoupang({ sourceTitle: 'x', name: 'x 상품', units: [1], attrs: ok });
+    await h.ctx.db.updateTable('listings').set({ status: 'stopped', status_reason: '쿠팡에서 삭제됨(Wing에서 삭제)' }).where('id', '=', del.listingId).execute();
+    await expect(requestResume(h.ctx, del.listingId, 'admin')).rejects.toThrow(/삭제/);
+    const { haltSales } = await import('../src/modules/guard/safety.js');
+    await haltSales(h.ctx, 'test', 'manual');
+    await expect(requestResume(h.ctx, linked.listingId, 'admin')).rejects.toThrow(/안전장치/);
   });
 });
 

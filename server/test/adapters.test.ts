@@ -22,6 +22,7 @@ describe('CoupangMarket (로컬 HTTP 목 서버)', () => {
   let base = '';
   const seen: Array<{ method: string; path: string; query: string; body: any; auth: string }> = [];
   let fail429 = 0;
+  const revenueWindows: Array<[string, string]> = [];
 
   const verify = (req: IncomingMessage, path: string, query: string): boolean => {
     const auth = String(req.headers.authorization ?? '');
@@ -60,6 +61,13 @@ describe('CoupangMarket (로컬 HTTP 목 서버)', () => {
         if (p.endsWith('/seller-products/5555')) return send(200, { code: 'SUCCESS', data: { statusName: '승인완료', items: [{ vendorItemId: 7777 }] } });
         if (p.includes('/prices/')) return send(200, { code: 'SUCCESS', message: '변경 완료' });
         if (p.endsWith('/sales/stop')) return send(400, { code: 'ERROR', message: '삭제된 상품' });
+        if (p.endsWith('/revenue-history')) {
+          // 실제 쿠팡처럼: 1개월 이상 기간은 400, 인식일이 기간 안인 매출만
+          const f = url.searchParams.get('recognitionDateFrom')!, t = url.searchParams.get('recognitionDateTo')!;
+          revenueWindows.push([f, t]);
+          if (Date.parse(t) - Date.parse(f) >= 28 * 86400_000) return send(400, { code: 'ERROR', message: 'The request is invalid: Date range period must be less than 1 months' });
+          if (!(f <= '2026-10-20' && '2026-10-20' <= t)) return send(200, { code: 200, hasNext: false, nextToken: '', data: [] });
+        }
         if (p.endsWith('/revenue-history')) return send(200, { code: 200, hasNext: false, nextToken: '', data: [{ orderId: 222, saleType: 'SALE', recognitionDate: '2026-10-20', items: [{ vendorItemId: 333, saleAmount: 60000, serviceFee: 6000, serviceFeeVat: 600, settlementAmount: 53400 }], deliveryFee: { settlementAmount: 0 } }] });
         if (p.endsWith('/returnRequests')) return send(200, { code: 200, data: url.searchParams.get('cancelType') === 'CANCEL' ? [] : [{ receiptId: 9, orderId: 222, receiptType: 'RETURN', receiptStatus: 'RETURNS_UNCHECKED', createdAt: '2026-10-13T11:00:00', cancelReasonCategory1: '단순변심', cancelReason: '필요없음', returnItems: [{ vendorItemId: 333 }] }] });
         if (p.endsWith('/onlineInquiries')) return send(200, { code: 200, data: { content: [{ inquiryId: 1, vendorItemId: 333, content: '배송 언제?', inquiryAt: '2026-10-13T09:00:00+09:00', commentDtoList: [] }], pagination: { currentPage: 1, totalPages: 1 } } });
@@ -120,6 +128,11 @@ describe('CoupangMarket (로컬 HTTP 목 서버)', () => {
   it('정산·반품·문의', async () => {
     const m = make();
     const rev = await m.listRevenue('2026-10-01', '2026-10-20');
+    expect(rev).toHaveLength(1); // 구간을 나눠도 중복 없음
+    expect(revenueWindows).toEqual([['2026-10-01', '2026-10-14'], ['2026-10-15', '2026-10-20']]);
+    revenueWindows.length = 0;
+    expect(await m.listRevenue('2026-09-13', '2026-10-13')).toHaveLength(0); // 31일(실제 실패한 기간)도 나눠서 성공
+    expect(revenueWindows).toEqual([['2026-09-13', '2026-09-26'], ['2026-09-27', '2026-10-10'], ['2026-10-11', '2026-10-13']]);
     expect(rev[0]).toMatchObject({ marketOrderId: '222', vendorItemId: '333', saleType: 'SALE', serviceFee: 6000, settlementAmount: 53400 });
     const claims = await m.listClaims(new Date('2026-10-12T00:00:00Z'), new Date('2026-10-13T12:00:00Z'));
     expect(claims[0]).toMatchObject({ type: 'RETURN', marketOrderId: '222', vendorItemId: '333' });
