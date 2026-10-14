@@ -291,3 +291,36 @@ describe('상품 목록·상품명 정리 API', () => {
     expect((await app.inject({ url: '/api/listings/name-fixes', headers: H(cookie) })).json()).toEqual([]);
   });
 });
+
+describe('취소·반품·교환 API', () => {
+  it('주문 상세에 클레임, [공급처 취소 완료] → 출고중지·취소됨, 잘못된 조치는 409, 판매자 취소', async () => {
+    const { totpSecret } = await setup();
+    const cookie = await login(totpSecret);
+    const { pollClaims, pollNewOrders, processPending } = await import('../src/modules/orders/service.js');
+    const { vendorItemId } = await seedActiveListing(h, { source: 'mockmanual' });
+    const a = h.market.seedOrder({ vendorItemId, paidAmount: 30000, orderedAt: h.clock.now() });
+    const b = h.market.seedOrder({ vendorItemId, paidAmount: 30000, orderedAt: h.clock.now() });
+    await pollNewOrders(h.ctx);
+    await processPending(h.ctx);
+    const oa = await orderByBox(h, a.shipmentBoxId);
+    await app.inject({ method: 'POST', url: `/api/orders/${oa.id}/purchase`, headers: H(cookie), payload: { sourceOrderId: 'DMK-9', cost: 15000 } });
+    h.market.claim({ receiptId: '77', marketOrderId: a.marketOrderId, vendorItemId, type: 'RETURN', stage: 'stop_requested', requestedAt: h.clock.now() });
+    await pollClaims(h.ctx);
+    const d = (await app.inject({ url: `/api/orders/${oa.id}`, headers: H(cookie) })).json();
+    expect(d.status).toBe('CANCEL_REQUESTED');
+    expect(d.claims).toHaveLength(1);
+    expect(d.claims[0]).toMatchObject({ receipt_id: '77', stage: 'stop_requested', stageLabel: '출고중지 요청(고객 취소)' });
+    const bad = await app.inject({ method: 'POST', url: `/api/orders/${oa.id}/claims/${d.claims[0].id}`, headers: H(cookie), payload: { action: 'approve_return' } });
+    expect(bad.statusCode).toBe(409);
+    const ok = await app.inject({ method: 'POST', url: `/api/orders/${oa.id}/claims/${d.claims[0].id}`, headers: H(cookie), payload: { action: 'source_cancelled' } });
+    expect(ok.statusCode).toBe(200);
+    expect((await orderByBox(h, a.shipmentBoxId)).status).toBe('CANCELLED');
+    // 판매자 취소(구매 전 주문)
+    const ob = await orderByBox(h, b.shipmentBoxId);
+    const c = await app.inject({ method: 'POST', url: `/api/orders/${ob.id}/cancel`, headers: H(cookie), payload: { reason: 'stock' } });
+    expect(c.statusCode).toBe(200);
+    expect((await orderByBox(h, b.shipmentBoxId)).status).toBe('CANCELLED');
+    const audits = await h.ctx.db.selectFrom('audit_log').select('action').execute();
+    expect(audits.map((x) => x.action)).toEqual(expect.arrayContaining(['claim.source_cancelled', 'order.seller_cancel']));
+  });
+});

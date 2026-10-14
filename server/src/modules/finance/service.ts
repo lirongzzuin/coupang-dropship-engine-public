@@ -45,13 +45,16 @@ export async function reconcile(ctx: AppContext): Promise<{ imported: number; se
     const next = l?.fee_rate_actual ? l.fee_rate_actual * 0.7 + ratio * 0.3 : ratio;
     await ctx.db.updateTable('listings').set({ fee_rate_actual: Math.round(next * 10000) / 10000 }).where('id', '=', o.listing_id).execute();
   }
-  const candidates = await ctx.db.selectFrom('orders').selectAll().where('status', 'in', ['DELIVERED', 'TRACKING_UPLOADED', 'IN_TRANSIT', 'RETURN_REQUESTED']).execute();
+  // 반품완료(클레임 추적으로 먼저 끝난 주문)도 환불 정산이 들어오면 손익 기록
+  const candidates = await ctx.db.selectFrom('orders').selectAll()
+    .where((eb) => eb.or([eb('status', 'in', ['DELIVERED', 'TRACKING_UPLOADED', 'IN_TRANSIT', 'RETURN_REQUESTED']), eb.and([eb('status', '=', 'RETURNED'), eb('settled_at', 'is', null)])]))
+    .execute();
   for (const o of candidates) {
     const rows = await ctx.db.selectFrom('settlements').selectAll().where('market_order_id', '=', o.market_order_id).where('vendor_item_id', '=', o.vendor_item_id).execute();
     if (!rows.length) continue;
     const total = rows.reduce((a, x) => a + (x.sale_type === 'REFUND' ? -1 : 1) * (x.settlement_amount + x.delivery_settlement), 0);
     const hasRefund = rows.some((x) => x.sale_type === 'REFUND');
-    const profit = total - (o.purchase_cost ?? o.expected_cost ?? 0) - (o.purchase_shipping ?? 0);
+    const profit = total - (o.purchase_cost ?? o.expected_cost ?? 0) - (o.purchase_shipping ?? 0) - (o.extra_cost ?? 0);
     const patch = { settlement_amount: total, profit, settled_at: now };
     if (hasRefund) {
       refunds++;

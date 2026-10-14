@@ -121,7 +121,7 @@ describe('공급처 결제·취소 자동 감지', () => {
     expect(h.notifier.titles()).toContain('공급처가 주문을 취소했어요');
   });
 
-  it('구매 후 고객 취소 → 공급처 주문도 자동 취소 + 쿠팡 출고중지 안내', async () => {
+  it('구매 후 고객 취소(출고중지요청) → 공급처 주문 자동 취소 확인 → 쿠팡 출고중지완료 → 취소됨', async () => {
     h = await makeHarness({ live: true });
     const { vendorItemId } = await seedActiveListing(h);
     const line = h.market.seedOrder({ vendorItemId, paidAmount: 30000, orderedAt: h.clock.now() });
@@ -129,11 +129,10 @@ describe('공급처 결제·취소 자동 감지', () => {
     const o = await orderByBox(h, line.shipmentBoxId);
     h.market.claims.push({ receiptId: 'c1', marketOrderId: line.marketOrderId, vendorItemId, type: 'CANCEL', status: 'RU', reason: '단순변심', requestedAt: h.clock.now() });
     await pollClaims(h.ctx);
-    expect((await orderByBox(h, line.shipmentBoxId)).status).toBe('CANCEL_REQUESTED');
+    expect((await orderByBox(h, line.shipmentBoxId)).status).toBe('CANCELLED');
     expect(h.apiSource.cancelled).toEqual([o.source_order_id]);
-    const n = h.notifier.sent.find((m) => m.title === '구매 후 취소 요청')!;
-    expect(n.body).toContain('자동 취소');
-    expect(n.body).toContain('출고중지');
+    expect(h.market.claimActions).toEqual([{ action: 'stopShipment', receiptId: 'c1', detail: { count: 1 } }]);
+    expect(h.notifier.sent.find((m) => m.title === '고객 취소 자동 처리')!.body).toContain('출고중지완료');
   });
 
   it('자동 발주 첫 실패부터 바로 알림(예치금 부족 등)', async () => {

@@ -19,6 +19,7 @@ import { forceStop, requestResume } from '../modules/monitor/repair.js';
 import { findByVendorItem } from '../modules/listing/items.js';
 import { linkExistingListing, ListingError, quoteSourceItem, listNameFixes, markNameFixed, registerListing, relistWithOption, updateDraft, validateListing } from '../modules/listing/service.js';
 import { importCoupangSalesCsv } from '../modules/marketdata/csvImport.js';
+import { claimAction, listOrderClaims, reshipOrder, sellerCancel } from '../modules/orders/claims.js';
 import { confirmPurchase, decryptReceiver, OrderError, overrideAndProcess, submitTracking, transition } from '../modules/orders/service.js';
 import { ACTION_STATUSES, EXCEPTION_STATUSES, ORDER_STATUSES, type OrderStatus, STATUS_LABEL } from '../modules/orders/stateMachine.js';
 import { computeProfit } from '../modules/pricing/pricing.js';
@@ -229,8 +230,23 @@ export async function buildServer(ctx: AppContext, scheduler: Scheduler | null, 
         events,
         profitEstimate: profitIfCost,
         courierAliases: Object.keys(s.orders.courierAliases),
+        claims: await listOrderClaims(ctx, id),
       };
     });
+
+    // ── 취소·반품·교환 ──
+    api.post('/api/orders/:id/claims/:claimId', async (req) => {
+      const b = z.object({ action: z.enum(['source_cancelled', 'shipped', 'approve_return', 'close']), courier: z.string().optional(), trackingNo: z.string().optional() }).parse(req.body);
+      const claimId = z.coerce.number().int().positive().parse((req.params as { claimId: string }).claimId);
+      return claimAction(ctx, idParam(req), claimId, b, actor(req));
+    });
+    /** 판매자 주문 취소(공급처 품절 등) — 쿠팡 판매자 점수 하락 */
+    api.post('/api/orders/:id/cancel', async (req) => {
+      const b = z.object({ reason: z.enum(['stock', 'address', 'price']).default('stock') }).parse(req.body ?? {});
+      return sellerCancel(ctx, idParam(req), b.reason, actor(req));
+    });
+    /** 공급처 재발송(교환·분실·파손) */
+    api.post('/api/orders/:id/reship', async (req) => reshipOrder(ctx, idParam(req), actor(req)));
 
     /** 구매 작업용 수취인 원문(열람 기록 남김) */
     api.get('/api/orders/:id/receiver', async (req) => {

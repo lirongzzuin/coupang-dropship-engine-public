@@ -71,6 +71,15 @@ describe('CoupangMarket (로컬 HTTP 목 서버)', () => {
         if (p.endsWith('/revenue-history')) return send(200, { code: 200, hasNext: false, nextToken: '', data: [{ orderId: 222, saleType: 'SALE', recognitionDate: '2026-10-20', items: [{ vendorItemId: 333, saleAmount: 60000, serviceFee: 6000, serviceFeeVat: 600, settlementAmount: 53400 }], deliveryFee: { settlementAmount: 0 } }] });
         if (p.endsWith('/returnRequests')) return send(200, { code: 200, data: url.searchParams.get('cancelType') === 'CANCEL' ? [] : [{ receiptId: 9, orderId: 222, receiptType: 'RETURN', receiptStatus: 'RETURNS_UNCHECKED', createdAt: '2026-10-13T11:00:00', cancelReasonCategory1: '단순변심', cancelReason: '필요없음', returnItems: [{ vendorItemId: 333 }] }] });
         if (p.endsWith('/onlineInquiries')) return send(200, { code: 200, data: { content: [{ inquiryId: 1, vendorItemId: 333, content: '배송 언제?', inquiryAt: '2026-10-13T09:00:00+09:00', commentDtoList: [] }], pagination: { currentPage: 1, totalPages: 1 } } });
+        if (p.endsWith('/exchangeRequests')) {
+          // 실측: 교환 조회 구간 7일 이상이면 400
+          const f = Date.parse(`${url.searchParams.get('createdAtFrom')}+09:00`), t = Date.parse(`${url.searchParams.get('createdAtTo')}+09:00`);
+          if (t - f >= 7 * 86400_000) return send(400, { code: 400, message: 'createdAtTo - createdAtFrom should less then  7day.' });
+        }
+        if (p.endsWith('/stoppedShipment')) return send(200, { code: '200', message: 'OK', data: { resultCode: 'SUCCESS', resultMessage: '출고중지완료요청이 성공하였습니다' } });
+        if (p.endsWith('/completedShipment')) return send(200, { data: { code: '200', message: 'OK', resultCode: 'FAIL', resultMessage: '송장번호 오류' } });
+        if (p.endsWith('/returnRequests/404404')) return send(400, { code: 400, message: '취소반품접수내역이 존재하지 않습니다.' });
+        if (/\/orders\/\d+\/cancel$/.test(p)) return send(200, { code: '200', message: 'OK', data: { orderId: 222, failedVendorItemIds: [] } });
         if (p.endsWith('/exchangeRequests')) return send(200, { code: 200, nextToken: '', data: [{ exchangeId: 77, orderId: 222, exchangeStatus: 'RECEIPT', reasonCode: '사이즈 교환', createdAt: '2026-10-13T10:00:00', exchangeItemDtoV1s: [{ originalVendorItemId: 333 }] }] });
         if (p.endsWith('/callCenterInquiries')) return send(200, { code: 200, data: { content: [{ inquiryId: 5, content: '배송이 너무 늦어요', inquiryAt: '2026-10-13T08:00:00+09:00' }], pagination: { currentPage: 1, totalPages: 1 } } });
         if (p.endsWith('/replies')) return send(200, { code: 200, message: 'OK' });
@@ -142,6 +151,25 @@ describe('CoupangMarket (로컬 HTTP 목 서버)', () => {
     expect(inq.find((i) => i.kind === 'callcenter')).toMatchObject({ inquiryId: '5', content: '배송이 너무 늦어요' });
     expect((await m.replyInquiry({ inquiryId: '1', kind: 'product' }, '안녕하세요')).ok).toBe(true);
     expect(seen.at(-1)!.body).toEqual({ content: '안녕하세요', vendorId: 'A001', replyBy: 'wingid' });
+  });
+
+  it('클레임: 반품은 상태별 조회(+즉시취소), 교환은 7일 미만씩 나눠 조회, 출고중지·이미출고·판매자취소 요청 형식, 철회 감지', async () => {
+    const m = make();
+    seen.length = 0;
+    const claims = await m.listClaims(new Date('2026-09-25T00:00:00Z'), new Date('2026-10-13T12:00:00Z'));
+    const ret = seen.filter((s) => s.path.endsWith('/returnRequests'));
+    expect(ret.map((s) => new URLSearchParams(s.query).get('status') ?? new URLSearchParams(s.query).get('cancelType'))).toEqual(['CANCEL', 'RU', 'UC', 'PR', 'CC']);
+    const ex = seen.filter((s) => s.path.endsWith('/exchangeRequests'));
+    expect(ex.length).toBe(4); // 18.5일 → 6일씩 4구간
+    expect(claims.filter((c) => c.receiptId === '9')).toHaveLength(1); // 상태별 조회에 겹쳐 나와도 1건
+    expect(claims.find((c) => c.receiptId === '9')).toMatchObject({ stage: 'return_requested', type: 'RETURN' });
+    expect(await m.stopShipment('9', 1)).toMatchObject({ ok: true });
+    expect(seen.at(-1)).toMatchObject({ method: 'PATCH', path: '/v2/providers/openapi/apis/api/v4/vendors/A001/returnRequests/9/stoppedShipment', body: { vendorId: 'A001', receiptId: 9, cancelCount: 1 } });
+    expect(await m.markShippedForClaim('9', 'CJGLS', '612345678901')).toMatchObject({ ok: false, message: '송장번호 오류' });
+    expect(seen.at(-1)!.body).toEqual({ vendorId: 'A001', receiptId: 9, deliveryCompanyCode: 'CJGLS', invoiceNumber: '612345678901' });
+    expect(await m.cancelOrder({ marketOrderId: '222', vendorItemId: '333', qty: 1, reason: 'stock' })).toMatchObject({ ok: true });
+    expect(seen.at(-1)!.body).toEqual({ orderId: 222, vendorItemIds: [333], receiptCounts: [1], bigCancelCode: 'CANERR', middleCancelCode: 'CCTTER', vendorId: 'A001', userId: 'wingid' });
+    expect(await m.getClaim('404404')).toMatchObject({ stage: 'withdrawn' });
   });
 
   it('잘못된 서명은 401', async () => {

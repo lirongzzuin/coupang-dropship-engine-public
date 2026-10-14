@@ -248,7 +248,9 @@ describe('예외 처리', () => {
     await pollClaims(h.ctx);
     expect((await orderByBox(h, a.shipmentBoxId)).status).toBe('CANCELLED');
     expect((await orderByBox(h, b.shipmentBoxId)).status).toBe('CANCEL_REQUESTED');
-    expect(h.notifier.titles()).toContain('구매 후 취소 요청');
+    // 직접 구매한 공급처(자동 취소 불가) → 사람에게 공급처 취소 요청
+    expect(h.notifier.titles()).toContain('고객 취소 — 공급처 주문 취소 필요');
+    expect(h.market.claimActions.map((a) => `${a.action}:${a.receiptId}`)).toEqual(['stopShipment:r1']); // 구매 전 주문만 출고중지완료
   });
 
   it('반품 요청 → RETURN_REQUESTED → 환불 정산 시 RETURNED', async () => {

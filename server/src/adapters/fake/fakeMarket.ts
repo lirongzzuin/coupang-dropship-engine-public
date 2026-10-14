@@ -101,7 +101,67 @@ export class FakeMarket implements MarketPort {
 
   async listClaims(from: Date, to: Date): Promise<MarketClaim[]> {
     this.maybeFail('listClaims');
-    return this.claims.filter((c) => c.requestedAt >= from && c.requestedAt <= to);
+    return this.claims.filter((c) => c.requestedAt >= from && c.requestedAt <= to).map((c) => ({ ...c }));
+  }
+
+  /** 테스트: 클레임 처리 기록 */
+  claimActions: Array<{ action: string; receiptId: string; detail?: unknown }> = [];
+
+  /** 테스트: 고객 클레임 상황 만들기(쿠팡 실제 흐름) */
+  claim(c: Partial<MarketClaim> & { receiptId: string; marketOrderId: string; vendorItemId: string; type: MarketClaim['type']; stage: NonNullable<MarketClaim['stage']> }): MarketClaim {
+    const full: MarketClaim = { status: c.stage, reason: '단순변심', requestedAt: new Date(), count: 1, ...c };
+    this.claims = this.claims.filter((x) => x.receiptId !== c.receiptId);
+    this.claims.push(full);
+    return full;
+  }
+
+  setClaimStage(receiptId: string, stage: NonNullable<MarketClaim['stage']>): void {
+    for (const c of this.claims) if (c.receiptId === receiptId) c.stage = stage;
+  }
+
+  async getClaim(receiptId: string): Promise<MarketClaim | null> {
+    this.maybeFail('getClaim');
+    const c = this.claims.find((x) => x.receiptId === receiptId);
+    return c ? { ...c } : null;
+  }
+
+  private claimStep(action: string, receiptId: string, need: Array<NonNullable<MarketClaim['stage']>>, next: NonNullable<MarketClaim['stage']>, detail?: unknown): MarketResult {
+    this.maybeFail(action);
+    const c = this.claims.find((x) => x.receiptId === receiptId);
+    if (!c) return { ok: false, retryable: false, message: '취소반품접수내역이 존재하지 않습니다.' };
+    // 예전 형식(stage 없이 type·status)도 쿠팡처럼 판단
+    c.stage ??= c.status === 'RU' ? 'stop_requested' : c.type === 'CANCEL' ? 'cancelled' : c.type === 'EXCHANGE' ? 'exchange_open' : c.status === 'CC' ? 'return_done' : 'return_requested';
+    if (!need.includes(c.stage)) return { ok: false, retryable: false, message: `invalid stage ${c.stage}` };
+    c.stage = next;
+    this.claimActions.push({ action, receiptId, detail });
+    return { ok: true, retryable: false, message: 'SUCCESS' };
+  }
+
+  async stopShipment(receiptId: string, count: number): Promise<MarketResult> {
+    const r = this.claimStep('stopShipment', receiptId, ['stop_requested'], 'cancelled', { count });
+    if (r.ok) {
+      const c = this.claims.find((x) => x.receiptId === receiptId)!;
+      for (const lines of this.orders.values()) for (const l of lines) if (l.marketOrderId === c.marketOrderId && l.vendorItemId === c.vendorItemId) l.status = 'CANCELED' as any;
+    }
+    return r;
+  }
+
+  async markShippedForClaim(receiptId: string, courierCode: string, trackingNo: string): Promise<MarketResult> {
+    return this.claimStep('markShippedForClaim', receiptId, ['stop_requested'], 'return_requested', { courierCode, trackingNo });
+  }
+
+  async confirmReturn(receiptId: string, count: number): Promise<MarketResult> {
+    return this.claimStep('confirmReturn', receiptId, ['return_requested', 'return_collected'], 'return_done', { count });
+  }
+
+  sellerCancels: Array<{ marketOrderId: string; vendorItemId: string; qty: number; reason: string }> = [];
+  async cancelOrder(input: { marketOrderId: string; vendorItemId: string; qty: number; reason: 'stock' | 'address' | 'price' }): Promise<MarketResult> {
+    this.maybeFail('cancelOrder');
+    const lines = [...this.orders.values()].flat().filter((l) => l.marketOrderId === input.marketOrderId && l.vendorItemId === input.vendorItemId);
+    if (!lines.length || lines.some((l) => !['ACCEPT', 'INSTRUCT'].includes(l.status))) return { ok: false, retryable: false, message: '결제완료·상품준비중 상태가 아님' };
+    for (const l of lines) l.status = 'CANCELED' as any;
+    this.sellerCancels.push(input);
+    return { ok: true, retryable: false, message: 'OK' };
   }
 
   async predictCategory(productName: string): Promise<{ code: string; name: string } | null> {
