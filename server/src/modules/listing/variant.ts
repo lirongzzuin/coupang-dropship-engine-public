@@ -37,6 +37,8 @@ const SIZE_RE = new RegExp([
   String.raw`\d+(?:\.\d+)?\s*(?:리터|L|ml|mL|cm|mm|m|인치|평)(?![A-Za-z])`,
   String.raw`(?<![A-Za-z])(?:XXS|XS|S|M|L|XL|XXL|XXXL|[2-5]XL|FREE|F)(?:\(\d+\))?(?![A-Za-z])`,
   String.raw`(?:초|특|왕)?(?:소|중|대)형`,
+  // 한 글자 소·중·대가 따로 쓰인 경우(예: "목욕가방 소 S10952") — 앞뒤가 글자면 제외(findSize 경계)
+  '소', '중', '대',
   '미니', '점보', '특대', '슈퍼싱글', '싱글', '더블', '퀸', '킹',
 ].map((p) => `(?:${p})`).join('|'));
 

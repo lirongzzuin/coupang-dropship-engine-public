@@ -101,6 +101,10 @@ describe('구매옵션 값(색상·사이즈) 찾기', () => {
     expect(findSize('반팔티 2XL 블랙')).toBe('2XL');
     expect(findSize('리빙박스 30 x 40 cm')).toBe('30x40cm');
     expect(findSize('LED 무드등')).toBeNull();
+    // 실제 쿠팡 상품(세면파우치): 모델번호 S10952 의 S 는 사이즈가 아님, 따로 쓴 '소'가 사이즈
+    expect(findSize('방수 워시백 목욕가방 소 S10952 블랙')).toBe('소');
+    expect(findSize('대용량 수납함')).toBeNull();
+    expect(findSize('중국산 바구니')).toBeNull();
     expect(findSize('대형마트 장바구니')).toBeNull();
   });
 

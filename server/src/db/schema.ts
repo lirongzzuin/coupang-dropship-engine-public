@@ -139,7 +139,14 @@ export interface ListingsTable {
   /** 마지막 주문 가능 점검(공급처 주문 시뮬레이션) 시각 */
   order_checked_at: TsNull;
   /** 판매중지 시각(장기 판매불가 정리 기준) */
-  paused_at: TsNull;}
+  paused_at: TsNull;
+  /** 상품 설정 자동 수정: null | requested(쿠팡 심사 중) | failed */
+  repair_state: string | null;
+  repair_note: string | null;
+  repair_requested_at: TsNull;
+  repair_attempts: Generated<number>;
+  /** 수정이 승인되면 판매 재개(설정 오류로 멈춘 상품) */
+  repair_resume: Generated<boolean>;}
 
 export interface ListingItemsTable {
   id: Generated<number>;

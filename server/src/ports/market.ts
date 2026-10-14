@@ -150,6 +150,10 @@ export interface MarketPort {
   resumeSale(vendorItemId: string): Promise<MarketResult>;
   /** 옵션의 실제 판매 상태(쿠팡 기준). 확인할 수 없으면 null */
   getItemSaleState?(vendorItemId: string): Promise<ItemSaleState | null>;
+  /** 등록상품 전체 정보(상품 조회 API 응답 data 그대로) — 상품 수정은 이 JSON에서 값만 바꿔 다시 보냄 */
+  getProductDetail?(sellerProductId: string): Promise<Record<string, any> | null>;
+  /** 상품 수정(승인필요): 조회한 전체 JSON에서 값만 바꿔 전송 → 쿠팡 재심사 후 반영 */
+  updateProduct?(body: Record<string, any>): Promise<MarketResult>;
   // ── 정산·CS ──
   listRevenue(fromDate: string, toDate: string): Promise<RevenueLine[]>;
   listInquiries(from: Date, to: Date): Promise<MarketInquiry[]>;

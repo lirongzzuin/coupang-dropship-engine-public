@@ -149,10 +149,35 @@ export class FakeMarket implements MarketPort {
 
   /** 테스트: 심사 승인 처리 */
   /** 승인: 옵션마다 옵션ID 발급. 반환값은 첫 옵션(1개) ID */
+  /** 테스트: 상품 수정 요청 기록 */
+  updates: Array<Record<string, any>> = [];
+
+  async getProductDetail(sellerProductId: string): Promise<Record<string, any> | null> {
+    this.maybeFail('getProductDetail');
+    const p = this.products.get(sellerProductId);
+    if (!p) return null;
+    const statusName = { APPROVED: '승인완료', IN_REVIEW: '심사중', REJECTED: '승인반려', DRAFT: '임시저장', UNKNOWN: '' }[p.status];
+    const items = (p.payload?.items ?? []).map((it: any, i: number) => ({ ...structuredClone(it), sellerProductItemId: 9000 + i, vendorItemId: p.vendorItemIds[i] ?? null }));
+    return { ...structuredClone(p.payload ?? {}), sellerProductId, statusName, items };
+  }
+
+  async updateProduct(body: Record<string, any>): Promise<MarketResult> {
+    this.maybeFail('updateProduct');
+    const p = this.products.get(String(body.sellerProductId));
+    if (!p) return { ok: false, retryable: false, message: '상품 없음' };
+    this.updates.push(structuredClone(body));
+    const { sellerProductId: _id, statusName: _s, ...rest } = body;
+    p.payload = { ...rest, items: (body.items ?? []).map(({ sellerProductItemId: _a, vendorItemId: _b, ...it }: any) => it) };
+    p.status = 'IN_REVIEW';
+    return { ok: true, retryable: false, message: 'SUCCESS' };
+  }
+
   approve(sellerProductId: string): string {
     const p = this.products.get(sellerProductId);
     if (!p) throw new Error('no product');
     p.status = 'APPROVED';
+    // 수정 후 재승인: 옵션ID는 그대로
+    if (p.vendorItemIds.length && p.vendorItemIds.length === (p.payload?.items?.length ?? 1)) return p.vendorItemIds[0]!;
     const payloadItems: any[] = p.payload?.items?.length ? p.payload.items : [{}];
     p.vendorItemIds = payloadItems.map((it) => {
       const vi = `VI${++this.seq}`;
