@@ -77,8 +77,8 @@ export class CoupangMarket implements MarketPort {
             vendorItemId: Number(input.vendorItemId),
             deliveryCompanyCode: input.courierCode,
             invoiceNumber: input.trackingNo,
-            splitShipping: false,
-            preSplitShipped: false,
+            splitShipping: !!input.splitShipping,
+            preSplitShipped: !!input.preSplitShipped,
             estimatedShippingDate: '',
           },
         ],
@@ -110,6 +110,29 @@ export class CoupangMarket implements MarketPort {
           });
         }
       }
+    }
+    // 교환 요청(실측 2026-10-14: v4 exchangeRequests 200 OK) — 별도 API라 따로 조회
+    const sec = (d: Date) => `${kstIsoMinute(d).slice(0, 16)}:00`;
+    let nextToken: string | undefined;
+    for (let page = 0; page < 20; page++) {
+      const res = await this.client.request('GET', `${OPEN}/v4/vendors/${this.v}/exchangeRequests`, { query: { createdAtFrom: sec(from), createdAtTo: sec(to), maxPerPage: 50, nextToken } });
+      for (const r of res?.data ?? []) {
+        const items: any[] = r.exchangeItemDtoV1s ?? r.exchangeItems ?? [{}];
+        for (const it of items) {
+          const vid = it.originalVendorItemId ?? it.vendorItemId ?? r.vendorItemId;
+          out.push({
+            receiptId: String(r.exchangeId ?? r.receiptId ?? ''),
+            marketOrderId: String(r.orderId),
+            vendorItemId: vid ? String(vid) : undefined,
+            type: 'EXCHANGE',
+            status: String(r.exchangeStatus ?? r.status ?? ''),
+            reason: [r.reasonCodeText ?? r.reasonCode, r.reasonEtcDetail].filter(Boolean).join(' / '),
+            requestedAt: new Date(r.createdAt ? `${String(r.createdAt).slice(0, 19)}+09:00` : Date.now()),
+          });
+        }
+      }
+      nextToken = res?.nextToken || undefined;
+      if (!nextToken) break;
     }
     return out;
   }
@@ -266,6 +289,24 @@ export class CoupangMarket implements MarketPort {
           content: String(c.content ?? ''),
           askedAt: new Date(c.inquiryAt ?? Date.now()),
           answered: (c.commentDtoList ?? []).length > 0,
+        });
+      }
+      const p = res?.data?.pagination;
+      if (!p || p.currentPage >= p.totalPages) break;
+    }
+    // 쿠팡 고객센터 이관 문의(실측 2026-10-14: v4 callCenterInquiries 200 OK) — 쿠팡 상담원이 넘긴 급한 문의
+    for (let page = 1; page <= 10; page++) {
+      const res = await this.client.request('GET', `${OPEN}/v4/vendors/${this.v}/callCenterInquiries`, {
+        query: { vendorId: this.v, partnerCounselingStatus: 'NO_ANSWER', inquiryStartAt: kstDate(from), inquiryEndAt: kstDate(to), pageNum: page, pageSize: 30 },
+      });
+      for (const c of res?.data?.content ?? []) {
+        out.push({
+          inquiryId: String(c.inquiryId),
+          kind: 'callcenter',
+          vendorItemId: c.vendorItemId ? String(c.vendorItemId) : undefined,
+          content: String(c.content ?? c.inquiryContent ?? ''),
+          askedAt: new Date(c.inquiryAt ?? c.createdAt ?? Date.now()),
+          answered: false,
         });
       }
       const p = res?.data?.pagination;

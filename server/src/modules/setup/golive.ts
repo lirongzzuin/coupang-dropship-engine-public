@@ -20,6 +20,9 @@ export async function goLiveReadiness(ctx: AppContext, opts: { fetchImpl?: typeo
   const f = opts.fetchImpl ?? fetch;
 
   add('긴급 정지 해제', !s.killSwitch, true, s.killSwitch ? '관리 화면에서 긴급 정지를 해제하세요' : '정상');
+  const { safetyStatus } = await import('../guard/safety.js');
+  const safety = await safetyStatus(ctx);
+  add('안전장치(자동 판매 중지)', !safety.halt, true, safety.halt ? `판매 중지 중: ${safety.halt.reason.slice(0, 80)} — 해결 후 resume-sales.sh` : s.safety.autoHalt ? `켜짐 — 문제 감지 후 ${s.safety.graceHours}시간 내 미해결 시 자동 판매 중지` : '꺼짐(설정 > safety.autoHalt)');
   add('텔레그램 알림', !!(ctx.env.TELEGRAM_BOT_TOKEN && ctx.env.TELEGRAM_CHAT_ID), true, '예외 주문·할 일을 알려주는 유일한 통로');
 
   const c = s.coupang;

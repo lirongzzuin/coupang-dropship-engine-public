@@ -4,6 +4,8 @@ import { type AppContext, audit } from '../../context.js';
 import type { ListingRow, SourceProductRow } from '../../db/schema.js';
 import { errMessage } from '../../lib/util.js';
 import { detailOf } from '../catalog.js';
+import { getHalt, HALT_REASON } from '../guard/safety.js';
+import { pauseListing } from './control.js';
 import { initialMarkup, targetMarkup, targetPrice } from '../pricing/pricing.js';
 import { getItems, planItems, saveItems } from './items.js';
 import { buildCoupangPayload, supportsBundles } from './payload.js';
@@ -114,6 +116,7 @@ export async function validateListing(ctx: AppContext, l: ListingRow): Promise<s
 export async function registerListing(ctx: AppContext, id: number, actor = 'system'): Promise<ListingRow> {
   const s = await ctx.settings.get();
   if (s.killSwitch) throw new ListingError('긴급 정지 중입니다');
+  if (await getHalt(ctx)) throw new ListingError('안전장치로 판매 중지 중입니다(관리 화면 [판매 재개] 후 등록)');
   let l = await ctx.db.selectFrom('listings').selectAll().where('id', '=', id).executeTakeFirst();
   if (!l) throw new ListingError('등록 상품 없음');
   if (l.status !== 'draft' && l.status !== 'rejected') throw new ListingError(`등록할 수 없는 상태: ${l.status}`);
@@ -171,6 +174,12 @@ export async function refreshListingStatuses(ctx: AppContext): Promise<{ approve
         const base = items.find((i) => i.unit_qty === 1)?.vendor_item_id ?? st.vendorItemIds[0]!;
         await ctx.db.updateTable('listings').set({ status: 'active', vendor_item_id: base, listed_at: ctx.clock.now(), price_set_at: ctx.clock.now(), updated_at: ctx.clock.now() }).where('id', '=', l.id).execute();
         approved++;
+        // 판매 중지 중에 승인된 상품은 바로 멈춤(재개 시 함께 재개)
+        if (await getHalt(ctx)) {
+          const fresh = await ctx.db.selectFrom('listings').selectAll().where('id', '=', l.id).executeTakeFirstOrThrow();
+          await pauseListing(ctx, fresh, HALT_REASON);
+          continue;
+        }
         await ctx.notifications.notify('info', '상품 판매 시작', `${l.title} (${l.sale_price.toLocaleString()}원)`, { path: `/listings` });
       } else if (st.status === 'REJECTED') {
         await ctx.db.updateTable('listings').set({ status: 'rejected', status_reason: `쿠팡 승인 반려(${st.rawStatus}) — Wing에서 사유 확인`, updated_at: ctx.clock.now() }).where('id', '=', l.id).execute();

@@ -18,6 +18,7 @@ interface Dash {
   dryRun: boolean;
   live: Record<string, boolean>;
 }
+interface Safety { halt: { reason: string; at: string; by: 'auto' | 'manual' } | null; issues: Array<{ key: string; message: string; fix: string; since: string }> }
 interface LP { listingId: number; title: string; salePrice: number; markup: number; status: string; orders: number; revenue: number; expectedProfit: number; settledProfit: number }
 interface Noti { id: number; level: string; title: string; body: string; link: string | null; at: string }
 
@@ -25,6 +26,7 @@ export function Dashboard() {
   const d = useLoad<Dash>('/api/dashboard');
   const n = useLoad<Noti[]>('/api/notifications');
   const lp = useLoad<LP[]>('/api/finance/listings?days=30');
+  const sf = useLoad<Safety>('/api/safety');
   const act = useAction();
   const x = d.data;
   return (
@@ -37,6 +39,26 @@ export function Dashboard() {
             {Object.entries(x.live).filter(([, v]) => v).map(([k]) => <Badge key={k} tone="blue">LIVE {k}</Badge>)}
             {x.killSwitch && <Badge tone="red">긴급 정지 중</Badge>}
           </div>
+          {sf.data?.halt && (
+            <Card title="🛑 판매 중지 중(안전장치)">
+              <div>사유: {sf.data.halt.reason}</div>
+              <div className="muted small">{sf.data.halt.by === 'auto' ? '자동' : '수동'} · {dt(sf.data.halt.at)} · 새 주문이 들어오지 않도록 쿠팡 판매를 멈췄습니다. 이미 결제된 주문은 계속 처리합니다.</div>
+              <div className="row">
+                <button className="btn primary" disabled={act.busy} onClick={() => void act.run(() => api.post('/api/safety/resume', {}).then(() => { sf.reload(); d.reload(); }), '판매를 재개했습니다')}>문제 해결 — 판매 재개</button>
+              </div>
+            </Card>
+          )}
+          {(sf.data?.issues ?? []).length > 0 && (
+            <Card title={`⚠️ 해결할 문제 ${sf.data!.issues.length}건`}>
+              {sf.data!.issues.map((i) => (
+                <div key={i.key} className="event">
+                  <b>{i.message}</b>
+                  <div className="small">→ {i.fix}</div>
+                  <div className="muted small">감지 {dt(i.since)}{!sf.data!.halt ? ' · 해결하지 않으면 자동으로 판매 중지' : ''}</div>
+                </div>
+              ))}
+            </Card>
+          )}
           <div className="grid2">
             <Link to="/orders?view=action" className={`stat ${x.actionCount ? 'hot' : ''}`}><span>구매·결제 할 일</span><b>{x.actionCount}</b></Link>
             <Link to="/orders?view=exception" className={`stat ${x.exceptionCount ? 'warn' : ''}`}><span>예외</span><b>{x.exceptionCount}</b></Link>

@@ -113,6 +113,11 @@ export async function sendDailyReport(ctx: AppContext): Promise<string> {
   for (const b of bad.slice(0, 5)) L.push(`  · ❌ ${b}`);
   const liveOn = Object.entries(d.live).filter(([, v]) => v).map(([k]) => ({ listing: '등록', pricing: '가격', fulfillment: '송장', ordering: '발주', cs: '문의' })[k as 'listing']);
   L.push(`  · 운영 모드: ${d.dryRun ? '모의 실행(실제 반영 없음)' : `실제 운영 — 켜진 기능: ${liveOn.join('·') || '없음'}`}`);
+  const { safetyStatus } = await import('../guard/safety.js');
+  const safety = await safetyStatus(ctx);
+  if (safety.halt) L.push(`  · 🛑 판매 중지 중(${safety.halt.by === 'auto' ? '자동 안전장치' : '수동'}): ${safety.halt.reason.slice(0, 80)}`);
+  for (const i of safety.issues.slice(0, 5)) L.push(`  · ⚠️ ${i.message.slice(0, 80)} → ${i.fix.slice(0, 60)}`);
+  if (!safety.halt && !safety.issues.length) L.push('  · 🛡️ 안전장치: 문제 없음');
 
   // 2) 실적
   L.push('', '📈 실적');
@@ -224,7 +229,17 @@ export async function watchdog(ctx: AppContext): Promise<{ alerts: number }> {
   alerts += await checkPublicIp(ctx);
   // 외부 생존 신호: 주문 수집이 정상일 때만 보냄(멈췄으면 외부 서비스가 알림)
   const pollOk = !ref || now.getTime() - new Date(ref).getTime() <= staleMs;
-  if (ctx.env.HEARTBEAT_URL && pollOk) {
+  // 텔레그램이 안 가면 모든 경고가 묻힘 → 최근 1시간 알림이 전부 실패면 외부 감시(healthchecks)에 실패 신호(이메일 알림)
+  const recent = await ctx.db.selectFrom('notifications').select('delivered').where('at', '>=', new Date(now.getTime() - 3600_000)).execute();
+  const notifyBroken = recent.length >= 2 && recent.every((r) => !r.delivered);
+  if (ctx.env.HEARTBEAT_URL && notifyBroken) {
+    try {
+      await fetch(`${ctx.env.HEARTBEAT_URL.replace(/\/$/, '')}/fail`, { method: 'POST', body: '텔레그램 알림 전송 실패 — 봇 토큰·인터넷 확인', signal: AbortSignal.timeout(10_000) });
+    } catch (e) {
+      ctx.log.warn({ err: String(e) }, '실패 신호 전송 실패');
+    }
+  }
+  if (ctx.env.HEARTBEAT_URL && pollOk && !notifyBroken) {
     try {
       await fetch(ctx.env.HEARTBEAT_URL, { signal: AbortSignal.timeout(10_000) });
     } catch (e) {

@@ -27,6 +27,13 @@ export async function pollInquiries(ctx: AppContext): Promise<{ fetched: number;
       .executeTakeFirst();
     if (!ins) continue;
     fetched++;
+    // 쿠팡 고객센터 이관 문의는 사람이 직접(자동 답변 금지, 바로 알림)
+    if (q.kind === 'callcenter') {
+      await ctx.db.updateTable('inquiries').set({ status: 'drafted', draft: '' }).where('id', '=', ins.id).execute();
+      await ctx.notifications.notify('action', '쿠팡 고객센터 문의(급함)', `${q.content.slice(0, 200)}\nWing > 고객센터 문의에서 답변하세요(쿠팡 상담원이 넘긴 문의).`, { path: '/inquiries' });
+      drafted++;
+      continue;
+    }
     const tpl = classify(q.content, s.cs.templates);
     if (tpl && s.cs.autoReplyTemplates && !s.killSwitch) {
       const r = await ctx.market.replyInquiry({ inquiryId: q.inquiryId, kind: q.kind }, tpl.reply);
@@ -38,6 +45,12 @@ export async function pollInquiries(ctx: AppContext): Promise<{ fetched: number;
     }
     await ctx.db.updateTable('inquiries').set({ status: 'drafted', draft: tpl?.reply ?? '' }).where('id', '=', ins.id).execute();
     drafted++;
+  }
+  // Wing에서 직접 답변한 문의는 미답변 목록에서 빠짐 → 우리 기록도 답변됨으로(재알림 중단)
+  const open = new Set(list.filter((q) => !q.answered).map((q) => `${q.kind}:${q.inquiryId}`));
+  const mine = await ctx.db.selectFrom('inquiries').select(['id', 'kind', 'market_inquiry_id']).where('status', 'in', ['new', 'drafted']).where('asked_at', '>=', addDays(now, -6)).execute();
+  for (const m of mine) {
+    if (!open.has(`${m.kind}:${m.market_inquiry_id}`)) await ctx.db.updateTable('inquiries').set({ status: 'answered', answer: '(Wing에서 답변)', answered_at: now }).where('id', '=', m.id).execute();
   }
   if (drafted) await ctx.notifications.notify('action', `고객문의 ${drafted}건 답변 필요`, '자동 답변하지 않은 문의가 있습니다(불만/환불/기타).', { path: '/inquiries' });
   return { fetched, autoAnswered, drafted };

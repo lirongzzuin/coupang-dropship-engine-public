@@ -321,6 +321,8 @@ export const settingsSchema = z.object({
       /** 공급처 주문의 보내는 사람(택배 송장에 표시) — 비우면 받는 분 이름·쿠팡 고객센터 번호 */
       senderName: z.string().default(''),
       senderPhone: z.string().default(''),
+      /** 이 금액 이하의 소액 손실 주문은 구매자 보호를 위해 그대로 발주(상품은 판매중지 후 가격 재조정) */
+      maxAutoLossKrw: z.number().int().default(2000),
       perOrderMaxCost: z.number().int().default(100000),
       dailyMaxCost: z.number().int().default(500000),
       /** 구매 작업 미처리 경고(시간) */
@@ -340,6 +342,26 @@ export const settingsSchema = z.object({
         천일택배: 'CHUNIL', 합동택배: 'HDEXP', CVS택배: 'CVS', GS편의점택배: 'CVS',
         농협택배: 'NHLOGIS', 건영택배: 'KUNYOUNG', 드림택배: 'DONGBU',
       }),
+    })
+    .default({}),
+
+  /** 자동 안전장치(구매자 보호): 문제 감지 → 경고 → 유예 후 자동 판매 중지 */
+  safety: z
+    .object({
+      autoHalt: z.boolean().default(true),
+      /** 경고 후 이 시간 안에 해결되지 않으면 자동 판매 중지 */
+      graceHours: z.number().default(3),
+      /** 주문이 처리 안 된 채 이 시간 넘게 머물면 문제 */
+      stuckOrderHours: z.number().default(6),
+      /** burstWindowHours 안에 예외 주문이 burstCount 건 이상이면 즉시 판매 중지 */
+      burstCount: z.number().int().default(3),
+      burstWindowHours: z.number().default(6),
+      /** 주문 수집이 이 시간 넘게 실패하면 문제 */
+      pollDownHours: z.number().default(1),
+      /** 같은 핵심 작업이 연속 n번 실패하면 문제 */
+      jobFailStreak: z.number().int().default(3),
+      /** 해결 안 된 문제 재알림 간격 */
+      remindHours: z.number().default(3),
     })
     .default({}),
 

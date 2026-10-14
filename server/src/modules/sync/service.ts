@@ -4,6 +4,7 @@ import { addDays, errMessage, kstDate } from '../../lib/util.js';
 import { upsertSourceProduct } from '../catalog.js';
 import { pauseListing, resumeListing } from '../listing/control.js';
 import { reprice } from '../listing/items.js';
+import { getHalt } from '../guard/safety.js';
 import { computeProfit, markupCapForMarket } from '../pricing/pricing.js';
 
 /**
@@ -17,6 +18,7 @@ export async function syncListings(ctx: AppContext): Promise<{ checked: number; 
   const s = await ctx.settings.get();
   const stats = { checked: 0, paused: 0, resumed: 0, repriced: 0, errors: 0 };
   if (s.killSwitch) return stats;
+  const halted = !!(await getHalt(ctx));
   const listings = await ctx.db.selectFrom('listings').selectAll().where('status', 'in', ['active', 'paused']).execute();
   for (const l of listings) {
     if (l.status === 'paused' && l.status_reason && !['공급처 품절', '마진 역전', '공급가 상승'].includes(l.status_reason)) continue; // 수동 중지는 건드리지 않음
@@ -45,7 +47,8 @@ export async function syncListings(ctx: AppContext): Promise<{ checked: number; 
         if (await pauseListing(ctx, current, '마진 역전')) stats.paused++;
         continue;
       }
-      if (current.status === 'paused' && (await resumeListing(ctx, current))) stats.resumed++;
+      // 안전장치 판매 중지 중에는 자동 재개하지 않음
+      if (current.status === 'paused' && !halted && (await resumeListing(ctx, current))) stats.resumed++;
       if (d.stock !== null) for (const it of await ctx.db.selectFrom('listing_items').selectAll().where('listing_id', '=', l.id).execute()) {
         if (it.vendor_item_id) await ctx.market.updateQuantity(it.vendor_item_id, Math.min(Math.floor(d.stock / it.unit_qty), 999));
       }

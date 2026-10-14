@@ -118,6 +118,16 @@ export async function buildServer(ctx: AppContext, scheduler: Scheduler | null, 
     return { started: name };
   });
 
+  // 이 Mac 안에서만(resume-sales.sh / safety-status): 안전장치 상태·판매 재개
+  app.get('/healthz/safety', async (req, reply) => {
+    if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.ip) || req.headers['x-forwarded-for'] || req.headers['tailscale-user-login']) return reply.code(404).send();
+    return (await import('../modules/guard/safety.js')).safetyStatus(ctx);
+  });
+  app.post('/healthz/safety/resume', async (req, reply) => {
+    if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.ip) || req.headers['x-forwarded-for'] || req.headers['tailscale-user-login'] || req.headers['x-requested-with'] !== 'app') return reply.code(404).send();
+    return (await import('../modules/guard/safety.js')).resumeSales(ctx, 'local-script');
+  });
+
   // 이 Mac 안에서만(golive.sh): 실전 전환 준비 점검(조회만)
   app.get('/healthz/golive', async (req, reply) => {
     if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.ip) || req.headers['x-forwarded-for'] || req.headers['tailscale-user-login']) return reply.code(404).send();
@@ -349,8 +359,17 @@ export async function buildServer(ctx: AppContext, scheduler: Scheduler | null, 
       const b = z.object({ on: z.boolean() }).parse(req.body);
       await ctx.settings.update({ killSwitch: b.on });
       await audit(ctx, actor(req), 'killswitch', undefined, b);
-      await ctx.notifications.notify(b.on ? 'error' : 'info', b.on ? '긴급 정지 켜짐' : '긴급 정지 해제', b.on ? '등록·가격·발주·송장·답변이 모두 중단됩니다(주문 감지는 계속).' : '자동 운영을 재개합니다.');
+      await ctx.notifications.notify(b.on ? 'error' : 'info', b.on ? '긴급 정지 켜짐' : '긴급 정지 해제', b.on ? '등록·가격·발주·송장·답변이 모두 중단되고 쿠팡 판매도 멈춥니다(새 주문 차단, 주문 감지는 계속). 이미 들어온 주문은 직접 처리해야 합니다.' : '자동 운영을 재개합니다.');
+      // 긴급 정지 중엔 주문을 처리하지 않으므로 새 주문이 쌓이지 않게 쿠팡 판매도 멈춤
+      const { haltSales, resumeSales, getHalt } = await import('../modules/guard/safety.js');
+      if (b.on) await haltSales(ctx, '관리자 긴급 정지', 'manual');
+      else if ((await getHalt(ctx))?.by === 'manual') await resumeSales(ctx, actor(req));
       return { killSwitch: b.on };
+    });
+    api.get('/api/safety', async () => (await import('../modules/guard/safety.js')).safetyStatus(ctx));
+    api.post('/api/safety/resume', async (req) => {
+      const { resumeSales } = await import('../modules/guard/safety.js');
+      return resumeSales(ctx, actor(req));
     });
 
     // ── 시장 데이터·재무·작업 ──

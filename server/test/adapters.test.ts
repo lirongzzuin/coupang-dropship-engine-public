@@ -63,6 +63,8 @@ describe('CoupangMarket (로컬 HTTP 목 서버)', () => {
         if (p.endsWith('/revenue-history')) return send(200, { code: 200, hasNext: false, nextToken: '', data: [{ orderId: 222, saleType: 'SALE', recognitionDate: '2026-10-20', items: [{ vendorItemId: 333, saleAmount: 60000, serviceFee: 6000, serviceFeeVat: 600, settlementAmount: 53400 }], deliveryFee: { settlementAmount: 0 } }] });
         if (p.endsWith('/returnRequests')) return send(200, { code: 200, data: url.searchParams.get('cancelType') === 'CANCEL' ? [] : [{ receiptId: 9, orderId: 222, receiptType: 'RETURN', receiptStatus: 'RETURNS_UNCHECKED', createdAt: '2026-10-13T11:00:00', cancelReasonCategory1: '단순변심', cancelReason: '필요없음', returnItems: [{ vendorItemId: 333 }] }] });
         if (p.endsWith('/onlineInquiries')) return send(200, { code: 200, data: { content: [{ inquiryId: 1, vendorItemId: 333, content: '배송 언제?', inquiryAt: '2026-10-13T09:00:00+09:00', commentDtoList: [] }], pagination: { currentPage: 1, totalPages: 1 } } });
+        if (p.endsWith('/exchangeRequests')) return send(200, { code: 200, nextToken: '', data: [{ exchangeId: 77, orderId: 222, exchangeStatus: 'RECEIPT', reasonCode: '사이즈 교환', createdAt: '2026-10-13T10:00:00', exchangeItemDtoV1s: [{ originalVendorItemId: 333 }] }] });
+        if (p.endsWith('/callCenterInquiries')) return send(200, { code: 200, data: { content: [{ inquiryId: 5, content: '배송이 너무 늦어요', inquiryAt: '2026-10-13T08:00:00+09:00' }], pagination: { currentPage: 1, totalPages: 1 } } });
         if (p.endsWith('/replies')) return send(200, { code: 200, message: 'OK' });
         send(404, { message: 'nf' });
       });
@@ -121,8 +123,10 @@ describe('CoupangMarket (로컬 HTTP 목 서버)', () => {
     expect(rev[0]).toMatchObject({ marketOrderId: '222', vendorItemId: '333', saleType: 'SALE', serviceFee: 6000, settlementAmount: 53400 });
     const claims = await m.listClaims(new Date('2026-10-12T00:00:00Z'), new Date('2026-10-13T12:00:00Z'));
     expect(claims[0]).toMatchObject({ type: 'RETURN', marketOrderId: '222', vendorItemId: '333' });
+    expect(claims.find((c) => c.type === 'EXCHANGE')).toMatchObject({ receiptId: '77', marketOrderId: '222', vendorItemId: '333' });
     const inq = await m.listInquiries(new Date('2026-10-10T00:00:00Z'), new Date('2026-10-13T00:00:00Z'));
     expect(inq[0]).toMatchObject({ inquiryId: '1', kind: 'product', answered: false });
+    expect(inq.find((i) => i.kind === 'callcenter')).toMatchObject({ inquiryId: '5', content: '배송이 너무 늦어요' });
     expect((await m.replyInquiry({ inquiryId: '1', kind: 'product' }, '안녕하세요')).ok).toBe(true);
     expect(seen.at(-1)!.body).toEqual({ content: '안녕하세요', vendorId: 'A001', replyBy: 'wingid' });
   });

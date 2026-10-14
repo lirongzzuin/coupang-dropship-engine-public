@@ -39,6 +39,10 @@ export interface InvoiceInput {
   vendorItemId: string;
   courierCode: string;
   trackingNo: string;
+  /** 한 묶음배송(shipmentBox)에 상품이 여럿이고 따로 보낼 때(공급처가 다름) */
+  splitShipping?: boolean;
+  /** 같은 묶음의 다른 상품 송장이 이미 등록됨 */
+  preSplitShipped?: boolean;
 }
 
 export interface MarketResult {

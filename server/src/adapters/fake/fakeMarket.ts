@@ -87,10 +87,12 @@ export class FakeMarket implements MarketPort {
     this.maybeFail('uploadInvoice');
     const lines = this.orders.get(input.shipmentBoxId);
     if (!lines) return { ok: false, retryable: false, message: 'NOT_FOUND_SHIPMENT_BOX' };
-    if (lines.some((l) => l.status !== 'INSTRUCT')) return { ok: false, retryable: false, message: 'INVALID_STATUS' };
+    // 분리배송이면 해당 상품만, 아니면 묶음 전체가 대상
+    const target = input.splitShipping ? lines.filter((l) => l.vendorItemId === input.vendorItemId) : lines;
+    if (!target.length || target.some((l) => l.status !== 'INSTRUCT')) return { ok: false, retryable: false, message: 'INVALID_STATUS' };
     if (!/^\d{8,14}$/.test(input.trackingNo)) return { ok: false, retryable: true, message: 'INVALID_INVOICE_NUMBER' };
     this.invoices.push(input);
-    lines.forEach((l) => {
+    target.forEach((l) => {
       l.status = 'DEPARTURE';
       l.invoiceNumber = input.trackingNo;
     });

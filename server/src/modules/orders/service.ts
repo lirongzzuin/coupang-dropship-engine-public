@@ -181,7 +181,11 @@ export async function processOrder(ctx: AppContext, orderId: number, opts: { ove
   o = await ctx.db.updateTable('orders').set({ expected_cost: cost + shipping, expected_profit: breakdown.profit }).where('id', '=', o.id).returningAll().executeTakeFirstOrThrow();
 
   if (!opts.override) {
-    if (breakdown.profit < 0) {
+    if (breakdown.profit < 0 && breakdown.profit >= -s.orders.maxAutoLossKrw) {
+      // 소액 손실: 구매자가 기다리지 않게 그대로 발주하고, 더 팔리지 않게 상품만 멈춤(동기화가 가격 재조정 후 재개)
+      await pauseListing(ctx, listing, '마진 역전');
+      await ctx.notifications.notify('warn', '소액 손실 주문 — 그대로 발송', `${o.item_name}: 예상 손익 ${breakdown.profit.toLocaleString()}원(허용 ${s.orders.maxAutoLossKrw.toLocaleString()}원 이내). 구매자 보호를 위해 발주하고 상품은 판매중지했습니다(가격 재조정 후 자동 재개).`, { path: `/orders/${o.id}` });
+    } else if (breakdown.profit < 0) {
       await pauseListing(ctx, listing, '마진 역전');
       await ctx.notifications.notify('error', '마진 역전 주문', `${o.item_name}: 예상 손익 ${breakdown.profit.toLocaleString()}원. 상품 판매중지함.`, { path: `/orders/${o.id}` });
       return transition(ctx, o, 'MARGIN_NEGATIVE', `예상 손익 ${breakdown.profit}원`, actor);
@@ -358,7 +362,13 @@ export async function submitTracking(ctx: AppContext, orderId: number, courier: 
     await ctx.notifications.notify('action', '송장 직접 입력 필요', `${o.item_name}: ${courier} ${no}\nWing 주문관리에서 송장을 입력하세요(LIVE_FULFILLMENT=false).`, { path: `/orders/${o.id}`, dedupeKey: `manual-invoice-${o.id}`, dedupeMinutes: 720 });
     return o.status === 'MANUAL_REVIEW' ? o : transition(ctx, o, 'MANUAL_REVIEW', '송장 직접 입력 필요(자동 등록 꺼짐)', actor);
   }
-  const res = await ctx.market.uploadInvoice({ shipmentBoxId: o.shipment_box_id, marketOrderId: o.market_order_id, vendorItemId: o.vendor_item_id, courierCode: code, trackingNo: no });
+  // 같은 묶음배송에 다른 상품이 있으면(공급처별로 따로 출고) 분리배송으로 등록
+  const siblings = await ctx.db.selectFrom('orders').select(['status']).where('shipment_box_id', '=', o.shipment_box_id).where('id', '!=', o.id).execute();
+  const res = await ctx.market.uploadInvoice({
+    shipmentBoxId: o.shipment_box_id, marketOrderId: o.market_order_id, vendorItemId: o.vendor_item_id, courierCode: code, trackingNo: no,
+    splitShipping: siblings.length > 0,
+    preSplitShipped: siblings.some((x) => ['TRACKING_UPLOADED', 'IN_TRANSIT', 'DELIVERED', 'SETTLED'].includes(x.status)),
+  });
   if (res.ok) return transition(ctx, o, 'TRACKING_UPLOADED', res.dryRun ? 'DRY_RUN 송장 업로드' : '송장 업로드', actor, { tracking_uploaded_at: ctx.clock.now() });
   if (res.retryable) {
     ctx.log.warn({ order: o.id, msg: res.message }, '송장 업로드 재시도 예정');
@@ -473,6 +483,15 @@ export async function pollClaims(ctx: AppContext): Promise<{ claims: number }> {
     const orders = await q.execute();
     for (const o of orders) {
       const st = o.status as OrderStatus;
+      if (c.type === 'EXCHANGE') {
+        // 교환: 상태 변경 없이 1회 알림(공급처 교환 접수·Wing 처리 필요)
+        const seenKey = `claim.exchange.${c.receiptId}.${o.id}`;
+        if (await ctx.kv.get(seenKey)) continue;
+        await ctx.kv.set(seenKey, true);
+        await ctx.notifications.notify('action', '교환 요청', `${o.item_name}: ${c.reason || '사유 없음'}\n① 오너클랜에서 교환 접수(공급처 주문 ${o.source_order_id ?? '-'}) ② Wing 교환 관리에서 처리`, { path: `/orders/${o.id}` });
+        n++;
+        continue;
+      }
       if (c.type === 'CANCEL') {
         if (['CANCELLED', 'CANCEL_REQUESTED', 'RETURNED'].includes(st)) continue;
         // 아직 구매 전이면 그대로 취소 처리(구매 불필요)

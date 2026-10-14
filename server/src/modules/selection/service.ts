@@ -5,6 +5,7 @@ import { createDraftFromCandidate, registerListing } from '../listing/service.js
 import { pickKeywordsForRun, recordKeywordResults } from '../keywords/service.js';
 import { targetPrice } from '../pricing/pricing.js';
 import { DEFAULT_MODEL, expectedMonthly, keywordMatches, learnedFactor, looksBranded, looksBulk, median, productFamily, profitScore, rankScore, salesScore } from './demandModel.js';
+import { getHalt } from '../guard/safety.js';
 import { evaluateGates, type KeywordSignals, marketReference, productMarketReference, monthlySlope, scoreCandidate, trendSlope } from './scoring.js';
 
 /**
@@ -318,7 +319,8 @@ export async function runSelection(ctx: AppContext, opts: { keywords?: string[] 
   await ctx.db.updateTable('candidates').set({ status: 'expired' }).where('status', '=', 'new').where('run_id', '!=', runId).execute();
 
   let auto: AutoListOutcome | null = null;
-  if (s.selection.mode === 'auto' && !s.killSwitch) {
+  // 안전장치로 판매 중지 중이면 새 상품도 올리지 않음
+  if (s.selection.mode === 'auto' && !s.killSwitch && !(await getHalt(ctx))) {
     auto = await autoList(ctx, runId);
     const listedKws = auto.listed.map((x) => x.keyword);
     result.autoListed = listedKws.length;

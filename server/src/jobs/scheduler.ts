@@ -8,6 +8,7 @@ import { checkDelays, pollClaims, pollFulfillment, pollNewOrders, processPending
 import { sendDailyReport, watchdog } from '../modules/reports/service.js';
 import { runSelection } from '../modules/selection/service.js';
 import { syncShippingPlaces } from '../modules/setup/coupangPlaces.js';
+import { safetyCheck } from '../modules/guard/safety.js';
 import { discoverKeywords } from '../modules/keywords/service.js';
 import { optimizePrices, reviewSlowListings, scoutCheaperSources, syncListings } from '../modules/sync/service.js';
 
@@ -64,7 +65,11 @@ export const JOBS: JobDef[] = [
     run: sendDailyReport,
   },
   { name: 'setup.coupangPlaces', label: '쿠팡 출고지·반품지 자동 설정', intervalMs: () => 6 * 3600_000, run: syncShippingPlaces },
-  { name: 'watchdog', label: '감시(폴링 정지·키 만료)', intervalMs: (s) => min(s.schedule.watchdogMinutes), run: watchdog },
+  {
+    name: 'watchdog', label: '감시·안전장치(문제 감지 → 자동 판매 중지)',
+    intervalMs: (s) => min(s.schedule.watchdogMinutes),
+    run: async (ctx) => ({ watchdog: await watchdog(ctx), safety: await safetyCheck(ctx) }),
+  },
 ];
 
 export class Scheduler {
