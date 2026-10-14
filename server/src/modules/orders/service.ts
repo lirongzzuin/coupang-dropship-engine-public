@@ -237,6 +237,7 @@ async function placeApiOrder(ctx: AppContext, o: OrderRow, sourceItemId: string,
     const res = await source.placeOrder!({
       idempotencyKey: key,
       sourceItemId,
+      option: (sp.detail as { defaultOption?: string } | null)?.defaultOption,
       qty: units,
       receiver: { name: r.name, phone: r.phone, addr1: r.addr1, addr2: r.addr2, zip: r.zip },
       sender: { name: s.orders.senderName || r.name, phone: s.orders.senderPhone || s.coupang.companyContactNumber || r.phone },

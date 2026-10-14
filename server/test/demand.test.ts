@@ -36,11 +36,15 @@ describe('수요 모델(순수 함수)', () => {
     expect(looksBulk('수납함 3개 세트')).toBe(false);
   });
 
-  it('가격대: 키워드 중앙가 근처가 가장 높고, 크게 벗어나면 감소', () => {
-    expect(priceBandFactor(1)).toBe(1);
-    expect(priceBandFactor(2)).toBeLessThan(0.65);
-    expect(priceBandFactor(0.5)).toBeCloseTo(priceBandFactor(2), 5);
-    expect(priceBandFactor(4)).toBeLessThan(0.2);
+  it('가격 경쟁력: 비슷한 상품보다 쌀수록↑ 비쌀수록↓, 시장 최저가 대비, 더 싼 같은 상품 존재 시↓', async () => {
+    const { priceCompetitiveness } = await import('../src/modules/selection/demandModel.js');
+    expect(priceCompetitiveness(1)).toBe(1);
+    expect(priceCompetitiveness(0.7)).toBeCloseTo(1.09, 2); // 중앙가보다 30% 쌈 → 가점
+    expect(priceCompetitiveness(2)).toBeCloseTo(0.5, 5);
+    expect(priceCompetitiveness(3)).toBeLessThan(0.2);
+    expect(priceCompetitiveness(1, 0.95)).toBeCloseTo(1.3, 5); // 쿠팡 최저가 이하
+    expect(priceCompetitiveness(1, 1.3)).toBeLessThan(0.6); // 최저가보다 30% 비쌈
+    expect(priceCompetitiveness(1, undefined, true)).toBeCloseTo(0.7, 5); // 같은 상품을 더 싸게 들여오는 곳 있음
     expect(priceBandFactor(undefined)).toBe(0.9);
   });
 
@@ -272,5 +276,54 @@ describe('묶음 옵션과 카테고리', () => {
     expect(supportsBundles(optQty)).toBe(true);
     expect(buildAttributes(optQty, '창문 스티커', 2).find((a) => a.attributeTypeName === '수량')!.attributeValueName).toBe('2개');
     expect(buildAttributes(noQty, '창문 스티커', 1).some((a) => a.attributeTypeName === '수량')).toBe(false);
+  });
+});
+
+describe('쿠팡 실측 반영', () => {
+  it('옵션값: 의미 없는 "상세페이지 참조" 대신 기본 옵션 색상·멀티·FREE, 모르는 필수 문자 속성은 건너뜀', async () => {
+    const { buildAttributes, AttributeError } = await import('../src/modules/listing/payload.js');
+    const meta = { code: '1', notices: [], requiredAttributes: ['색상', '사이즈'], requiredAttributeSpecs: [{ name: '색상', dataType: 'STRING' }, { name: '사이즈', dataType: 'STRING' }], attributeNames: ['색상', '사이즈'] };
+    expect(buildAttributes(meta, '창문 스티커', 1)).toEqual([{ attributeTypeName: '색상', attributeValueName: '멀티' }, { attributeTypeName: '사이즈', attributeValueName: 'FREE' }]);
+    expect(buildAttributes(meta, '창문 스티커', 1, '네이비 / L')[0]!.attributeValueName).toBe('네이비');
+    const model = { ...meta, requiredAttributeSpecs: [{ name: '모델명', dataType: 'STRING' }] };
+    expect(() => buildAttributes(model, '창문 스티커', 1)).toThrow(AttributeError);
+  });
+
+  it('오너클랜 옵션 여러 개: 가장 싼 재고 있는 옵션을 기본으로', async () => {
+    const { pickDefaultOption } = await import('../src/adapters/ownerclan/source.js');
+    expect(pickDefaultOption([{ name: '블랙', price: 9000, stock: 0 }, { name: '화이트', price: 9000, stock: 30 }, { name: '대형', price: 12000, stock: 99 }])!.name).toBe('화이트');
+  });
+
+  it('사전 점검: 쿠팡이 저장 중이라 삭제를 거부하면 잠시 후 재시도', async () => {
+    const { verifyRegistration, setVerifyRetryMs } = await import('../src/modules/listing/service.js');
+    setVerifyRetryMs(1);
+    h = await makeHarness({ live: true });
+    await h.ctx.settings.update({ selection: { mode: 'manual_approve' } });
+    h.marketData.volume.set('정리함', 20000);
+    h.apiSource.add({ sourceItemId: 'V2', title: '원목 수납 정리함', price: 16000 });
+    await runSelection(h.ctx, { keywords: ['정리함'] });
+    let calls = 0;
+    const orig = h.market.deleteProduct.bind(h.market);
+    h.market.deleteProduct = async (id: string) => (++calls < 3 ? { ok: false, retryable: true, message: '저장중' } : orig(id));
+    const r = await verifyRegistration(h.ctx);
+    expect(r).toMatchObject({ ok: true, deleted: true });
+    expect(calls).toBe(3);
+  });
+});
+
+describe('가격 경쟁력 통합', () => {
+  it('같은 상품이면 더 싸게 들여오는 공급처 쪽이 앞서고, 출고 빠른 상품이 앞섬', async () => {
+    h = await makeHarness({ live: true });
+    await h.ctx.settings.update({ selection: { mode: 'manual_approve' } });
+    h.marketData.volume.set('정리함', 18000);
+    h.apiSource.add({ sourceItemId: 'S1', title: '투명 서랍 정리함', price: 6000, prepDays: 1 });
+    h.manualSource.add({ sourceItemId: 'S2', title: '투명 서랍 정리함 블랙', price: 7500, prepDays: 1 }); // 같은 상품(색상만 다름), 더 비쌈
+    h.apiSource.add({ sourceItemId: 'S3', title: '패브릭 서랍 정리함', price: 6000, prepDays: 3 }); // 출고 느림
+    await runSelection(h.ctx, { keywords: ['정리함'] });
+    const rows = await h.ctx.db.selectFrom('candidates').innerJoin('source_products', 'source_products.id', 'candidates.source_product_id')
+      .select(['source_products.source_item_id as id', 'candidates.score']).execute();
+    const sc = (id: string) => rows.find((r) => r.id === id)!.score;
+    expect(sc('S1')).toBeGreaterThan(sc('S2'));
+    expect(sc('S1')).toBeGreaterThan(sc('S3'));
   });
 });

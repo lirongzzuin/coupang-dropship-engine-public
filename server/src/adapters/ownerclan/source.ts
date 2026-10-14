@@ -140,12 +140,20 @@ export class OwnerclanSource implements SourceAdapter {
     const it = data?.item;
     if (!it) return null;
     const s = toSummary(it);
-    const stock = (it.options ?? []).reduce((a: number, o: any) => a + (Number(o.quantity) || 0), 0);
+    const opts = (it.options ?? []).map((o: any) => ({
+      name: (o.optionAttributes ?? []).map((a: any) => a.value).filter(Boolean).join(' / '),
+      price: Math.round(o.price ?? it.price),
+      stock: o.quantity ?? null,
+    }));
+    // 옵션이 여러 개면 기본 옵션 하나를 정해 그 가격·재고로 판매하고 그 옵션으로 발주(옵션 미지정 발주 실패 방지)
+    const def = opts.length > 1 ? pickDefaultOption(opts) : undefined;
+    const stock = def ? Number(def.stock ?? 0) : (it.options ?? []).reduce((a: number, o: any) => a + (Number(o.quantity) || 0), 0);
     const status: SourceProductDetail['status'] =
       it.status === 'available' ? (stock > 0 || !(it.options ?? []).length ? 'active' : 'soldout')
         : it.status === 'discontinued' ? 'ended' : 'soldout';
     return {
       ...s,
+      ...(def ? { price: def.price, defaultOption: def.name } : {}),
       status,
       stock: (it.options ?? []).length ? stock : null,
       categoryPath: it.category?.fullName ?? it.category?.name,
@@ -167,11 +175,7 @@ export class OwnerclanSource implements SourceAdapter {
         { name: '제조국(원산지)', value: it.origin ?? '상세페이지 참조' },
         { name: '제조자(수입자)', value: it.production ?? '상세페이지 참조' },
       ] },
-      options: (it.options ?? []).map((o: any) => ({
-        name: (o.optionAttributes ?? []).map((a: any) => a.value).filter(Boolean).join(' / '),
-        price: Math.round(o.price ?? it.price),
-        stock: o.quantity ?? null,
-      })),
+      options: opts,
     };
   }
 
@@ -244,4 +248,10 @@ function toSummary(it: any): SourceProductSummary {
     price: Math.round(it.price ?? 0),
     shippingFee: it.shippingType === 'free' ? 0 : Math.round(it.shippingFee ?? 0),
   };
+}
+
+/** 재고 있는 옵션 중 가장 싼 것, 같으면 재고 많은 것 */
+export function pickDefaultOption<T extends { name: string; price: number; stock: number | null }>(opts: T[]): T | undefined {
+  const inStock = opts.filter((o) => o.name && (o.stock === null || o.stock > 0));
+  return [...(inStock.length ? inStock : opts)].sort((a, b) => a.price - b.price || (b.stock ?? 0) - (a.stock ?? 0))[0];
 }

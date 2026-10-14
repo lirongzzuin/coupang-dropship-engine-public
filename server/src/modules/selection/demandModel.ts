@@ -16,6 +16,10 @@ export interface DemandInput {
   competition?: string | null;
   /** 이 상품 공급가 / 키워드 공급가 중앙값 */
   priceRatio?: number;
+  /** 판매가 / 시장 최저가(쿠팡·11번가, 알 때만) */
+  marketRatio?: number;
+  /** 같은 상품(계열)을 더 싸게 파는 공급처가 있음 → 경쟁 판매자가 더 싸게 팔 수 있음 */
+  undercutBySameProduct?: boolean;
   /** 월별 검색량 추이 기울기(-1~1) */
   slope?: number;
   /** 0~1: 빠른 출고·이미지·반품 등 구매 전환 요인 평균 */
@@ -52,11 +56,28 @@ export function priceAppealFactor(salePrice: number | undefined, p: Pick<DemandM
 
 const clamp = (x: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, x));
 
-/** 중앙가에서 멀수록 감소(2배 비싸면 약 0.6, 3배면 약 0.25) */
+/**
+ * 가격 경쟁력(쿠팡 이용자는 "필요한 걸 빠르고 싸게") — 비슷한 상품보다 쌀수록 ↑, 비쌀수록 ↓
+ * - 키워드 중앙가 대비: 30% 싸면 1.09, 같으면 1, 2배면 0.5, 2.5배 넘으면 추가 절반
+ * - 시장 최저가(알 때) 대비 판매가: 최저가 이하 1.3, +10%까지 1.0, 그 이상 급감(+30%≈0.55)
+ * - 같은 상품을 더 싸게 들여오는 공급처가 있으면 0.7
+ */
+export function priceCompetitiveness(ratio?: number, marketRatio?: number, undercut?: boolean): number {
+  let f = 0.9;
+  if (ratio && Number.isFinite(ratio) && ratio > 0) {
+    f = ratio <= 1 ? 1 + 0.3 * (1 - ratio) : 1 / ratio;
+    if (ratio > 2.5) f *= 0.5;
+  }
+  if (marketRatio && Number.isFinite(marketRatio) && marketRatio > 0) {
+    f *= marketRatio <= 1 ? 1.3 : marketRatio <= 1.1 ? 1 : Math.exp(-3 * (marketRatio - 1.1));
+  }
+  if (undercut) f *= 0.7;
+  return clamp(f, 0.05, 1.6);
+}
+
+/** @deprecated 호환용 — priceCompetitiveness 사용 */
 export function priceBandFactor(ratio?: number): number {
-  if (!ratio || !Number.isFinite(ratio) || ratio <= 0) return 0.9;
-  const f = Math.exp(-0.7 * Math.abs(Math.log(ratio)));
-  return clamp(ratio > 2.5 ? f * 0.5 : f, 0.1, 1);
+  return Math.min(1, priceCompetitiveness(ratio));
 }
 
 export function competitionFactor(c?: string | null): number {
@@ -67,7 +88,7 @@ export function expectedMonthly(input: DemandInput, p: DemandModelParams = DEFAU
   const factors: Record<string, number> = {
     // 검색량을 못 받았으면(외부 API 장애) 0이 아니라 중립값 — 장애가 선정 전체를 멈추지 않게
     volume: input.searchVolume === undefined ? 0.5 : Math.pow(Math.max(0, input.searchVolume) / 10000, p.volumeExponent),
-    priceBand: priceBandFactor(input.priceRatio),
+    priceCompetitiveness: priceCompetitiveness(input.priceRatio, input.marketRatio, input.undercutBySameProduct),
     priceAppeal: priceAppealFactor(input.salePrice, p),
     competition: competitionFactor(input.competition),
     conversion: 0.6 + 0.4 * clamp(input.conversion ?? 0.5, 0, 1),

@@ -347,6 +347,12 @@ async function prepareRegistration(ctx: AppContext, l: ListingRow, sp: SourcePro
  * 등록 사전 점검: 실제 쿠팡에 "임시저장"(승인 요청 안 함, 고객에게 안 보임)으로 보내 쿠팡이 받아주는지 확인하고 바로 삭제.
  * 카테고리 필수 속성·고시정보·이미지 주소 문제를 실등록 전에 잡는다. 사람이 명시적으로 실행할 때만 사용.
  */
+/** 테스트에서 줄일 수 있게 */
+export let verifyRetryMs = 3000;
+export function setVerifyRetryMs(ms: number): void {
+  verifyRetryMs = ms;
+}
+
 export async function verifyRegistration(ctx: AppContext, candidateId?: number): Promise<{ ok: boolean; title?: string; category?: string; sellerProductId?: string; deleted?: boolean; message: string; attributes?: unknown }> {
   const market = (ctx.market as { raw?: () => MarketPort }).raw?.() ?? ctx.market;
   if (!market.deleteProduct) return { ok: false, message: '판매채널이 삭제를 지원하지 않아 점검 불가' };
@@ -367,7 +373,12 @@ export async function verifyRegistration(ctx: AppContext, candidateId?: number):
     const { payload, categoryName } = await prepareRegistration(ctx, l, sp);
     (payload as { requested: boolean }).requested = false; // 임시저장: 심사 요청 안 함
     const res = await market.createProduct(payload);
-    const del = await market.deleteProduct(res.sellerProductId);
+    // 생성 직후엔 '저장중'이라 삭제가 거부됨(실측) → 임시저장으로 바뀔 때까지 잠시 기다리며 재시도
+    let del = await market.deleteProduct(res.sellerProductId);
+    for (let i = 0; !del.ok && i < 10; i++) {
+      await new Promise((r) => setTimeout(r, verifyRetryMs));
+      del = await market.deleteProduct(res.sellerProductId);
+    }
     const attrs = ((payload as { items?: Array<{ attributes: unknown }> }).items ?? [])[0]?.attributes;
     await audit(ctx, 'verify', 'listing.verify', String(l.id), { sellerProductId: res.sellerProductId, deleted: del.ok });
     return { ok: true, title: l.title, category: categoryName ?? undefined, sellerProductId: res.sellerProductId, deleted: del.ok, attributes: attrs,

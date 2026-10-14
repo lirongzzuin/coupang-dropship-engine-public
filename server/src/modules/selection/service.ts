@@ -229,6 +229,12 @@ export async function runSelection(ctx: AppContext, opts: { keywords?: string[] 
       }
     }
     const kwMedian = median(bySource.flatMap((x) => x.found.filter((i) => keywordMatches(i.title, kw)).map((i) => i.price)));
+    // 같은 상품(계열)의 최저 공급가 — 우리보다 싸게 들여오는 판매자가 있는지
+    const familyMin = new Map<string, number>();
+    for (const x of bySource) for (const i of x.found) {
+      const f = productFamily(i.title);
+      if (f && i.price > 0) familyMin.set(f, Math.min(familyMin.get(f) ?? Infinity, i.price));
+    }
     for (const { src, found } of bySource) {
       for (const item of found) {
         try {
@@ -249,7 +255,12 @@ export async function runSelection(ctx: AppContext, opts: { keywords?: string[] 
           for (const g of gates) if (g.hard && !g.pass) failCounts[g.name] = (failCounts[g.name] ?? 0) + 1;
           const quality = scoreCandidate(s, d, tp, sig, { apiOrder });
           // 2) 기대 월이익(수요 모델) — 우선순위의 핵심
-          const conv = ['fastShipping', 'imageRichness', 'returnable'].map((k) => quality.parts[k]).filter((x): x is number => x !== undefined);
+          // 구매 전환: 빠른 출고가 가장 중요(쿠팡 이용자는 빨리 받는 것을 기대) → 가중 평균
+          const cw: Record<string, number> = { fastShipping: 2, imageRichness: 1, returnable: 1 };
+          const conv = Object.keys(cw).filter((k) => quality.parts[k] !== undefined);
+          const convAvg = conv.length ? conv.reduce((a, k) => a + quality.parts[k]! * cw[k]!, 0) / conv.reduce((a, k) => a + cw[k]!, 0) : undefined;
+          const ref = marketReference(sig);
+          const fam = productFamily(d.title);
           const top = (d.categoryPath ?? '').split('>')[0] ?? '';
           const learnedKw = learnedFactor(learned.byKeyword.get(kw));
           const learnedCat = learnedFactor(learned.byCategory.get(top));
@@ -258,7 +269,9 @@ export async function runSelection(ctx: AppContext, opts: { keywords?: string[] 
             competition: comp[kw] ?? null,
             priceRatio: kwMedian ? d.price / kwMedian : undefined,
             slope: trendSlope(sig.trend, 4) ?? sig.volumeSlope,
-            conversion: conv.length ? conv.reduce((a, b) => a + b, 0) / conv.length : undefined,
+            conversion: convAvg,
+            marketRatio: ref && tp.feasible ? tp.price / ref.price : undefined,
+            undercutBySameProduct: !!fam && (familyMin.get(fam) ?? Infinity) < d.price * 0.97,
             brand: looksBranded(d.title),
             bulk: looksBulk(d.title),
             learned: Math.sqrt(learnedKw * learnedCat),

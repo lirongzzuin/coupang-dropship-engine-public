@@ -62,6 +62,8 @@ export interface SourceProductDetail extends SourceProductSummary {
   /** 한 상자에 함께 보낼 수 있는 최대 수량 */
   maxPerBox?: number | null;
   options?: Array<{ name: string; price: number; stock: number | null }>;
+  /** 옵션이 여러 개인 상품에서 판매·발주할 기본 옵션(가장 싼 옵션 중 재고 최다) — 발주 시 이 옵션으로 주문 */
+  defaultOption?: string;
 }
 
 export interface SourceOrderRequest {
