@@ -101,52 +101,99 @@ export class CoupangMarket implements MarketPort {
     return { ok: !!r.succeed, retryable: !!r.retryRequired, message: r.resultMessage ?? r.resultCode ?? '' };
   }
 
+  /**
+   * 취소·반품·교환 요청. 반품은 상태별로 조회(status 없이 조회하면 orderId 가 필요하다고 문서에 명시) — RU·UC 는 겹칠 수 있어 접수번호로 합침.
+   * 취소(cancelType=CANCEL)는 결제완료 단계 즉시취소(이미 환불됨). 조회 구간은 최대 31일.
+   */
   async listClaims(from: Date, to: Date): Promise<MarketClaim[]> {
-    const out: MarketClaim[] = [];
+    const byKey = new Map<string, MarketClaim>();
     const fmt = (d: Date) => kstIsoMinute(d).slice(0, 16);
-    for (const cancelType of ['RETURN', 'CANCEL'] as const) {
-      const res = await this.client.request('GET', `${OPEN}/v6/vendors/${this.v}/returnRequests`, {
-        query: { searchType: 'timeFrame', createdAtFrom: fmt(from), createdAtTo: fmt(to), cancelType },
-      });
-      for (const r of res?.data ?? []) {
-        const items: any[] = r.returnItems ?? [{}];
-        for (const it of items) {
-          out.push({
-            receiptId: String(r.receiptId),
-            marketOrderId: String(r.orderId),
-            vendorItemId: it.vendorItemId ? String(it.vendorItemId) : undefined,
-            type: r.receiptType === 'CANCEL' ? 'CANCEL' : 'RETURN',
-            status: String(r.receiptStatus ?? ''),
-            reason: [r.cancelReasonCategory1, r.cancelReason].filter(Boolean).join(' / '),
-            requestedAt: new Date(r.createdAt ? `${r.createdAt}+09:00` : Date.now()),
-          });
-        }
-      }
+    const span = Math.max(from.getTime(), to.getTime() - 30 * 86400_000);
+    const base = { searchType: 'timeFrame', createdAtFrom: fmt(new Date(span)), createdAtTo: fmt(to) };
+    const queries: Array<Record<string, string>> = [{ ...base, cancelType: 'CANCEL' }, ...['RU', 'UC', 'PR', 'CC'].map((status) => ({ ...base, status }))];
+    for (const query of queries) {
+      const res = await this.client.request('GET', `${OPEN}/v6/vendors/${this.v}/returnRequests`, { query });
+      for (const r of res?.data ?? []) for (const c of parseReturnReceipt(r)) byKey.set(`${c.receiptId}:${c.vendorItemId ?? ''}`, c);
     }
-    // 교환 요청(실측 2026-10-14: v4 exchangeRequests 200 OK) — 별도 API라 따로 조회
+    // 교환 요청(실측 2026-10-14: v4 exchangeRequests 200 OK, 조회 구간 7일 미만 — 넘으면 400) → 6일씩 나눠 조회
     const sec = (d: Date) => `${kstIsoMinute(d).slice(0, 16)}:00`;
-    let nextToken: string | undefined;
-    for (let page = 0; page < 20; page++) {
-      const res = await this.client.request('GET', `${OPEN}/v4/vendors/${this.v}/exchangeRequests`, { query: { createdAtFrom: sec(from), createdAtTo: sec(to), maxPerPage: 50, nextToken } });
-      for (const r of res?.data ?? []) {
-        const items: any[] = r.exchangeItemDtoV1s ?? r.exchangeItems ?? [{}];
-        for (const it of items) {
-          const vid = it.originalVendorItemId ?? it.vendorItemId ?? r.vendorItemId;
-          out.push({
-            receiptId: String(r.exchangeId ?? r.receiptId ?? ''),
-            marketOrderId: String(r.orderId),
-            vendorItemId: vid ? String(vid) : undefined,
-            type: 'EXCHANGE',
-            status: String(r.exchangeStatus ?? r.status ?? ''),
-            reason: [r.reasonCodeText ?? r.reasonCode, r.reasonEtcDetail].filter(Boolean).join(' / '),
-            requestedAt: new Date(r.createdAt ? `${String(r.createdAt).slice(0, 19)}+09:00` : Date.now()),
-          });
-        }
+    for (let cursor = span; cursor < to.getTime(); cursor += 6 * 86400_000) {
+      const end = new Date(Math.min(cursor + 6 * 86400_000, to.getTime()));
+      let nextToken: string | undefined;
+      for (let page = 0; page < 20; page++) {
+        const res = await this.client.request('GET', `${OPEN}/v4/vendors/${this.v}/exchangeRequests`, { query: { createdAtFrom: sec(new Date(cursor)), createdAtTo: sec(end), maxPerPage: 50, nextToken } });
+        for (const r of res?.data ?? []) for (const c of parseExchange(r)) byKey.set(`${c.receiptId}:${c.vendorItemId ?? ''}`, c);
+        nextToken = res?.nextToken || undefined;
+        if (!nextToken) break;
       }
-      nextToken = res?.nextToken || undefined;
-      if (!nextToken) break;
     }
-    return out;
+    return [...byKey.values()];
+  }
+
+  /** 반품·취소 접수 단건. 400 "취소반품접수내역이 존재하지 않습니다" = 고객 철회 */
+  async getClaim(receiptId: string): Promise<MarketClaim | null> {
+    try {
+      const res = await this.client.request('GET', `${OPEN}/v6/vendors/${this.v}/returnRequests/${receiptId}`);
+      const data = Array.isArray(res?.data) ? res.data : res?.data ? [res.data] : [];
+      return data.flatMap(parseReturnReceipt)[0] ?? null;
+    } catch (e) {
+      if (e instanceof HttpError && e.status === 400 && /존재하지 않|철회/.test(e.message)) {
+        return { receiptId, marketOrderId: '', type: 'RETURN', status: 'WITHDRAWN', stage: 'withdrawn', reason: '', requestedAt: new Date() };
+      }
+      if (e instanceof HttpError && e.status === 400) return null;
+      throw e;
+    }
+  }
+
+  stopShipment(receiptId: string, count: number): Promise<MarketResult> {
+    return this.claimAction('PATCH', `${OPEN}/v4/vendors/${this.v}/returnRequests/${receiptId}/stoppedShipment`, { vendorId: this.v, receiptId: Number(receiptId), cancelCount: count });
+  }
+
+  markShippedForClaim(receiptId: string, courierCode: string, trackingNo: string): Promise<MarketResult> {
+    return this.claimAction('PATCH', `${OPEN}/v4/vendors/${this.v}/returnRequests/${receiptId}/completedShipment`, { vendorId: this.v, receiptId: Number(receiptId), deliveryCompanyCode: courierCode, invoiceNumber: trackingNo });
+  }
+
+  /** 입고 확인(반품접수 상태일 때) → 승인(입고완료 상태일 때). 이미 처리된 단계는 건너뜀 */
+  async confirmReturn(receiptId: string, count: number): Promise<MarketResult> {
+    const cur = await this.getClaim(receiptId);
+    if (!cur || cur.stage === 'withdrawn') return { ok: false, retryable: false, message: '반품 접수를 찾을 수 없음(고객 철회?)' };
+    if (cur.stage === 'return_done') return { ok: true, retryable: false, message: '이미 반품완료' };
+    if (cur.status === 'RETURNS_UNCHECKED') {
+      const r = await this.claimAction('PATCH', `${OPEN}/v4/vendors/${this.v}/returnRequests/${receiptId}/receiveConfirmation`, { vendorId: this.v, receiptId: Number(receiptId) });
+      if (!r.ok) return r;
+      // 빠른환불 대상이면 입고 확인만으로 환불·완료
+      const after = await this.getClaim(receiptId).catch(() => null);
+      if (after?.stage === 'return_done') return { ok: true, retryable: false, message: '입고 확인 → 환불 완료' };
+    }
+    return this.claimAction('PATCH', `${OPEN}/v4/vendors/${this.v}/returnRequests/${receiptId}/approval`, { vendorId: this.v, receiptId: Number(receiptId), cancelCount: count });
+  }
+
+  async cancelOrder(input: { marketOrderId: string; vendorItemId: string; qty: number; reason: 'stock' | 'address' | 'price' }): Promise<MarketResult> {
+    const middle = { stock: 'CCTTER', address: 'CCPNER', price: 'CCPRER' }[input.reason];
+    try {
+      const res = await this.client.request('POST', `${OPEN}/v5/vendors/${this.v}/orders/${input.marketOrderId}/cancel`, {
+        body: { orderId: Number(input.marketOrderId), vendorItemIds: [Number(input.vendorItemId)], receiptCounts: [input.qty], bigCancelCode: 'CANERR', middleCancelCode: middle, vendorId: this.v, userId: await this.getWingUserId() },
+      });
+      const failed: unknown[] = res?.data?.failedVendorItemIds ?? res?.data?.failedItemIds ?? [];
+      const ok = String(res?.code ?? '200') === '200' && !failed.map(String).includes(String(input.vendorItemId));
+      return { ok, retryable: false, message: res?.message ?? (ok ? 'OK' : '취소 실패') };
+    } catch (e) {
+      if (e instanceof HttpError) return { ok: false, retryable: e.status >= 500 || e.status === 429, message: e.message };
+      throw e;
+    }
+  }
+
+  /** 클레임 처리 응답: { code, message, data: { resultCode: SUCCESS|FAIL, resultMessage } } (이미출고는 data 안에 code가 있음) */
+  private async claimAction(method: string, path: string, body: Record<string, unknown>): Promise<MarketResult> {
+    try {
+      const res = await this.client.request(method, path, { body });
+      const rc = res?.data?.resultCode;
+      const ok = rc ? rc === 'SUCCESS' : String(res?.code ?? '') === '200' || res?.code === 'SUCCESS';
+      return { ok, retryable: false, message: res?.data?.resultMessage ?? res?.message ?? '' };
+    } catch (e) {
+      if (e instanceof HttpError) return { ok: false, retryable: e.status >= 500 || e.status === 429, message: e.message };
+      throw e;
+    }
   }
 
   // ── 상품 ──────────────────────────────────────────────────────────
@@ -426,4 +473,59 @@ function parseSheet(sheet: any): MarketOrderLine[] {
     canceled: !!it.canceled,
     invoiceNumber: sheet.invoiceNumber || undefined,
   }));
+}
+
+
+/** 반품·취소 접수 → 주문 줄(옵션)별 클레임. 단계는 접수 상태 + 옵션 출고 상태로 판단 */
+export function parseReturnReceipt(r: any): MarketClaim[] {
+  const items: any[] = r.returnItems?.length ? r.returnItems : [{}];
+  const status = String(r.receiptStatus ?? '');
+  const cancelType = r.receiptType === 'CANCEL' || r.receiptType === '취소';
+  return items.map((it) => {
+    const release = String(it.releaseStatus ?? '');
+    let stage: MarketClaim['stage'];
+    if (cancelType) stage = 'cancelled';
+    else if (status === 'RELEASE_STOP_UNCHECKED') stage = 'stop_requested';
+    else if (status === 'RETURNS_UNCHECKED') stage = release === 'N' ? 'stop_requested' : 'return_requested';
+    else if (status === 'VENDOR_WAREHOUSE_CONFIRM') stage = 'return_collected';
+    else if (status === 'REQUEST_COUPANG_CHECK') stage = 'coupang_check';
+    else if (status === 'RETURNS_COMPLETED') stage = release === 'S' || /출고중지/.test(String(r.releaseStopStatus ?? '')) ? 'cancelled' : 'return_done';
+    return {
+      receiptId: String(r.receiptId),
+      marketOrderId: String(r.orderId),
+      vendorItemId: it.vendorItemId ? String(it.vendorItemId) : undefined,
+      type: cancelType ? 'CANCEL' : 'RETURN',
+      status,
+      stage,
+      count: typeof it.cancelCount === 'number' ? it.cancelCount : typeof r.cancelCountSum === 'number' ? r.cancelCountSum : undefined,
+      shipmentBoxId: it.shipmentBoxId ? String(it.shipmentBoxId) : undefined,
+      faultBy: r.faultByType || undefined,
+      returnShippingCharge: r.returnShippingCharge == null ? undefined : money(r.returnShippingCharge),
+      reason: [r.cancelReasonCategory1, r.cancelReasonCategory2, r.cancelReason].filter(Boolean).join(' / ') || String(r.reasonCodeText ?? ''),
+      requestedAt: new Date(r.createdAt ? `${String(r.createdAt).slice(0, 19)}+09:00` : Date.now()),
+    };
+  });
+}
+
+/** 교환 접수 → 클레임(원주문 옵션 기준) */
+export function parseExchange(r: any): MarketClaim[] {
+  const items: any[] = r.exchangeItemDtoV1s?.length ? r.exchangeItemDtoV1s : r.exchangeItems?.length ? r.exchangeItems : [{}];
+  const status = String(r.exchangeStatus ?? r.status ?? '');
+  const stage: MarketClaim['stage'] = status === 'SUCCESS' ? 'exchange_done' : status === 'REJECT' || status === 'CANCEL' ? 'withdrawn' : 'exchange_open';
+  return items.map((it) => {
+    const vid = it.originalVendorItemId ?? it.orderItemId ?? it.vendorItemId ?? r.vendorItemId;
+    return {
+      receiptId: String(r.exchangeId ?? r.receiptId ?? ''),
+      marketOrderId: String(r.orderId),
+      vendorItemId: vid ? String(vid) : undefined,
+      type: 'EXCHANGE',
+      status,
+      stage,
+      count: typeof it.quantity === 'number' ? it.quantity : undefined,
+      shipmentBoxId: it.originalShipmentBoxId ? String(it.originalShipmentBoxId) : undefined,
+      faultBy: r.faultType || r.faultByType || undefined,
+      reason: [r.reasonCodeText ?? r.reasonCode, r.reasonEtcDetail].filter(Boolean).join(' / '),
+      requestedAt: new Date(r.createdAt ? `${String(r.createdAt).slice(0, 19)}+09:00` : Date.now()),
+    };
+  });
 }

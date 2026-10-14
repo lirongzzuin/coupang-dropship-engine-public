@@ -143,9 +143,14 @@ export class MockSource implements SourceAdapter {
     return { state, rawStatus: state, tracking: o?.tracking ?? null };
   }
 
+  /** 테스트: 공급처 취소 방식 — instant(결제완료라 즉시 취소) | request(준비중이라 취소 요청 → 공급사 수락 대기) | fail */
+  cancelMode: 'instant' | 'request' | 'fail' = 'instant';
+
   async cancelOrder(sourceOrderId: string, _reason: string) {
+    if (this.cancelMode === 'fail') return { ok: false, status: '', message: '취소 불가 상태' };
     this.cancelled.push(sourceOrderId);
-    this.orderStates.set(sourceOrderId, 'cancelled');
-    return { ok: true, status: 'cancelled', message: 'ok' };
+    const state = this.cancelMode === 'instant' ? 'cancelled' : 'cancel_requested';
+    this.orderStates.set(sourceOrderId, state);
+    return { ok: true, status: state, message: 'ok' };
   }
 }

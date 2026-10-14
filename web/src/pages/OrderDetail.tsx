@@ -13,7 +13,19 @@ interface Detail {
   events: Array<{ id: number; from_status: string | null; to_status: string; reason: string | null; actor: string; at: string }>;
   profitEstimate: { profit: number; fee: number; feeVat: number; vatPayable: number; returnReserve: number } | null;
   courierAliases: string[];
+  extra_cost: number;
+  claims: Claim[];
 }
+interface Claim {
+  id: number; receipt_id: string; claim_type: string; stage: string; stageLabel: string; raw_status: string; count: number | null; reason: string;
+  fault_by: string | null; return_shipping_charge: number | null; action_note: string | null; reship_source_order_id: string | null; reship_cost: number | null;
+  reship_tracking: string | null; requested_at: string; closed_at: string | null;
+}
+const CLAIM_TYPE: Record<string, string> = { CANCEL: '취소', RETURN: '취소·반품', EXCHANGE: '교환', RESHIP: '재발송' };
+/** 판매자 취소 가능(아직 보내지 않음) */
+const SELLER_CANCELABLE = ['NEW', 'AWAITING_PURCHASE', 'PAYMENT_PENDING', 'PURCHASED', 'OUT_OF_STOCK', 'MARGIN_NEGATIVE', 'LIMIT_EXCEEDED', 'SOURCE_ERROR', 'MANUAL_REVIEW', 'SHIPPING_DELAYED'];
+/** 재발송 가능(보낸 뒤 교환·분실·파손) */
+const RESHIPPABLE = ['PURCHASED', 'TRACKING_UPLOADED', 'IN_TRANSIT', 'DELIVERED', 'SETTLED', 'MANUAL_REVIEW', 'SHIPPING_DELAYED'];
 interface Receiver { name: string; phone: string; addr1: string; addr2: string; zip: string; deliveryMessage: string }
 
 const PURCHASABLE = ['AWAITING_PURCHASE', 'PAYMENT_PENDING', 'OUT_OF_STOCK', 'MARGIN_NEGATIVE', 'LIMIT_EXCEEDED', 'SOURCE_ERROR', 'MANUAL_REVIEW'];
@@ -26,6 +38,7 @@ export function OrderDetail() {
   const [rcv, setRcv] = useState<Receiver | null>(null);
   const [buy, setBuy] = useState({ sourceOrderId: '', cost: '', shippingCost: '' });
   const [trk, setTrk] = useState({ courier: '', trackingNo: '' });
+  const [armed, setArmed] = useState<string | null>(null);
   const act = useAction();
 
   if (!o) return <Loading error={error} loading={loading} />;
@@ -47,6 +60,7 @@ export function OrderDetail() {
             <tr><th>주문 시각</th><td>{dt(o.ordered_at)}{o.ship_by && ` · 출고기한 ${o.ship_by}`}</td></tr>
             {o.source_order_id && <tr><th>공급처 주문번호</th><td>{o.source_order_id}</td></tr>}
             {o.tracking_no && <tr><th>송장</th><td>{o.courier_code} {o.tracking_no}</td></tr>}
+            {o.extra_cost > 0 && <tr><th>추가 비용</th><td>{won(o.extra_cost)} (재발송 — 손익에서 차감)</td></tr>}
           </tbody>
         </table>
       </Card>
@@ -126,6 +140,30 @@ export function OrderDetail() {
           </div>
         </Card>
       )}
+      {o.claims.length > 0 && (
+        <Card title="취소·반품·교환">
+          {o.claims.map((c) => <ClaimRow key={c.id} o={o} c={c} act={act} reload={reload} couriers={o.courierAliases} />)}
+        </Card>
+      )}
+
+      {(SELLER_CANCELABLE.includes(o.status) && !o.tracking_no) || RESHIPPABLE.includes(o.status) ? (
+        <Card title="고객 주문 조치">
+          <div className="row">
+            {SELLER_CANCELABLE.includes(o.status) && !o.tracking_no && (
+              armed === 'cancel'
+                ? <button className="btn danger" disabled={act.busy} onClick={() => { setArmed(null); void act.run(() => api.post<{ message: string }>(`/api/orders/${o.id}/cancel`, { reason: 'stock' }).then((r) => { reload(); return r.message; })); }}>한 번 더 누르면 쿠팡 주문 취소</button>
+                : <button className="btn" disabled={act.busy} onClick={() => setArmed('cancel')}>쿠팡 주문 취소(품절)</button>
+            )}
+            {RESHIPPABLE.includes(o.status) && o.source?.apiOrder && (
+              armed === 'reship'
+                ? <button className="btn primary" disabled={act.busy} onClick={() => { setArmed(null); void act.run(() => api.post<{ message: string }>(`/api/orders/${o.id}/reship`).then((r) => { reload(); return r.message; })); }}>한 번 더 누르면 공급처에 다시 주문</button>
+                : <button className="btn" disabled={act.busy} onClick={() => setArmed('reship')}>공급처 재발송(교환·분실)</button>
+            )}
+          </div>
+          <p className="muted small">쿠팡 주문 취소: 공급처 품절 등으로 보낼 수 없을 때. 고객은 바로 환불되고 공급처 주문도 자동 취소되지만 <b>쿠팡 판매자 점수(주문이행)가 떨어집니다</b>. 재발송: 같은 상품을 고객 주소로 다시 주문(비용은 이 주문 손익에서 차감), 송장이 나오면 알려드립니다.</p>
+        </Card>
+      ) : null}
+
       <Msg msg={act.msg} />
 
       <Card title="처리 이력">
@@ -136,6 +174,53 @@ export function OrderDetail() {
           </div>
         ))}
       </Card>
+    </div>
+  );
+}
+
+function ClaimRow({ o, c, act, reload, couriers }: { o: Detail; c: Claim; act: ReturnType<typeof useAction>; reload: () => void; couriers: string[] }) {
+  const [trk, setTrk] = useState({ courier: '', trackingNo: '' });
+  const run = (body: Record<string, unknown>) => void act.run(() => api.post<{ message: string }>(`/api/orders/${o.id}/claims/${c.id}`, body).then((r) => { reload(); return r.message; }));
+  const open = !c.closed_at;
+  const fee = c.return_shipping_charge;
+  return (
+    <div className="item">
+      <div className="item-head">
+        <Badge tone={open ? 'amber' : 'gray'}>{CLAIM_TYPE[c.claim_type] ?? c.claim_type}</Badge>
+        <b>{c.stageLabel}</b>
+        <span className="muted small">접수 {c.receipt_id} · {dt(c.requested_at)}{c.closed_at ? ` · 종료 ${dt(c.closed_at)}` : ''}</span>
+      </div>
+      <div className="small">
+        {c.reason || '사유 없음'}{c.count ? ` · ${c.count}개` : ''}{c.fault_by ? ` · 귀책 ${c.fault_by}` : ''}
+        {fee != null && fee !== 0 && ` · 반품배송비 ${fee > 0 ? '판매자' : '고객'} 부담 ${won(Math.abs(fee))}`}
+      </div>
+      {c.action_note && <div className="muted small">처리: {c.action_note}</div>}
+      {c.reship_source_order_id && <div className="small">재발송 주문 {c.reship_source_order_id} ({won(c.reship_cost)}) · 송장 {c.reship_tracking ?? '대기'} {c.reship_tracking && <CopyButton value={c.reship_tracking.split(' ').pop() ?? ''} />}</div>}
+      {open && ['stop_requested', 'cancelled'].includes(c.stage) && (
+        <div className="stack">
+          <div className="row">
+            <button className="btn primary" disabled={act.busy} onClick={() => run({ action: 'source_cancelled' })}>공급처 취소 완료{c.stage === 'stop_requested' ? '(쿠팡 출고중지)' : ''}</button>
+            <button className="btn" disabled={act.busy} onClick={() => run({ action: 'close' })}>Wing에서 처리함</button>
+          </div>
+          {c.stage === 'stop_requested' && (
+            <form className="row" onSubmit={(e) => { e.preventDefault(); run({ action: 'shipped', ...trk }); }}>
+              <input list="claim-couriers" placeholder="택배사" value={trk.courier} onChange={(e) => setTrk({ ...trk, courier: e.target.value })} />
+              <datalist id="claim-couriers">{couriers.map((x) => <option key={x} value={x} />)}</datalist>
+              <input inputMode="numeric" placeholder="송장번호" value={trk.trackingNo} onChange={(e) => setTrk({ ...trk, trackingNo: e.target.value })} />
+              <button className="btn" disabled={act.busy}>이미 발송됨(이미출고)</button>
+            </form>
+          )}
+        </div>
+      )}
+      {open && ['return_requested', 'return_collected'].includes(c.stage) && (
+        <div className="row">
+          <button className="btn primary" disabled={act.busy} title="공급처가 반품 상품을 받았는지 확인한 뒤 누르세요" onClick={() => run({ action: 'approve_return' })}>반품 승인(환불)</button>
+          <button className="btn" disabled={act.busy} onClick={() => run({ action: 'close' })}>Wing에서 처리함</button>
+        </div>
+      )}
+      {open && ['exchange_open', 'coupang_check'].includes(c.stage) && (
+        <button className="btn small" disabled={act.busy} onClick={() => run({ action: 'close' })}>처리 끝(Wing에서 처리함)</button>
+      )}
     </div>
   );
 }

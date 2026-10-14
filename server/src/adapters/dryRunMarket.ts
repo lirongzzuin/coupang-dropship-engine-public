@@ -41,6 +41,7 @@ export class DryRunMarket implements MarketPort {
   listOrders: MarketPort['listOrders'] = (a, b, s) => this.inner.listOrders(a, b, s);
   getOrderLines: MarketPort['getOrderLines'] = (id) => this.inner.getOrderLines(id);
   listClaims: MarketPort['listClaims'] = (a, b) => this.inner.listClaims(a, b);
+  getClaim = async (id: string) => (this.inner.getClaim ? this.inner.getClaim(id) : null);
   predictCategory: MarketPort['predictCategory'] = (n) => this.inner.predictCategory(n);
   getCategoryMeta: MarketPort['getCategoryMeta'] = (c) => this.inner.getCategoryMeta(c);
   // 조회 전용 → 모의 실행에서도 실제 호출
@@ -63,6 +64,27 @@ export class DryRunMarket implements MarketPort {
   async acknowledge(ids: string[]): Promise<Record<string, MarketResult>> {
     if (this.live('LIVE_FULFILLMENT')) return this.inner.acknowledge(ids);
     return Object.fromEntries(ids.map((id) => [id, this.simulated('acknowledge', { id })]));
+  }
+
+  // 클레임 처리(출고중지·이미출고·반품 승인·판매자 취소)는 주문 처리(LIVE_FULFILLMENT)와 같이 켜짐
+  async stopShipment(receiptId: string, count: number): Promise<MarketResult> {
+    if (this.live('LIVE_FULFILLMENT') && this.inner.stopShipment) return this.inner.stopShipment(receiptId, count);
+    return this.simulated('stopShipment', { receiptId, count });
+  }
+
+  async markShippedForClaim(receiptId: string, courierCode: string, trackingNo: string): Promise<MarketResult> {
+    if (this.live('LIVE_FULFILLMENT') && this.inner.markShippedForClaim) return this.inner.markShippedForClaim(receiptId, courierCode, trackingNo);
+    return this.simulated('markShippedForClaim', { receiptId, courierCode });
+  }
+
+  async confirmReturn(receiptId: string, count: number): Promise<MarketResult> {
+    if (this.live('LIVE_FULFILLMENT') && this.inner.confirmReturn) return this.inner.confirmReturn(receiptId, count);
+    return this.simulated('confirmReturn', { receiptId, count });
+  }
+
+  async cancelOrder(input: { marketOrderId: string; vendorItemId: string; qty: number; reason: 'stock' | 'address' | 'price' }): Promise<MarketResult> {
+    if (this.live('LIVE_FULFILLMENT') && this.inner.cancelOrder) return this.inner.cancelOrder(input);
+    return this.simulated('cancelOrder', input);
   }
 
   async uploadInvoice(input: InvoiceInput): Promise<MarketResult> {

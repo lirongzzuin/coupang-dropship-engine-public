@@ -496,66 +496,9 @@ export async function pollFulfillment(ctx: AppContext): Promise<{ tracked: numbe
   return { tracked, uploaded, delivered };
 }
 
-// ── 5. 취소·반품 감지 ─────────────────────────────────────────────
+// ── 5. 취소·반품·교환 → claims.ts ─────────────────────────────────
 
-export async function pollClaims(ctx: AppContext): Promise<{ claims: number }> {
-  const now = ctx.clock.now();
-  const claims = await ctx.market.listClaims(addDays(now, -3), now);
-  let n = 0;
-  for (const c of claims) {
-    let q = ctx.db.selectFrom('orders').selectAll().where('market_order_id', '=', c.marketOrderId);
-    if (c.vendorItemId) q = q.where('vendor_item_id', '=', c.vendorItemId);
-    const orders = await q.execute();
-    for (const o of orders) {
-      const st = o.status as OrderStatus;
-      if (c.type === 'EXCHANGE') {
-        // 교환: 상태 변경 없이 1회 알림(공급처 교환 접수·Wing 처리 필요)
-        const seenKey = `claim.exchange.${c.receiptId}.${o.id}`;
-        if (await ctx.kv.get(seenKey)) continue;
-        await ctx.kv.set(seenKey, true);
-        await ctx.notifications.notify('action', '교환 요청', `${o.item_name}: ${c.reason || '사유 없음'}\n① 오너클랜에서 교환 접수(공급처 주문 ${o.source_order_id ?? '-'}) ② Wing 교환 관리에서 처리`, { path: `/orders/${o.id}` });
-        n++;
-        continue;
-      }
-      if (c.type === 'CANCEL') {
-        if (['CANCELLED', 'CANCEL_REQUESTED', 'RETURNED'].includes(st)) continue;
-        // 아직 구매 전이면 그대로 취소 처리(구매 불필요)
-        if (isPrePurchase(st) && !o.source_order_id) {
-          await transition(ctx, o, 'CANCELLED', `고객 취소: ${c.reason}`, SYSTEM);
-        } else {
-          await transition(ctx, o, 'CANCEL_REQUESTED', `취소 요청(${c.status}): ${c.reason}`, SYSTEM);
-          const cancel = await cancelAtSource(ctx, o, c.reason);
-          await ctx.notifications.notify('warn', '구매 후 취소 요청',
-            `${o.item_name}: 공급처 주문 ${o.source_order_id ?? '-'}\n${cancel}\nWing 반품/취소 관리에서 [출고중지 완료](아직 안 보냈을 때) 또는 [이미 출고](보냈을 때)를 처리하세요.`, { path: `/orders/${o.id}` });
-        }
-        n++;
-      } else {
-        if (['RETURN_REQUESTED', 'RETURNED', 'CANCELLED'].includes(st)) continue;
-        if (!canTransition(st, 'RETURN_REQUESTED')) continue;
-        await transition(ctx, o, 'RETURN_REQUESTED', `반품 요청(${c.status}): ${c.reason}`, SYSTEM);
-        await ctx.notifications.notify('warn', '반품 요청', `${o.item_name}: ${c.reason}. 공급처 반품 접수가 필요합니다.`, { path: `/orders/${o.id}` });
-        n++;
-      }
-    }
-  }
-  return { claims: n };
-}
-
-/** 고객 취소 → 공급처 주문도 자동 취소(가능하면 즉시, 이미 준비중이면 취소 요청) */
-async function cancelAtSource(ctx: AppContext, o: OrderRow, reason: string): Promise<string> {
-  if (!o.source_order_id || o.source_order_id.startsWith('DRY-')) return '공급처 주문 없음(모의)';
-  if (!isLive(ctx.env, 'LIVE_ORDERING')) return '자동 발주가 꺼져 있어 공급처 취소도 직접 해야 합니다.';
-  const sp = o.source_product_id ? await ctx.db.selectFrom('source_products').select('source').where('id', '=', o.source_product_id).executeTakeFirst() : undefined;
-  const src = sp ? ctx.sources.get(sp.source) : undefined;
-  if (!src?.cancelOrder) return `${src?.displayName ?? '공급처'}에서 주문을 직접 취소하세요.`;
-  try {
-    const r = await src.cancelOrder(o.source_order_id, `고객 취소: ${reason}`);
-    await audit(ctx, SYSTEM, 'order.source_cancel', String(o.id), r);
-    return r.ok ? `${src.displayName} 주문 자동 취소 처리됨(상태: ${r.status}). 취소 요청 상태면 공급사 수락 후 환불됩니다.` : `${src.displayName} 자동 취소 실패: ${r.message} — 직접 취소하세요.`;
-  } catch (e) {
-    return `${src.displayName} 자동 취소 실패: ${errMessage(e)} — 직접 취소하세요.`;
-  }
-}
+export { pollClaims } from './claims.js';
 
 // ── 6. 지연 경고·개인정보 파기 ───────────────────────────────────
 

@@ -214,6 +214,35 @@ export interface OrdersTable {
   profit: number | null;
   pii_purged_at: TsNull;
   alerted_at: TsNull;
+  /** 재발송 등 추가 비용(정산 손익에서 차감) */
+  extra_cost: Generated<number>;
+  created_at: Ts;
+  updated_at: Ts;
+}
+
+/** 취소·반품·교환 접수(쿠팡 접수 1건 × 주문 1줄) */
+export interface OrderClaimsTable {
+  id: Generated<number>;
+  order_id: number;
+  market: string;
+  receipt_id: string;
+  claim_type: string;
+  stage: string;
+  raw_status: Generated<string>;
+  count: number | null;
+  reason: Generated<string>;
+  fault_by: string | null;
+  return_shipping_charge: number | null;
+  prev_status: string | null;
+  action: string | null;
+  action_note: string | null;
+  notified_stage: string | null;
+  source_cancel_at: TsNull;
+  reship_source_order_id: string | null;
+  reship_cost: number | null;
+  reship_tracking: string | null;
+  requested_at: Ts;
+  closed_at: TsNull;
   created_at: Ts;
   updated_at: Ts;
 }
@@ -330,11 +359,13 @@ export interface DB {
   kv: KvTable;
   keywords: KeywordsTable;
   listing_items: ListingItemsTable;
+  order_claims: OrderClaimsTable;
   daily_metrics: DailyMetricsTable;
   selection_runs: SelectionRunsTable;
 }
 
 export type OrderRow = Selectable<OrdersTable>;
+export type OrderClaimRow = Selectable<OrderClaimsTable>;
 export type ListingRow = Selectable<ListingsTable>;
 export type ListingItemRow = Selectable<ListingItemsTable>;
 export type SourceProductRow = Selectable<SourceProductsTable>;

@@ -52,12 +52,32 @@ export interface MarketResult {
   dryRun?: boolean;
 }
 
+/**
+ * 클레임 진행 단계(쿠팡 상태를 정규화)
+ * - cancelled: 쿠팡에서 취소 완료(결제완료 즉시취소·출고중지 완료) — 고객 환불됨
+ * - stop_requested: 상품준비중에 고객이 취소 → 출고중지요청(아직 안 보냈으면 출고중지완료, 보냈으면 이미출고 처리 필요)
+ * - return_requested: 출고 후 반품 접수(회수 진행) / return_collected: 입고완료(승인하면 환불)
+ * - coupang_check: 쿠팡확인요청 / return_done: 반품완료(환불)
+ * - exchange_open: 교환 접수·진행 / exchange_done: 교환 완료 / withdrawn: 고객 철회·교환 불가
+ */
+export type ClaimStage = 'cancelled' | 'stop_requested' | 'return_requested' | 'return_collected' | 'coupang_check' | 'return_done' | 'exchange_open' | 'exchange_done' | 'withdrawn';
+
 export interface MarketClaim {
   receiptId: string;
   marketOrderId: string;
   vendorItemId?: string;
   type: 'CANCEL' | 'RETURN' | 'EXCHANGE';
+  /** 쿠팡 원래 상태값(receiptStatus·exchangeStatus) */
   status: string;
+  /** 정규화 단계(없으면 type·status 로 추정) */
+  stage?: ClaimStage;
+  /** 취소·반품·교환 수량 */
+  count?: number;
+  shipmentBoxId?: string;
+  /** 귀책: COUPANG·VENDOR·CUSTOMER·WMS·GENERAL */
+  faultBy?: string;
+  /** 반품 배송비(+ 판매자 부담, - 고객 부담) */
+  returnShippingCharge?: number;
   reason: string;
   requestedAt: Date;
 }
@@ -135,6 +155,16 @@ export interface MarketPort {
   acknowledge(shipmentBoxIds: string[]): Promise<Record<string, MarketResult>>;
   uploadInvoice(input: InvoiceInput): Promise<MarketResult>;
   listClaims(from: Date, to: Date): Promise<MarketClaim[]>;
+  /** 반품·취소 접수 단건(최신 상태). 고객이 철회했으면 stage='withdrawn', 조회할 수 없으면 null */
+  getClaim?(receiptId: string): Promise<MarketClaim | null>;
+  /** 출고중지완료: 상품준비중 취소 요청 → 아직 보내지 않음(고객 환불 진행) */
+  stopShipment?(receiptId: string, count: number): Promise<MarketResult>;
+  /** 이미출고: 취소 요청 전에 이미 보냄 → 송장 등록(이후 반품으로 진행) */
+  markShippedForClaim?(receiptId: string, courierCode: string, trackingNo: string): Promise<MarketResult>;
+  /** 반품 입고 확인 → 반품 승인(환불). 빠른환불 대상이면 쿠팡이 자동 처리 */
+  confirmReturn?(receiptId: string, count: number): Promise<MarketResult>;
+  /** 판매자 주문 취소(공급처 품절 등). 판매자 점수(주문이행)가 떨어짐 */
+  cancelOrder?(input: { marketOrderId: string; vendorItemId: string; qty: number; reason: 'stock' | 'address' | 'price' }): Promise<MarketResult>;
   // ── 상품 ──
   predictCategory(productName: string): Promise<{ code: string; name: string } | null>;
   getCategoryMeta(code: string): Promise<CategoryMeta>;
