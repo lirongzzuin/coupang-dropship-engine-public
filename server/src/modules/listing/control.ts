@@ -20,6 +20,8 @@ export const PAUSE = {
   wing: '쿠팡에서 판매중지됨',
   /** Wing에서 상품을 삭제함 → 판매종료로 정리(관리 화면 기본 목록에서 숨김, 다시 등록 안 함) */
   deleted: '쿠팡에서 삭제됨',
+  /** 공급처 옵션이 여러 개인데 어떤 옵션을 파는지 정해지지 않은 채 올라간 상품(이전 버전) → [옵션 지정해 다시 등록] */
+  optionUnset: '옵션 미지정',
 } as const;
 
 const SUPPLY = [PAUSE.soldout, PAUSE.lowStock, PAUSE.notSellable, PAUSE.margin, PAUSE.costUp, PAUSE.minResale, PAUSE.unverifiable];

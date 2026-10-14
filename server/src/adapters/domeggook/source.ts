@@ -1,6 +1,7 @@
 import type { Logger } from '../../lib/logger.js';
 import { HttpError, RateLimiter, retry } from '../../lib/util.js';
-import type { SourceAdapter, SourceCategory, SourceProductDetail, SourceProductSummary } from '../../ports/source.js';
+import type { SourceAdapter, SourceCategory, SourceOption, SourceProductDetail, SourceProductSummary } from '../../ports/source.js';
+import { resolveOption } from '../options.js';
 
 /**
  * 도매꾹/도매매 Open API (API 키만 있으면 사용, 별도 승인 불필요).
@@ -92,10 +93,14 @@ export class DomeggookSource implements SourceAdapter {
     }));
   }
 
-  async getProduct(no: string): Promise<SourceProductDetail | null> {
+  async getProduct(no: string, hint: { option?: string } = {}): Promise<SourceProductDetail | null> {
     const d = await this.call({ ver: '4.6', mode: 'getItemView', no });
     if (!d?.basis) return null;
     const unitPrice = parseTierPrice(this.market === 'supply' ? d.price?.supply ?? d.price?.dome : d.price?.dome);
+    // 주문옵션(selectOpt): 옵션별 추가금·재고·판매 여부. 옵션 상품은 옵션 하나를 정해 그 가격·재고로 판매하고 그 옵션으로 구매
+    // 이미 쿠팡에 올린 옵션(hint.option)이 있으면 그 옵션만 본다(품절이라고 다른 색·사이즈로 바꾸지 않음)
+    const parsed = parseDomeggookOptions(d.selectOpt, this.market, unitPrice);
+    const { chosen, pinMissing } = resolveOption(parsed.options, hint.option, 1);
     const deli = this.market === 'supply' ? (d.deli?.supply?.fee !== undefined || d.deli?.supply?.tbl ? d.deli.supply : d.deli?.dome) : d.deli?.dome;
     const free = String(d.deli?.pay ?? '').includes('무료') && !String(d.deli?.pay ?? '').includes('조건');
     // 수량별비례 "10+3000|10+3000" = 10개까지 한 상자 3,000원(fee 필드 없음) → 보수적으로 최소 수량·최대 금액
@@ -103,8 +108,13 @@ export class DomeggookSource implements SourceAdapter {
     const tblFee = tiers.length ? Math.max(...tiers.map((x) => x[1]!)) : 0;
     const perBox = tiers.length ? Math.max(1, Math.min(...tiers.map((x) => x[0]!))) : null;
     const statusText = String(d.basis.status ?? '');
-    const stock = d.qty?.inventory !== undefined ? Number(d.qty.inventory) : null;
-    const status: SourceProductDetail['status'] = statusText.includes('판매중') ? (stock === 0 ? 'soldout' : 'active') : 'ended';
+    const total = d.qty?.inventory !== undefined ? Number(d.qty.inventory) : null;
+    const stock = pinMissing ? 0 : chosen ? chosen.stock : total;
+    let status: SourceProductDetail['status'] = statusText.includes('판매중') ? (stock === 0 ? 'soldout' : 'active') : 'ended';
+    if (pinMissing) status = 'ended'; // 올린 옵션 자체가 없어짐
+    const unavailableReason = pinMissing ? `판매 옵션(${hint.option})이 공급처에서 없어짐`
+      : !statusText.includes('판매중') ? `공급처 판매 상태: ${statusText || '알 수 없음'}`
+        : stock === 0 ? (chosen ? `옵션(${chosen.name}) 품절` : '공급처 품절') : undefined;
     const sellerType = String(d.seller?.type ?? '');
     const kc = d.detail?.safetyCert;
     // original(760)과 large(330)는 같은 사진의 크기만 다름 → 큰 것 하나만
@@ -114,10 +124,14 @@ export class DomeggookSource implements SourceAdapter {
       title: String(d.basis.title ?? ''),
       url: `https://domeggook.com/${no}`,
       imageUrl: images[0],
-      price: unitPrice,
+      price: chosen ? chosen.price : unitPrice,
       shippingFee: free ? 0 : Number(deli?.fee) || tblFee,
       status,
       stock,
+      ...(status !== 'active' && unavailableReason ? { unavailableReason } : {}),
+      ...(parsed.options.length ? { options: parsed.options } : {}),
+      ...(chosen ? { defaultOption: chosen.name } : pinMissing ? { defaultOption: hint.option } : {}),
+      ...(parsed.issue ? { optionIssue: parsed.issue } : {}),
       categoryPath: (d.category?.parents?.elem ?? []).concat(d.category?.current ? [d.category.current] : []).map((c: any) => c.name).join('>') || undefined,
       minResalePrice: Number(d.price?.resale?.minumum) || undefined,
       imageReuseAllowed: toBool(d.desc?.license?.usable),
@@ -141,6 +155,52 @@ export class DomeggookSource implements SourceAdapter {
       maxPerBox: free ? null : perBox,
     };
   }
+}
+
+/**
+ * 도매꾹 주문옵션(selectOpt, JSON 문자열) → 옵션 목록. 형식은 실제 응답으로 확인(2026-10-14, 공식 문서는 첨부 문서만 있음):
+ * - type 'combination': data 의 키 = 축별 옵션 순번("00", 두 축이면 "00_01"), name = 값(두 축이면 "핑크/5호")
+ * - type 'independent': 축마다 따로 고름, 키 = "축순번_옵션순번", name = "축이름/값" → 축이 하나일 때만 지원
+ * - supPrice(도매매)·domPrice(도매꾹) = 기본가에 더하는 추가금, qty = 옵션 재고
+ * - hid ≠ '0' = 숨김·품절, sup/dom = 해당 시장 판매 여부('1') → 아니면 재고 0
+ */
+export function parseDomeggookOptions(selectOpt: unknown, market: 'supply' | 'dome', basePrice: number): { options: SourceOption[]; issue?: string } {
+  let o: any = selectOpt;
+  if (typeof o === 'string') {
+    try {
+      o = JSON.parse(o);
+    } catch {
+      return { options: [], issue: '도매꾹 옵션 정보를 해석하지 못함' };
+    }
+  }
+  if (!o || typeof o !== 'object' || !o.data || typeof o.data !== 'object') return { options: [] };
+  const sets: Array<{ name?: string; opts?: string[] }> = Array.isArray(o.set) ? o.set : Array.isArray(o.orgSet) ? o.orgSet : [];
+  if (o.type === 'independent' && sets.length > 1) return { options: [], issue: '도매꾹 독립형 옵션이 여러 개(축마다 따로 고르는 옵션) — 쿠팡 옵션 하나로 정확히 표현할 수 없음' };
+  const options: SourceOption[] = [];
+  for (const [key, v] of Object.entries<any>(o.data)) {
+    const idx = key.split('_').map((x) => Number(x));
+    let attrs: Array<{ name: string; value: string }>;
+    let name: string;
+    if (o.type === 'independent') {
+      const set = sets[idx[0] ?? 0];
+      const value = String(set?.opts?.[idx[1] ?? 0] ?? String(v?.name ?? '').replace(/^[^/]*\//, ''));
+      attrs = [{ name: String(set?.name ?? '옵션'), value }];
+      name = value;
+    } else if (sets.length > 1 && idx.length === sets.length) {
+      attrs = sets.map((s, i) => ({ name: String(s.name ?? '옵션'), value: String(s.opts?.[idx[i]!] ?? '') })).filter((a) => a.value);
+      name = String(v?.name ?? attrs.map((a) => a.value).join('/'));
+    } else {
+      name = String(v?.name ?? '');
+      attrs = name ? [{ name: String(sets[0]?.name ?? '옵션'), value: name }] : [];
+    }
+    if (!name) continue;
+    const sold = String(market === 'supply' ? v?.sup ?? '1' : v?.dom ?? '1') === '1';
+    const visible = String(v?.hid ?? '0') === '0';
+    const qty = Number(v?.qty);
+    const extra = Number(market === 'supply' ? v?.supPrice ?? v?.domPrice : v?.domPrice) || 0;
+    options.push({ name, price: Math.round(basePrice + extra), stock: sold && visible ? (Number.isFinite(qty) ? qty : null) : 0, attrs });
+  }
+  return { options };
 }
 
 /** "1+3800|20+3500" 수량별 단가 → 1개 기준 단가. 정수면 그대로 */

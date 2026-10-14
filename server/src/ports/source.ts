@@ -30,6 +30,18 @@ export interface SourceNoticeItem {
   value: string;
 }
 
+export interface SourceOptionAttr {
+  name: string;
+  value: string;
+}
+
+export interface SourceOption {
+  name: string;
+  price: number;
+  stock: number | null;
+  attrs?: SourceOptionAttr[];
+}
+
 export interface SourceProductDetail extends SourceProductSummary {
   status: 'active' | 'soldout' | 'ended';
   stock: number | null;
@@ -61,7 +73,13 @@ export interface SourceProductDetail extends SourceProductSummary {
   shippingPerUnit?: boolean;
   /** 한 상자에 함께 보낼 수 있는 최대 수량 */
   maxPerBox?: number | null;
-  options?: Array<{ name: string; price: number; stock: number | null }>;
+  /**
+   * 공급처 옵션(변형). name 은 발주·고정에 쓰는 이름(값을 ' / ' 또는 '/' 로 연결), price 는 그 옵션의 실제 공급가,
+   * attrs 는 옵션 축별 이름·값(예: 색상=화이트, 사이즈=3호 / 축 이름이 '옵션'처럼 일반적이면 값 안에 정보가 섞여 있음)
+   */
+  options?: SourceOption[];
+  /** 옵션 구조를 해석할 수 없어 쿠팡 구매옵션을 정확히 만들 수 없음(예: 도매꾹 독립형 옵션 여러 개) — 등록 불가 사유 */
+  optionIssue?: string;
   /** 옵션이 여러 개인 상품에서 판매·발주할 기본 옵션(가장 싼 옵션 중 재고 최다) — 발주 시 이 옵션으로 주문 */
   defaultOption?: string;
   /** 오픈마켓(쿠팡) 판매 허용 여부(공급처 정책). false면 판매하면 안 됨. 모르면 undefined */

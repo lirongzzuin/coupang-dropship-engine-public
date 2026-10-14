@@ -1,7 +1,8 @@
 import type { Logger } from '../../lib/logger.js';
 import { HttpError, RateLimiter, retry } from '../../lib/util.js';
+import { pickDefaultOption, sameOption } from '../options.js';
 import type {
-  SourceAdapter, SourceOrderCheck, SourceOrderCheckRequest, SourceOrderRequest, SourceOrderResult, SourceOrderState, SourceProductDetail, SourceProductSummary, SourceTracking,
+  SourceAdapter, SourceOption, SourceOrderCheck, SourceOrderCheckRequest, SourceOrderRequest, SourceOrderResult, SourceOrderState, SourceProductDetail, SourceProductSummary, SourceTracking,
 } from '../../ports/source.js';
 
 /**
@@ -141,11 +142,13 @@ export class OwnerclanSource implements SourceAdapter {
     const it = data?.item;
     if (!it) return null;
     const s = toSummary(it);
-    const opts = (it.options ?? []).map((o: any) => ({
+    const opts: SourceOption[] = (it.options ?? []).map((o: any) => ({
       name: (o.optionAttributes ?? []).map((a: any) => a.value).filter(Boolean).join(' / '),
       price: Math.round(o.price ?? it.price),
       // 옵션 상태가 판매중이 아니면 재고 0으로 취급(품절 옵션으로 발주 방지)
       stock: o.status && o.status !== 'available' ? 0 : o.quantity ?? null,
+      // 옵션 축 이름·값(예: 사이즈=높은 중형) → 쿠팡 구매옵션(색상·사이즈) 매핑에 사용
+      attrs: (o.optionAttributes ?? []).filter((a: any) => a?.value).map((a: any) => ({ name: String(a.name ?? ''), value: String(a.value) })),
     }));
     // 옵션이 여러 개면 기본 옵션 하나를 정해 그 가격·재고로 판매하고 그 옵션으로 발주(옵션 미지정 발주 실패 방지)
     // 이미 쿠팡에 올린 옵션(hint.option)이 있으면 그 옵션만 본다 — 품절이라고 다른 색·사이즈로 바꿔 보내면 안 됨
@@ -324,14 +327,5 @@ function toSummary(it: any): SourceProductSummary {
   };
 }
 
-/** 옵션 이름 비교(공백·구분자 차이 무시) */
-export function sameOption(a: string, b: string): boolean {
-  const n = (x: string) => x.replace(/\s+/g, '').toLowerCase();
-  return n(a) === n(b);
-}
-
-/** 재고 있는 옵션 중 가장 싼 것, 같으면 재고 많은 것 */
-export function pickDefaultOption<T extends { name: string; price: number; stock: number | null }>(opts: T[]): T | undefined {
-  const inStock = opts.filter((o) => o.name && (o.stock === null || o.stock > 0));
-  return [...(inStock.length ? inStock : opts)].sort((a, b) => a.price - b.price || (b.stock ?? 0) - (a.stock ?? 0))[0];
-}
+// 옵션 공통 처리(도매꾹과 공유)
+export { pickDefaultOption, sameOption };
