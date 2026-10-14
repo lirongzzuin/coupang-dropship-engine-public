@@ -15,7 +15,7 @@ import { maskAddress, maskName, maskPhone } from '../lib/logger.js';
 import { errMessage } from '../lib/util.js';
 import { answerInquiry } from '../modules/cs/service.js';
 import { listingProfit, monthlyCsv } from '../modules/finance/service.js';
-import { pauseListing, resumeListing } from '../modules/listing/control.js';
+import { forceStop, requestResume } from '../modules/monitor/repair.js';
 import { linkExistingListing, ListingError, quoteSourceItem, listNameFixes, markNameFixed, registerListing, relistWithOption, updateDraft, validateListing } from '../modules/listing/service.js';
 import { importCoupangSalesCsv } from '../modules/marketdata/csvImport.js';
 import { confirmPurchase, decryptReceiver, OrderError, overrideAndProcess, submitTracking, transition } from '../modules/orders/service.js';
@@ -320,9 +320,10 @@ export async function buildServer(ctx: AppContext, scheduler: Scheduler | null, 
       return linkExistingListing(ctx, b, actor(req));
     });
     api.post('/api/listings/:id/register', async (req) => registerListing(ctx, idParam(req), actor(req)));
+    // 강제 판매중지: 자동으로는 절대 재개하지 않음([판매재개] → 검토 후 재개만)
     api.post('/api/listings/:id/pause', async (req) => {
-      const l = await ctx.db.selectFrom('listings').selectAll().where('id', '=', idParam(req)).executeTakeFirstOrThrow();
-      return { ok: await pauseListing(ctx, l, '관리자 중지') };
+      await forceStop(ctx, idParam(req), actor(req));
+      return { ok: true };
     });
     // 이전 버전으로 올린 상품 중 노출상품명에 옵션 단어가 겹치는 상품 → 제안 이름(사람이 Wing에서 수정)
     api.get('/api/listings/name-fixes', async () => listNameFixes(ctx));
@@ -337,10 +338,8 @@ export async function buildServer(ctx: AppContext, scheduler: Scheduler | null, 
     });
     // 옵션이 정해지지 않은 채 올라간 상품 → 공급처 옵션을 정해 새로 등록
     api.post('/api/listings/:id/relist', async (req) => relistWithOption(ctx, idParam(req), actor(req)));
-    api.post('/api/listings/:id/resume', async (req) => {
-      const l = await ctx.db.selectFrom('listings').selectAll().where('id', '=', idParam(req)).executeTakeFirstOrThrow();
-      return { ok: await resumeListing(ctx, { ...l, status: 'paused' }) };
-    });
+    // 판매재개: 바로 재개하지 않고 검토(설정 점검 → 필요하면 쿠팡 수정·승인 → 공급처 확인) 후 재개
+    api.post('/api/listings/:id/resume', async (req) => requestResume(ctx, idParam(req), actor(req)));
 
     // ── 이미지 업로드(쿠팡이 내려받을 공개 URL 생성) ──
     api.post('/api/media', async (req) => {

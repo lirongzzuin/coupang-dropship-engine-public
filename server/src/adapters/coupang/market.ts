@@ -10,6 +10,18 @@ import { type CoupangClient, money } from './client.js';
  * 사양 변경 시 이 파일만 수정한다.
  */
 const SELLER = '/v2/providers/seller_api/apis/api/v1/marketplace';
+/** 매출내역 1회 조회 최대 일수(쿠팡 한도 1개월 미만보다 넉넉히) */
+const REVENUE_WINDOW_DAYS = 14;
+
+/** YYYY-MM-DD 기간을 최대 days 일(양 끝 포함)씩 겹치지 않게 나눔 */
+export function dateWindows(fromDate: string, toDate: string, days: number): Array<[string, string]> {
+  const DAY = 86400_000;
+  const d = (s: string) => Date.parse(`${s}T00:00:00Z`);
+  const f = (t: number) => new Date(t).toISOString().slice(0, 10);
+  const out: Array<[string, string]> = [];
+  for (let start = d(fromDate); start <= d(toDate); start += days * DAY) out.push([f(start), f(Math.min(start + (days - 1) * DAY, d(toDate)))]);
+  return out;
+}
 const OPEN = '/v2/providers/openapi/apis/api';
 
 export class CoupangMarket implements MarketPort {
@@ -293,7 +305,17 @@ export class CoupangMarket implements MarketPort {
 
   // ── 정산·CS ──────────────────────────────────────────────────────
 
+  /**
+   * 매출내역. 쿠팡은 조회 기간이 1개월 미만이어야 함(실측 2026-10-14: 31일 → 400 "Date range period must be less than 1 months")
+   * → 최대 REVENUE_WINDOW_DAYS 일씩 나눠 조회(구간은 날짜 단위로 겹치지 않음)
+   */
   async listRevenue(fromDate: string, toDate: string): Promise<RevenueLine[]> {
+    const out: RevenueLine[] = [];
+    for (const [from, to] of dateWindows(fromDate, toDate, REVENUE_WINDOW_DAYS)) out.push(...(await this.listRevenueWindow(from, to)));
+    return out;
+  }
+
+  private async listRevenueWindow(fromDate: string, toDate: string): Promise<RevenueLine[]> {
     const out: RevenueLine[] = [];
     let token = '';
     for (let page = 0; page < 200; page++) {

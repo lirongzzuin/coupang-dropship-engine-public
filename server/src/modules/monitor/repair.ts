@@ -5,7 +5,7 @@ import { errMessage, truncate } from '../../lib/util.js';
 import type { CategoryMeta } from '../../ports/market.js';
 import { upsertSourceProduct } from '../catalog.js';
 import { getHalt } from '../guard/safety.js';
-import { PAUSE, pauseKind, resumeListing } from '../listing/control.js';
+import { PAUSE, pauseKind, pauseListing, resumeListing } from '../listing/control.js';
 import { getItems } from '../listing/items.js';
 import { buildAttributes } from '../listing/payload.js';
 import { productNameFor } from '../listing/text.js';
@@ -23,8 +23,15 @@ import { supplyProblem } from '../sync/service.js';
  * 직접 연결한 상품(Wing에서 직접 등록)은 사람이 정한 설정이라 고치지 않는다.
  */
 
-/** 설정 오류가 고쳐지면 판매를 재개해도 되는 중지 사유 */
-const RESUMABLE = ['관리자 중지', PAUSE.wing, PAUSE.optionUnset];
+/** 사람이 강제로 멈춤 — 자동으로는 절대 재개하지 않음(관리 화면 [판매재개] → 검토 후 재개만) */
+export const FORCE_STOP = '관리자 중지(강제)';
+/** [판매재개]를 누른 상품: 설정 점검(필요하면 쿠팡 수정·승인) → 공급처 확인 → 재개 */
+export const REVIEWING = '재개 검토중';
+/** 재개 보류: 점검에서 고칠 수 없는 문제가 나옴(사람이 확인) */
+export const HELD = '재개 보류';
+
+/** 설정 점검·수정이 끝나면 판매를 재개해도 되는 중지 사유(시스템이 멈춘 옵션 미지정, 사람이 재개를 요청한 상품) */
+const RESUMABLE = [PAUSE.optionUnset, REVIEWING];
 const resumable = (reason: string | null) => !!reason && RESUMABLE.some((p) => reason.startsWith(p));
 const norm = (v: unknown) => String(v ?? '').replace(/\s+/g, '').toLowerCase();
 
@@ -125,7 +132,7 @@ export async function repairListings(ctx: AppContext): Promise<RepairResult> {
     .where((eb) => eb.or([eb('candidate_id', 'is not', null), eb('payload', 'is not', null)]))
     .orderBy('id').execute();
   const metaCache = new Map<string, CategoryMeta>();
-  const requested: string[] = [], completed: string[] = [], resumedT: string[] = [], failed: string[] = [], unfixable: string[] = [], noError: string[] = [];
+  const requested: string[] = [], completed: string[] = [], resumedT: string[] = [], failed: string[] = [], unfixable: string[] = [];
   for (const l of rows) {
     try {
       if (l.repair_state === 'requested') {
@@ -139,6 +146,7 @@ export async function repairListings(ctx: AppContext): Promise<RepairResult> {
       if (a.skip) continue;
       if (a.unfixable) {
         out.unfixable++;
+        await hold(ctx, l, a.unfixable);
         if (l.repair_note !== a.unfixable) {
           await ctx.db.updateTable('listings').set({ repair_note: a.unfixable.slice(0, 500) }).where('id', '=', l.id).execute();
           unfixable.push(`• ${l.title.slice(0, 26)} — ${a.unfixable.slice(0, 80)}`);
@@ -149,39 +157,20 @@ export async function repairListings(ctx: AppContext): Promise<RepairResult> {
         // 쿠팡 설정은 정상. 판매 옵션만 새로 정했으면 기록하고, 옵션 미지정으로 멈춘 상품은 재개
         if (a.pin && a.pin !== l.source_option) await ctx.db.updateTable('listings').set({ source_option: a.pin }).where('id', '=', l.id).execute();
         if (l.repair_note) await ctx.db.updateTable('listings').set({ repair_note: null }).where('id', '=', l.id).execute();
-        if (l.status === 'paused' && l.status_reason?.startsWith(PAUSE.optionUnset)) {
+        if (l.status === 'paused' && resumable(l.status_reason)) {
           if (await tryResume(ctx, { ...l, source_option: a.pin ?? l.source_option })) {
             out.resumed++;
             resumedT.push(`• ${l.title.slice(0, 26)}`);
           }
-        } else if (l.status === 'paused' && resumable(l.status_reason)) {
-          noError.push(`• ${l.title.slice(0, 26)}`);
         }
         continue;
       }
       if (out.requested >= s.repair.perRun) continue; // 나머지는 다음 실행
-      const r = await ctx.market.updateProduct(a.body);
-      const fields = {
-        repair_requested_at: now,
-        repair_attempts: l.repair_attempts + 1,
-        repair_note: (r.ok ? a.changes.join('\n') : `수정 요청 실패: ${r.message}`).slice(0, 1000),
-      };
+      const r = await requestFix(ctx, l, a);
       if (r.ok) {
-        const p = (typeof l.payload === 'string' ? JSON.parse(l.payload) : l.payload) as Record<string, unknown> | null;
-        await ctx.db.updateTable('listings').set({
-          ...fields,
-          repair_state: 'requested',
-          repair_resume: l.status === 'paused' && resumable(l.status_reason),
-          source_option: a.pin ?? l.source_option,
-          title: a.name ?? l.title,
-          ...(p ? { payload: JSON.stringify({ ...p, displayProductName: a.name, sellerProductName: a.name, generalProductName: a.name }) } : {}),
-          updated_at: now,
-        }).where('id', '=', l.id).execute();
-        await audit(ctx, 'repair', 'listing.repair_requested', String(l.id), { changes: a.changes, dryRun: !!r.dryRun });
         out.requested++;
         requested.push(`• ${l.title.slice(0, 26)}\n  ${a.changes.join('\n  ')}`);
       } else {
-        await ctx.db.updateTable('listings').set({ ...fields, repair_state: 'failed', updated_at: now }).where('id', '=', l.id).execute();
         out.failed++;
         failed.push(`• ${l.title.slice(0, 26)} — ${r.message.slice(0, 120)}`);
       }
@@ -196,7 +185,6 @@ export async function repairListings(ctx: AppContext): Promise<RepairResult> {
   if (resumedT.length) await n.notify('info', `설정 수정 확인 → 판매 재개 ${resumedT.length}개`, resumedT.slice(0, 8).join('\n'), { path: '/listings' });
   if (failed.length) await n.notify('error', `상품 설정 수정 실패 ${failed.length}개`, `${failed.slice(0, 6).join('\n')}\n${s.repair.retryHours}시간 뒤 다시 시도합니다(최대 ${s.repair.maxAttempts}회). 계속 실패하면 Wing 상품관리에서 직접 수정하세요.`, { path: '/listings' });
   if (unfixable.length) await n.notify('warn', `자동으로 고칠 수 없는 상품 ${unfixable.length}개`, `${unfixable.slice(0, 6).join('\n')}\n판매중이면 그대로 두고, 멈춘 상품은 멈춘 채로 둡니다. Wing에서 직접 수정하거나 상품을 정리하세요.`, { path: '/listings' });
-  if (noError.length) await n.notify('info', `직접 멈춘 상품 ${noError.length}개 — 설정 오류 없음`, `${noError.slice(0, 8).join('\n')}\n쿠팡 설정에 오류가 없어 자동으로 재개하지 않았습니다. 다시 팔려면 관리 화면 [판매재개].`, { path: '/listings', dedupeKey: `repair-noerror-${noError.length}`, dedupeMinutes: 7 * 24 * 60 });
   return out;
 }
 
@@ -211,6 +199,7 @@ async function followUp(ctx: AppContext, l: ListingRow, metaCache: Map<string, C
     if (a.body || a.unfixable) {
       const why = a.unfixable ?? `승인 후에도 값이 다름: ${a.changes.join(', ')}`;
       await ctx.db.updateTable('listings').set({ repair_state: 'failed', repair_note: why.slice(0, 1000), updated_at: now }).where('id', '=', l.id).execute();
+      await hold(ctx, l, why);
       acc.out.failed++;
       acc.failed.push(`• ${l.title.slice(0, 26)} — ${why.slice(0, 120)}`);
       return;
@@ -226,6 +215,7 @@ async function followUp(ctx: AppContext, l: ListingRow, metaCache: Map<string, C
   }
   if (status === '승인반려') {
     await ctx.db.updateTable('listings').set({ repair_state: 'failed', repair_note: '쿠팡이 수정을 반려 — Wing 상품관리에서 반려 사유 확인', updated_at: now }).where('id', '=', l.id).execute();
+    await hold(ctx, l, '쿠팡이 수정을 반려(Wing 상품관리에서 사유 확인)');
     acc.out.failed++;
     acc.failed.push(`• ${l.title.slice(0, 26)} — 쿠팡 승인 반려(Wing에서 사유 확인)`);
     return;
@@ -253,4 +243,115 @@ async function tryResume(ctx: AppContext, l: ListingRow): Promise<boolean> {
   const ok = await resumeListing(ctx, fresh);
   if (ok) await ctx.db.updateTable('listings').set({ repair_resume: false }).where('id', '=', l.id).execute();
   return ok;
+}
+
+/** 점검 결과(a.body)로 쿠팡 상품 수정 요청. 성공하면 심사 대기(requested), 실패면 failed + (재개 검토 중이면) 재개 보류 */
+async function requestFix(ctx: AppContext, l: ListingRow, a: AuditResult): Promise<{ ok: boolean; message: string }> {
+  const now = ctx.clock.now();
+  const r = await ctx.market.updateProduct!(a.body!);
+  const fields = {
+    repair_requested_at: now,
+    repair_attempts: l.repair_attempts + 1,
+    repair_note: (r.ok ? a.changes.join('\n') : `수정 요청 실패: ${r.message}`).slice(0, 1000),
+  };
+  if (!r.ok) {
+    await ctx.db.updateTable('listings').set({ ...fields, repair_state: 'failed', updated_at: now }).where('id', '=', l.id).execute();
+    await hold(ctx, l, `쿠팡 수정 요청 실패(${r.message.slice(0, 80)})`);
+    return { ok: false, message: r.message };
+  }
+  const p = (typeof l.payload === 'string' ? JSON.parse(l.payload) : l.payload) as Record<string, unknown> | null;
+  await ctx.db.updateTable('listings').set({
+    ...fields,
+    repair_state: 'requested',
+    repair_resume: l.status === 'paused' && resumable(l.status_reason),
+    source_option: a.pin ?? l.source_option,
+    title: a.name ?? l.title,
+    ...(p ? { payload: JSON.stringify({ ...p, displayProductName: a.name, sellerProductName: a.name, generalProductName: a.name }) } : {}),
+    updated_at: now,
+  }).where('id', '=', l.id).execute();
+  await audit(ctx, 'repair', 'listing.repair_requested', String(l.id), { changes: a.changes, dryRun: !!r.dryRun });
+  return { ok: true, message: a.changes.join(' / ') };
+}
+
+/** 재개 검토 중인 상품이 점검에서 막힘 → '재개 보류: 사유'(사람 확인, 자동 재개 안 함) */
+async function hold(ctx: AppContext, l: ListingRow, why: string): Promise<void> {
+  if (l.status !== 'paused' || !l.status_reason?.startsWith(REVIEWING)) return;
+  await ctx.db.updateTable('listings').set({ status_reason: `${HELD}: ${why}`.slice(0, 300), repair_resume: false, updated_at: ctx.clock.now() }).where('id', '=', l.id).execute();
+  await ctx.notifications.notify('warn', '판매 재개 보류', `${l.title.slice(0, 30)}: ${why.slice(0, 200)}\nWing 상품관리에서 직접 확인하거나 상품을 정리하세요. 고친 뒤 다시 [판매재개]를 누르면 다시 점검합니다.`, { path: '/listings' });
+}
+
+/**
+ * [강제 판매중지]: 쿠팡 판매중지 + 어떤 자동 처리도 재개하지 않음(동기화·점검·대조 모두). 진행 중인 자동 재개 예약도 취소.
+ * 다시 팔려면 [판매재개](검토 후 재개).
+ */
+export async function forceStop(ctx: AppContext, id: number, actor: string): Promise<ListingRow> {
+  const l = await ctx.db.selectFrom('listings').selectAll().where('id', '=', id).executeTakeFirst();
+  if (!l) throw Object.assign(new Error('등록 상품 없음'), { statusCode: 404 });
+  if (!['active', 'paused'].includes(l.status)) throw Object.assign(new Error('판매중·일시중지 상품만 강제 중지할 수 있습니다'), { statusCode: 400 });
+  if (l.status === 'active' && !(await pauseListing(ctx, l, FORCE_STOP))) {
+    throw Object.assign(new Error('쿠팡 판매중지 실패 — 잠시 후 다시 시도하거나 Wing에서 중지하세요'), { statusCode: 502 });
+  }
+  const now = ctx.clock.now();
+  // 이미 멈춘 상품도 강제 중지로(자동 재개 예약 취소). 쿠팡에서 판매중이면 대조가 다시 멈춤
+  await ctx.db.updateTable('listings').set({ status_reason: FORCE_STOP, repair_resume: false, paused_at: l.paused_at ?? now, updated_at: now }).where('id', '=', id).execute();
+  await audit(ctx, actor, 'listing.force_stop', String(id), { from: l.status, reason: l.status_reason });
+  return ctx.db.selectFrom('listings').selectAll().where('id', '=', id).executeTakeFirstOrThrow();
+}
+
+export interface ResumeRequestResult {
+  /** resumed: 바로 재개 / reviewing: 쿠팡 수정 심사·공급처 회복 등 기다리는 중(끝나면 자동 재개) / held: 재개 보류(사유 확인) */
+  state: 'resumed' | 'reviewing' | 'held';
+  message: string;
+}
+
+/**
+ * [판매재개]: 바로 재개하지 않고 검토 단계를 거친다.
+ *  1) 설정 점검(구매옵션·상품명·판매 옵션) — 오류가 있으면 쿠팡 수정 요청 → 승인 후 다시 점검(스케줄러) → 재개
+ *  2) 공급처 판매 가능 확인 — 품절이면 공급처 사유로 두고 재입고 시 동기화가 재개
+ *  3) 고칠 수 없으면 '재개 보류: 사유'
+ * 직접 연결한 상품·모의 등록분은 설정 점검 없이 공급처 확인만.
+ */
+export async function requestResume(ctx: AppContext, id: number, actor: string): Promise<ResumeRequestResult> {
+  const s = await ctx.settings.get();
+  let l = await ctx.db.selectFrom('listings').selectAll().where('id', '=', id).executeTakeFirst();
+  if (!l) throw Object.assign(new Error('등록 상품 없음'), { statusCode: 404 });
+  if (l.status === 'active') return { state: 'resumed', message: '이미 판매중입니다' };
+  if (!['paused', 'stopped'].includes(l.status)) throw Object.assign(new Error('일시중지·판매종료 상품만 재개할 수 있습니다'), { statusCode: 400 });
+  if (l.status_reason?.startsWith(PAUSE.deleted)) throw Object.assign(new Error('쿠팡에서 삭제된 상품입니다'), { statusCode: 400 });
+  if (s.killSwitch) throw Object.assign(new Error('긴급 정지 중입니다'), { statusCode: 400 });
+  if (await getHalt(ctx)) throw Object.assign(new Error('안전장치 판매 중지 중입니다(먼저 홈의 [판매 재개]로 안전장치 해제)'), { statusCode: 400 });
+  const now = ctx.clock.now();
+  await ctx.db.updateTable('listings').set({ status: 'paused', status_reason: `${REVIEWING}: 설정·공급처 점검 중`, repair_resume: true, paused_at: l.paused_at ?? now, updated_at: now }).where('id', '=', id).execute();
+  await audit(ctx, actor, 'listing.resume_requested', String(id), { from: l.status, reason: l.status_reason });
+  l = await ctx.db.selectFrom('listings').selectAll().where('id', '=', id).executeTakeFirstOrThrow();
+  const auditable = !l.dry_run && !!l.seller_product_id && (l.candidate_id !== null || l.payload !== null) && !!ctx.market.getProductDetail && !!ctx.market.updateProduct && s.repair.enabled;
+  if (auditable) {
+    if (l.repair_state === 'requested') {
+      await ctx.db.updateTable('listings').set({ status_reason: `${REVIEWING}: 쿠팡 수정 심사 대기` }).where('id', '=', id).execute();
+      return { state: 'reviewing', message: '쿠팡이 설정 수정을 심사 중입니다. 승인되면 다시 점검하고 자동으로 재개합니다.' };
+    }
+    let a: AuditResult;
+    try {
+      a = await auditListing(ctx, l);
+    } catch (e) {
+      return { state: 'reviewing', message: `점검을 끝내지 못했습니다(${errMessage(e).slice(0, 80)}). 1시간 안에 다시 점검해 재개합니다.` };
+    }
+    if (a.skip) return { state: 'reviewing', message: `지금은 점검할 수 없습니다(${a.skip}). 1시간 안에 다시 점검해 재개합니다.` };
+    if (a.unfixable) {
+      await hold(ctx, l, a.unfixable);
+      return { state: 'held', message: `재개 보류: ${a.unfixable}` };
+    }
+    if (a.body) {
+      const r = await requestFix(ctx, l, a);
+      if (!r.ok) return { state: 'held', message: `재개 보류: 쿠팡 수정 요청 실패(${r.message.slice(0, 80)})` };
+      await ctx.db.updateTable('listings').set({ status_reason: `${REVIEWING}: 쿠팡 수정 심사 대기` }).where('id', '=', id).execute();
+      return { state: 'reviewing', message: `설정 오류를 찾아 쿠팡에 수정을 요청했습니다(${a.changes.join(' / ').slice(0, 150)}). 승인되면 다시 점검하고 자동으로 재개합니다.` };
+    }
+    if (a.pin && a.pin !== l.source_option) await ctx.db.updateTable('listings').set({ source_option: a.pin }).where('id', '=', id).execute();
+    l = await ctx.db.selectFrom('listings').selectAll().where('id', '=', id).executeTakeFirstOrThrow();
+  }
+  if (await tryResume(ctx, l)) return { state: 'resumed', message: auditable ? '설정 점검 정상 · 공급처 판매 가능 → 판매를 재개했습니다' : '공급처 판매 가능 → 판매를 재개했습니다' };
+  const after = await ctx.db.selectFrom('listings').select(['status_reason']).where('id', '=', id).executeTakeFirstOrThrow();
+  if (pauseKind(after.status_reason) === 'supply') return { state: 'reviewing', message: `${after.status_reason} — 공급처가 회복되면 자동으로 재개합니다` };
+  return { state: 'reviewing', message: '쿠팡 판매 재개에 실패했습니다. 1시간 안에 다시 점검해 재개합니다.' };
 }

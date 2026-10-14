@@ -151,6 +151,8 @@ export async function reconcileMarketState(ctx: AppContext): Promise<ReconcileRe
   const deleted: string[] = [];
   let lookups = 0;
   for (const l of rows) {
+    // 설정 수정 심사 중인 상품은 쿠팡이 옵션 조회에 일시 오류(400)를 줌(실측) → 심사가 끝난 뒤 대조
+    if (l.repair_state === 'requested') continue;
     const vids = await vendorItemIds(ctx, l);
     if (!vids.length) continue;
     out.checked++;
