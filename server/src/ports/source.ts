@@ -64,7 +64,24 @@ export interface SourceProductDetail extends SourceProductSummary {
   options?: Array<{ name: string; price: number; stock: number | null }>;
   /** 옵션이 여러 개인 상품에서 판매·발주할 기본 옵션(가장 싼 옵션 중 재고 최다) — 발주 시 이 옵션으로 주문 */
   defaultOption?: string;
+  /** 오픈마켓(쿠팡) 판매 허용 여부(공급처 정책). false면 판매하면 안 됨. 모르면 undefined */
+  marketSellable?: boolean;
+  /** 판매 불가(status≠active)일 때 사람이 읽을 사유(예: 판매 옵션 삭제, 착불 전환) */
+  unavailableReason?: string;
 }
+
+/** 주문 가능 점검(실제 주문 없이 공급처 주문 시뮬레이션) */
+export interface SourceOrderCheckRequest {
+  sourceItemId: string;
+  option?: string;
+  qty: number;
+  receiver: { name: string; phone: string; addr1: string; addr2: string; zip: string };
+}
+
+export type SourceOrderCheck =
+  | { ok: true; cost: number; shippingCost: number }
+  /** definitive=true: 공급처가 주문을 거부(상품·옵션 주문 불가). false: 일시 오류(네트워크·한도) */
+  | { ok: false; definitive: boolean; reason: string };
 
 export interface SourceOrderRequest {
   idempotencyKey: string;
@@ -106,8 +123,14 @@ export interface SourceAdapter {
   readonly displayName: string;
   readonly capabilities: SourceCapabilities;
   search(keyword: string, opts?: { limit?: number; minPrice?: number; maxPrice?: number }): Promise<SourceProductSummary[]>;
-  getProduct(sourceItemId: string, hint?: { title?: string }): Promise<SourceProductDetail | null>;
+  /**
+   * 상품 상세. hint.option 이 있으면 그 옵션(쿠팡에 올린 옵션) 기준으로 가격·재고·상태를 낸다
+   * (그 옵션이 없어지거나 품절이면 다른 옵션으로 바꾸지 않고 판매 불가로 보고).
+   */
+  getProduct(sourceItemId: string, hint?: { title?: string; option?: string }): Promise<SourceProductDetail | null>;
   placeOrder?(req: SourceOrderRequest): Promise<SourceOrderResult>;
+  /** 주문 가능 점검: 실제 주문 없이 공급처가 이 주문을 받아주는지(시뮬레이션) */
+  checkOrderable?(req: SourceOrderCheckRequest): Promise<SourceOrderCheck>;
   getTracking?(sourceOrderId: string): Promise<SourceTracking | null>;
   /** 공급처 주문 상태 + 송장(결제 확인·공급사 취소 감지) */
   getOrderInfo?(sourceOrderId: string): Promise<{ state: SourceOrderState; rawStatus: string; tracking: SourceTracking | null }>;

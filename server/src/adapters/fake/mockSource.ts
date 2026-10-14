@@ -1,5 +1,5 @@
 import type {
-  SourceAdapter, SourceOrderRequest, SourceOrderResult, SourceOrderState, SourceProductDetail, SourceProductSummary, SourceTracking,
+  SourceAdapter, SourceOrderCheck, SourceOrderCheckRequest, SourceOrderRequest, SourceOrderResult, SourceOrderState, SourceProductDetail, SourceProductSummary, SourceTracking,
 } from '../../ports/source.js';
 
 /** 테스트·데모용 공급처. apiOrder 여부를 생성자에서 정해 두 가지 흐름(API/작업함)을 모두 검증한다. */
@@ -65,10 +65,40 @@ export class MockSource implements SourceAdapter {
     return (this.popular.get(code) ?? []).slice(0, limit);
   }
 
-  async getProduct(id: string): Promise<SourceProductDetail | null> {
+  /** 테스트: 상품별 getProduct 실패 횟수(특정 상품만 조회 실패) */
+  failProduct = new Map<string, number>();
+
+  async getProduct(id: string, hint: { option?: string } = {}): Promise<SourceProductDetail | null> {
     this.maybeFail('getProduct');
+    const n = this.failProduct.get(id) ?? 0;
+    if (n > 0) {
+      this.failProduct.set(id, n - 1);
+      throw new Error(`mock getProduct ${id} failure`);
+    }
     const p = this.products.get(id);
-    return p ? structuredClone(p) : null;
+    if (!p) return null;
+    const d = structuredClone(p);
+    // 옵션 고정: 실제 어댑터처럼 그 옵션의 가격·재고로, 없으면 판매 불가
+    if (hint.option && d.options?.length) {
+      const o = d.options.find((x) => x.name === hint.option);
+      if (!o) return { ...d, status: 'ended', stock: 0, defaultOption: hint.option, unavailableReason: `판매 옵션(${hint.option})이 공급처에서 없어짐` };
+      return { ...d, price: o.price, stock: o.stock, defaultOption: o.name, status: d.status === 'active' && o.stock === 0 ? 'soldout' : d.status };
+    }
+    return d;
+  }
+
+  /** 테스트: 주문 가능 점검 응답(상품별). 없으면 상품 상태로 판단 */
+  orderCheck = new Map<string, SourceOrderCheck>();
+  orderChecks: SourceOrderCheckRequest[] = [];
+
+  async checkOrderable(req: SourceOrderCheckRequest): Promise<SourceOrderCheck> {
+    this.orderChecks.push(req);
+    const preset = this.orderCheck.get(req.sourceItemId);
+    if (preset) return preset;
+    const p = this.products.get(req.sourceItemId);
+    if (!p || p.status !== 'active') return { ok: false, definitive: true, reason: '주문할 수 없는 상품입니다' };
+    const price = (req.option && p.options?.find((o) => o.name === req.option)?.price) || p.price;
+    return { ok: true, cost: price * req.qty, shippingCost: p.shippingFee };
   }
 
   async placeOrder(req: SourceOrderRequest): Promise<SourceOrderResult> {

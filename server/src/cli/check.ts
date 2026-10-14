@@ -43,6 +43,18 @@ export async function checkAll(env = loadEnv()): Promise<Result[]> {
     return `로그인·상품 검색 성공(예: ${items[0]?.title?.slice(0, 20) ?? '결과 없음'} ${items[0] ? `${items[0].price.toLocaleString()}원` : ''})`;
   }));
 
+  // 판매 중 상품의 '주문 가능 점검'과 같은 호출(주문은 만들지 않는 시뮬레이션)
+  r.push(await run('오너클랜 주문 가능 점검(시뮬레이션)', !!(env.OWNERCLAN_USERNAME && env.OWNERCLAN_PASSWORD), 'OWNERCLAN_USERNAME / OWNERCLAN_PASSWORD 입력', async () => {
+    const oc = new OwnerclanSource({ username: env.OWNERCLAN_USERNAME!, password: env.OWNERCLAN_PASSWORD!, sandbox: env.OWNERCLAN_SANDBOX, logger: log });
+    const items = await oc.search('수납', { limit: 5 });
+    if (!items.length) return '검색 결과 0건이라 건너뜀';
+    const d = await oc.getProduct(items[0]!.sourceItemId);
+    if (!d) return '상품 상세 없음이라 건너뜀';
+    const c = await oc.checkOrderable({ sourceItemId: d.sourceItemId, option: d.defaultOption, qty: 1, receiver: { name: '점검', phone: '010-0000-0000', addr1: '서울특별시 중구 세종대로 110', addr2: '', zip: '04524' } });
+    if (!c.ok) throw new Error(`시뮬레이션 실패(${c.definitive ? '공급처 거부' : '일시 오류'}): ${c.reason}`);
+    return `성공(주문 생성 없음): ${d.title.slice(0, 16)}${d.defaultOption ? ` [${d.defaultOption}]` : ''} 상품 ${c.cost.toLocaleString()}원 + 배송 ${c.shippingCost.toLocaleString()}원`;
+  }));
+
   r.push(await run('도매꾹 Open API', !!env.DOMEGGOOK_API_KEY, 'openapi.domeggook.com 에서 Open API 키 발급', async () => {
     const dg = new DomeggookSource({ apiKey: env.DOMEGGOOK_API_KEY!, market: env.DOMEGGOOK_MARKET, logger: log });
     const items = await dg.search('수납', { limit: 3 });

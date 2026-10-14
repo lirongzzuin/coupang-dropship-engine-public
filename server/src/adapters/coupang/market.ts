@@ -1,6 +1,6 @@
 import type {
   CategoryMeta, InvoiceInput, MarketClaim, MarketInquiry, MarketOrderLine, MarketOrderStatus, MarketPort,
-  MarketProductStatus, MarketResult, RevenueLine, ShippingPlaces,
+  ItemSaleState, MarketProductStatus, MarketResult, RevenueLine, ShippingPlaces,
 } from '../../ports/market.js';
 import { HttpError, kstDate, kstIsoMinute } from '../../lib/util.js';
 import { type CoupangClient, money } from './client.js';
@@ -239,6 +239,16 @@ export class CoupangMarket implements MarketPort {
 
   resumeSale(vendorItemId: string): Promise<MarketResult> {
     return this.simple('PUT', `${SELLER}/vendor-items/${vendorItemId}/sales/resume`);
+  }
+
+  /** 아이템별 수량/가격/판매상태 조회(GET vendor-items/{id}/inventories → amountInStock·salePrice·onSale) */
+  async getItemSaleState(vendorItemId: string): Promise<ItemSaleState | null> {
+    const res = await this.client.request('GET', `${SELLER}/vendor-items/${vendorItemId}/inventories`);
+    const d = res?.data;
+    // 응답 형식이 다르면 판단하지 않음(잘못된 판매중지·재개 방지)
+    if (!d || typeof d.onSale !== 'boolean') return null;
+    const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+    return { onSale: d.onSale, quantity: num(d.amountInStock), price: num(d.salePrice) };
   }
 
   // ── 정산·CS ──────────────────────────────────────────────────────

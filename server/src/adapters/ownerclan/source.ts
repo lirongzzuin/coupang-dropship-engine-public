@@ -1,7 +1,7 @@
 import type { Logger } from '../../lib/logger.js';
 import { HttpError, RateLimiter, retry } from '../../lib/util.js';
 import type {
-  SourceAdapter, SourceOrderRequest, SourceOrderResult, SourceOrderState, SourceProductDetail, SourceProductSummary, SourceTracking,
+  SourceAdapter, SourceOrderCheck, SourceOrderCheckRequest, SourceOrderRequest, SourceOrderResult, SourceOrderState, SourceProductDetail, SourceProductSummary, SourceTracking,
 } from '../../ports/source.js';
 
 /**
@@ -129,7 +129,7 @@ export class OwnerclanSource implements SourceAdapter {
     return (data?.allItems?.edges ?? []).filter((e: any) => e.node?.shippingType !== 'uponArrival').map((e: any) => toSummary(e.node));
   }
 
-  async getProduct(key: string): Promise<SourceProductDetail | null> {
+  async getProduct(key: string, hint: { option?: string } = {}): Promise<SourceProductDetail | null> {
     let data: any;
     try {
       data = await this.gql(`query($key:ID!){ item(key:$key){ ${ITEM_FIELDS} } }`, { key });
@@ -148,16 +148,27 @@ export class OwnerclanSource implements SourceAdapter {
       stock: o.status && o.status !== 'available' ? 0 : o.quantity ?? null,
     }));
     // 옵션이 여러 개면 기본 옵션 하나를 정해 그 가격·재고로 판매하고 그 옵션으로 발주(옵션 미지정 발주 실패 방지)
-    const def = opts.length > 1 ? pickDefaultOption(opts) : undefined;
-    const stock = def ? Number(def.stock ?? 0) : opts.reduce((a: number, o: { stock: number | null }) => a + (Number(o.stock) || 0), 0);
-    const status: SourceProductDetail['status'] =
+    // 이미 쿠팡에 올린 옵션(hint.option)이 있으면 그 옵션만 본다 — 품절이라고 다른 색·사이즈로 바꿔 보내면 안 됨
+    const pinned = hint.option ? opts.find((o: { name: string }) => sameOption(o.name, hint.option!)) : undefined;
+    const pinMissing = !!hint.option && !pinned;
+    const def = pinned ?? (opts.length > 1 ? pickDefaultOption(opts) : undefined);
+    const stock = pinMissing ? 0 : def ? Number(def.stock ?? 0) : opts.reduce((a: number, o: { stock: number | null }) => a + (Number(o.stock) || 0), 0);
+    const marketSellable = it.openmarketSellable === undefined || it.openmarketSellable === null ? undefined : !!it.openmarketSellable;
+    let status: SourceProductDetail['status'] =
       it.shippingType === 'uponArrival' ? 'ended' // 착불로 바뀐 상품은 판매 불가
       : it.status === 'available' ? (stock > 0 || !(it.options ?? []).length ? 'active' : 'soldout')
         : it.status === 'discontinued' ? 'ended' : 'soldout';
+    if (pinMissing) status = 'ended'; // 올린 옵션 자체가 없어짐 → 재입고로 돌아올 수 없음
+    const unavailableReason = it.shippingType === 'uponArrival' ? '착불 배송으로 변경됨'
+      : pinMissing ? `판매 옵션(${hint.option})이 공급처에서 없어짐`
+        : it.status === 'discontinued' ? '공급처 단종'
+          : status === 'soldout' ? (def?.name ? `옵션(${def.name}) 품절` : '공급처 품절') : undefined;
     return {
       ...s,
-      ...(def ? { price: def.price, defaultOption: def.name } : {}),
+      ...(def ? { price: def.price, defaultOption: def.name } : pinMissing ? { defaultOption: hint.option } : {}),
       status,
+      ...(status !== 'active' && unavailableReason ? { unavailableReason } : {}),
+      ...(marketSellable !== undefined ? { marketSellable } : {}),
       stock: (it.options ?? []).length ? stock : null,
       categoryPath: it.category?.fullName ?? it.category?.name,
       minResalePrice: it.pricePolicy === 'fixed' && it.fixedPrice ? Math.round(it.fixedPrice) : undefined,
@@ -233,6 +244,34 @@ export class OwnerclanSource implements SourceAdapter {
   }
 
   /**
+   * 주문 가능 점검: simulateCreateOrder(주문을 만들지 않는 시뮬레이션)로 이 상품·옵션·수량을 실제로 주문할 수 있는지와 금액을 확인.
+   * GraphQL 오류(상품·옵션 주문 불가)는 definitive, 한도·서버·타임아웃은 일시 오류.
+   */
+  async checkOrderable(req: SourceOrderCheckRequest): Promise<SourceOrderCheck> {
+    const input = {
+      sender: { name: req.receiver.name, phoneNumber: req.receiver.phone },
+      recipient: { name: req.receiver.name, phoneNumber: req.receiver.phone, destinationAddress: { addr1: req.receiver.addr1, addr2: req.receiver.addr2, postalCode: req.receiver.zip } },
+      products: [{ quantity: req.qty, itemKey: req.sourceItemId, optionAttributes: req.option ? req.option.split(' / ') : [] }],
+    };
+    try {
+      const sim = await this.gql(`mutation($input:OrderInput!){ simulateCreateOrder(input:$input){ itemAmounts { itemKey amount } shippingAmount extraShippingFeeExists } }`, { input });
+      const results: any[] = sim?.simulateCreateOrder ?? [];
+      const amounts = results.flatMap((r) => r.itemAmounts ?? []);
+      if (!amounts.length) return { ok: false, definitive: true, reason: '주문 시뮬레이션 결과에 상품 금액이 없음' };
+      return {
+        ok: true,
+        cost: amounts.reduce((a: number, x: any) => a + Math.round(x.amount ?? 0), 0),
+        shippingCost: results.reduce((a, r) => a + Math.round(r.shippingAmount ?? 0), 0),
+      };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      // 권한 없음(403)은 상품 문제가 아니라 계정 문제 → 상품을 멈추지 않음(다른 감시가 알림)
+      const definitive = e instanceof HttpError && e.status === 400;
+      return { ok: false, definitive, reason: msg.replace(/^오너클랜 GraphQL 오류:\s*/, '').slice(0, 160) };
+    }
+  }
+
+  /**
    * 공급처 주문 취소(고객이 쿠팡에서 취소했을 때). 결제완료(paid) 상태면 즉시 취소,
    * 이미 준비중이면 취소 요청(requestOrderCancellation=true) → 공급사가 수락하면 취소.
    */
@@ -283,6 +322,12 @@ function toSummary(it: any): SourceProductSummary {
     price: Math.round(it.price ?? 0),
     shippingFee: it.shippingType === 'free' ? 0 : Math.round(it.shippingFee ?? 0),
   };
+}
+
+/** 옵션 이름 비교(공백·구분자 차이 무시) */
+export function sameOption(a: string, b: string): boolean {
+  const n = (x: string) => x.replace(/\s+/g, '').toLowerCase();
+  return n(a) === n(b);
 }
 
 /** 재고 있는 옵션 중 가장 싼 것, 같으면 재고 많은 것 */

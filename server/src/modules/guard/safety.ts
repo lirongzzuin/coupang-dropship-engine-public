@@ -115,8 +115,8 @@ async function detect(ctx: AppContext): Promise<Found[]> {
     out.push({ key: 'poll-down', message: `쿠팡 주문 수집이 ${g.pollDownHours}시간 넘게 실패(마지막 성공 ${lastOk ?? '없음'})`,
       fix: '쿠팡 API 키·허용 IP·인터넷 확인(bash ~/dropship/bin/check.sh). 그동안 Wing에서 주문을 직접 확인' });
   }
-  // 5) 주문 처리·송장·재고 동기화 작업이 연속 실패
-  for (const job of ['orders.poll', 'orders.fulfillment', 'listings.sync']) {
+  // 5) 주문 처리·송장·재고 동기화·주문 가능 점검 작업이 연속 실패
+  for (const job of ['orders.poll', 'orders.fulfillment', 'listings.sync', 'listings.monitor']) {
     const runs = await ctx.db.selectFrom('job_runs').select(['ok']).where('job', '=', job).where('finished_at', 'is not', null).orderBy('id', 'desc').limit(g.jobFailStreak).execute();
     if (runs.length >= g.jobFailStreak && runs.every((r) => r.ok === false)) {
       out.push({ key: `job-${job}`, message: `작업 '${job}' ${g.jobFailStreak}회 연속 실패`, fix: '관리 화면 > 작업에서 오류 메시지 확인(bash ~/dropship/bin/status.sh)' });
