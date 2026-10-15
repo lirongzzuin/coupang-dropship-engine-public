@@ -4,7 +4,7 @@ import { api, dt, won } from '../api';
 import { Badge, Card, CopyButton, Loading, Msg, statusTone, useAction, useLoad } from '../ui';
 
 interface Detail {
-  id: number; market_order_id: string; shipment_box_id: string; item_name: string; qty: number; sale_amount: number;
+  id: number; market: string; market_order_id: string; shipment_box_id: string; item_name: string; qty: number; sale_amount: number;
   status: string; statusLabel: string; status_reason: string | null; ordered_at: string; ship_by: string | null;
   source_order_id: string | null; purchase_cost: number | null; purchase_shipping: number | null; expected_cost: number | null; expected_profit: number | null;
   courier_code: string | null; tracking_no: string | null; purchase_strategy: string | null; profit: number | null; settlement_amount: number | null;
@@ -52,12 +52,12 @@ export function OrderDetail() {
 
   return (
     <div className="stack">
-      <Card title={<>주문 #{o.id} <Badge tone={statusTone(o.status)}>{o.statusLabel}</Badge></>}>
+      <Card title={<>주문 #{o.id} <Badge tone={statusTone(o.status)}>{o.statusLabel}</Badge>{o.market === 'naver' && <> <Badge tone="green">스마트스토어</Badge></>}</>}>
         <div className="item-title">{o.item_name} × {o.qty}</div>
         {o.status_reason && <div className="item-reason">{o.status_reason}</div>}
         <table className="kv">
           <tbody>
-            <tr><th>쿠팡 주문번호</th><td>{o.market_order_id} <CopyButton value={o.market_order_id} /></td></tr>
+            <tr><th>{o.market === 'naver' ? '스마트스토어 주문번호' : '쿠팡 주문번호'}</th><td>{o.market_order_id} <CopyButton value={o.market_order_id} /></td></tr>
             <tr><th>판매금액</th><td>{won(o.sale_amount)}</td></tr>
             <tr><th>예상 원가/이익</th><td>{won(o.expected_cost)} / {won(o.expected_profit)}</td></tr>
             {o.profitEstimate && <tr><th>비용 내역</th><td className="small">수수료 {won(o.profitEstimate.fee + o.profitEstimate.feeVat)} · 부가세 {won(o.profitEstimate.vatPayable)} · 반품충당 {won(o.profitEstimate.returnReserve)}</td></tr>}

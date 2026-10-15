@@ -137,7 +137,8 @@ export async function repairListings(ctx: AppContext): Promise<RepairResult> {
   const out: RepairResult = { checked: 0, requested: 0, completed: 0, resumed: 0, failed: 0, unfixable: 0, errors: 0 };
   if (s.killSwitch || !s.repair.enabled || !ctx.market.getProductDetail || !ctx.market.updateProduct) return out;
   const now = ctx.clock.now();
-  const rows = await ctx.db.selectFrom('listings').selectAll().where('dry_run', '=', false).where('seller_product_id', 'is not', null)
+  // 구매옵션·상품명 점검은 쿠팡 상품 설정 기준
+  const rows = await ctx.db.selectFrom('listings').selectAll().where('market', '=', 'coupang').where('dry_run', '=', false).where('seller_product_id', 'is not', null)
     .where('status', 'in', ['active', 'paused'])
     .where((eb) => eb.or([eb('candidate_id', 'is not', null), eb('payload', 'is not', null)]))
     .orderBy('id').execute();
@@ -338,7 +339,7 @@ export async function requestResume(ctx: AppContext, id: number, actor: string):
   await ctx.db.updateTable('listings').set({ status: 'paused', status_reason: `${REVIEWING}: 설정·공급처 점검 중`, repair_resume: true, paused_at: l.paused_at ?? now, updated_at: now }).where('id', '=', id).execute();
   await audit(ctx, actor, 'listing.resume_requested', String(id), { from: l.status, reason: l.status_reason });
   l = await ctx.db.selectFrom('listings').selectAll().where('id', '=', id).executeTakeFirstOrThrow();
-  const auditable = !l.dry_run && !!l.seller_product_id && (l.candidate_id !== null || l.payload !== null) && !!ctx.market.getProductDetail && !!ctx.market.updateProduct && s.repair.enabled;
+  const auditable = l.market === 'coupang' && !l.dry_run && !!l.seller_product_id && (l.candidate_id !== null || l.payload !== null) && !!ctx.market.getProductDetail && !!ctx.market.updateProduct && s.repair.enabled;
   if (auditable) {
     if (l.repair_state === 'requested') {
       await ctx.db.updateTable('listings').set({ status_reason: `${REVIEWING}: 쿠팡 수정 심사 대기` }).where('id', '=', id).execute();

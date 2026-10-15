@@ -92,7 +92,12 @@ export interface AppContext {
   clock: Clock;
   settings: SettingsService;
   kv: KvStore;
+  /** 기본 판매채널(쿠팡) */
   market: MarketPort;
+  /** 판매채널별(쿠팡·스마트스토어). 행의 market 값으로 고른다(marketFor). 없으면 쿠팡만 */
+  markets?: Record<string, MarketPort>;
+  /** 스마트스토어 전용 기능(카테고리 목록·이미지 업로드·주소록) — 키가 있을 때만 */
+  naverApi?: import('./adapters/naver/commerce.js').NaverMarket;
   sources: SourceRegistry;
   marketData: MarketDataProvider;
   notifications: NotificationService;
@@ -108,3 +113,17 @@ export async function audit(ctx: Pick<AppContext, 'db' | 'clock'>, actor: string
     .values({ actor, action, target: target ?? null, detail: detail === undefined ? null : JSON.stringify(detail), at: ctx.clock.now() })
     .execute();
 }
+
+/** 행(listings·orders)의 판매채널 → 그 채널 어댑터(없으면 기본 쿠팡) */
+export function marketFor(ctx: Pick<AppContext, 'market' | 'markets'>, name: string | null | undefined): MarketPort {
+  return (name && ctx.markets?.[name]) || ctx.market;
+}
+
+/** 쓸 수 있는 판매채널 목록(쿠팡 + 연결된 채널) */
+export function allMarkets(ctx: Pick<AppContext, 'market' | 'markets'>): MarketPort[] {
+  const list = [ctx.market];
+  for (const [name, m] of Object.entries(ctx.markets ?? {})) if (name !== ctx.market.name && !list.includes(m)) list.push(m);
+  return list;
+}
+
+export const MARKET_LABEL: Record<string, string> = { coupang: '쿠팡', naver: '스마트스토어' };

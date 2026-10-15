@@ -197,7 +197,7 @@ export async function buildServer(ctx: AppContext, scheduler: Scheduler | null, 
     api.get('/api/orders', async (req) => {
       const q = z.object({ status: z.string().optional(), view: z.enum(['action', 'exception', 'active', 'all']).optional(), limit: z.coerce.number().default(100) }).parse(req.query);
       let query = ctx.db.selectFrom('orders').leftJoin('source_products', 'source_products.id', 'orders.source_product_id')
-        .select(['orders.id', 'orders.market_order_id', 'orders.item_name', 'orders.qty', 'orders.sale_amount', 'orders.status', 'orders.status_reason', 'orders.ordered_at', 'orders.ship_by', 'orders.expected_profit', 'orders.profit', 'orders.tracking_no', 'orders.purchase_strategy', 'source_products.source as source', 'orders.receiver_name_enc'])
+        .select(['orders.id', 'orders.market', 'orders.market_order_id', 'orders.item_name', 'orders.qty', 'orders.sale_amount', 'orders.status', 'orders.status_reason', 'orders.ordered_at', 'orders.ship_by', 'orders.expected_profit', 'orders.profit', 'orders.tracking_no', 'orders.purchase_strategy', 'source_products.source as source', 'orders.receiver_name_enc'])
         .orderBy('orders.id', 'desc').limit(Math.min(500, q.limit));
       if (q.status) query = query.where('orders.status', '=', q.status);
       if (q.view === 'action') query = query.where('orders.status', 'in', ACTION_STATUSES);
@@ -316,12 +316,23 @@ export async function buildServer(ctx: AppContext, scheduler: Scheduler | null, 
     });
 
     // ── 등록 상품 ──
+    /** 판매채널 상태(쿠팡·스마트스토어): 연결(키)·사용 설정·마지막 주문 수집·판매 상품 수 */
+    api.get('/api/channels', async () => {
+      const s = await ctx.settings.get();
+      const counts = await ctx.db.selectFrom('listings').select(['market', 'status', (eb) => eb.fn.countAll<number>().as('n')]).groupBy(['market', 'status']).execute();
+      const count = (m: string, st: string) => Number(counts.find((c) => c.market === m && c.status === st)?.n ?? 0);
+      return [
+        { name: 'coupang', label: '쿠팡', connected: true, enabled: true, lastOrderPollAt: await ctx.kv.get<string>('orders.lastPollOkAt'), active: count('coupang', 'active'), pending: count('coupang', 'pending_approval') },
+        { name: 'naver', label: '스마트스토어', connected: !!ctx.markets?.naver, enabled: s.naver.enabled, lastOrderPollAt: await ctx.kv.get<string>('orders.lastPollOkAt.naver'), active: count('naver', 'active'), pending: count('naver', 'pending_approval'), failed: count('naver', 'rejected') },
+      ];
+    });
     api.get('/api/listings', async (req) => {
-      const q = z.object({ status: z.string().optional() }).parse(req.query);
+      const q = z.object({ status: z.string().optional(), market: z.enum(['coupang', 'naver']).optional() }).parse(req.query);
       let query = ctx.db.selectFrom('listings').innerJoin('source_products', 'source_products.id', 'listings.source_product_id')
-        .select(['listings.id', 'listings.title', 'listings.status', 'listings.status_reason', 'listings.sale_price', 'listings.floor_price', 'listings.markup', 'listings.target_markup', 'listings.fee_rate_actual', 'listings.images', 'listings.vendor_item_id', 'listings.seller_product_id', 'listings.category_code', 'listings.category_name', 'listings.search_tags', 'listings.dry_run', 'listings.listed_at', 'listings.updated_at', 'listings.source_option', 'listings.checked_at', 'listings.order_checked_at', 'listings.check_fails', 'listings.repair_state', 'listings.repair_note',
+        .select(['listings.id', 'listings.market', 'listings.title', 'listings.status', 'listings.status_reason', 'listings.sale_price', 'listings.floor_price', 'listings.markup', 'listings.target_markup', 'listings.fee_rate_actual', 'listings.images', 'listings.vendor_item_id', 'listings.seller_product_id', 'listings.category_code', 'listings.category_name', 'listings.search_tags', 'listings.dry_run', 'listings.listed_at', 'listings.updated_at', 'listings.source_option', 'listings.checked_at', 'listings.order_checked_at', 'listings.check_fails', 'listings.repair_state', 'listings.repair_note',
           'source_products.source', 'source_products.price as source_price', 'source_products.shipping_fee as source_shipping', 'source_products.stock as source_stock', 'source_products.url as source_url', 'source_products.image_reuse_allowed'])
         .orderBy('listings.id', 'desc').limit(300);
+      if (q.market) query = query.where('listings.market', '=', q.market);
       // 쿠팡(Wing)에서 삭제한 상품은 [쿠팡 삭제] 탭에서만 보임
       const deleted = (eb: any) => eb.and([eb('listings.status', '=', 'stopped'), eb(eb.fn.coalesce('listings.status_reason', eb.val('')), 'like', '쿠팡에서 삭제됨%')]);
       if (q.status === 'deleted') query = query.where(deleted);

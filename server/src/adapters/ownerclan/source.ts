@@ -130,6 +130,15 @@ export class OwnerclanSource implements SourceAdapter {
     return (data?.allItems?.edges ?? []).filter((e: any) => e.node?.shippingType !== 'uponArrival').map((e: any) => toSummary(e.node));
   }
 
+  /** 상품명만 가볍게(키워드 공급처 확인용) — search()는 상세 HTML까지 받아 수십 초 걸림(실측 2026-10-15) */
+  async searchTitles(keyword: string, limit = 40): Promise<string[]> {
+    const data = await this.gql(
+      `query($search:String,$first:Int){ allItems(search:$search, first:$first, status: available, openmarketSellable:true, shippingLocationType: domestic){ edges { node { name shippingType } } } }`,
+      { search: keyword, first: limit },
+    );
+    return (data?.allItems?.edges ?? []).filter((e: any) => e.node?.shippingType !== 'uponArrival').map((e: any) => String(e.node?.name ?? ''));
+  }
+
   async getProduct(key: string, hint: { option?: string } = {}): Promise<SourceProductDetail | null> {
     let data: any;
     try {

@@ -10,6 +10,7 @@ import { FakeMarket } from './fake/fakeMarket.js';
  */
 export class DryRunMarket implements MarketPort {
   readonly name: string;
+  readonly label?: string;
   private seq = 0;
   constructor(
     private readonly inner: MarketPort,
@@ -17,6 +18,7 @@ export class DryRunMarket implements MarketPort {
     private readonly log: Logger,
   ) {
     this.name = inner.name;
+    this.label = inner.label;
   }
 
   /** 실제 판매채널(등록 사전 점검처럼 사람이 명시적으로 요청한 경우에만 사용) */
@@ -82,7 +84,7 @@ export class DryRunMarket implements MarketPort {
     return this.simulated('confirmReturn', { receiptId, count });
   }
 
-  async cancelOrder(input: { marketOrderId: string; vendorItemId: string; qty: number; reason: 'stock' | 'address' | 'price' }): Promise<MarketResult> {
+  async cancelOrder(input: { marketOrderId: string; vendorItemId: string; qty: number; reason: 'stock' | 'address' | 'price'; shipmentBoxId?: string }): Promise<MarketResult> {
     if (this.live('LIVE_FULFILLMENT') && this.inner.cancelOrder) return this.inner.cancelOrder(input);
     return this.simulated('cancelOrder', input);
   }

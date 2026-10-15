@@ -3,7 +3,7 @@ import { dt, won } from '../api';
 import { Badge, Loading, statusTone, useLoad } from '../ui';
 
 interface OrderRow {
-  id: number; market_order_id: string; item_name: string; qty: number; sale_amount: number; status: string; statusLabel: string;
+  id: number; market: string; market_order_id: string; item_name: string; qty: number; sale_amount: number; status: string; statusLabel: string;
   status_reason: string | null; ordered_at: string; ship_by: string | null; expected_profit: number | null; profit: number | null;
   tracking_no: string | null; source: string | null; receiver: string; purchase_strategy: string | null;
 }
@@ -32,6 +32,7 @@ export function Orders() {
         <Link key={o.id} to={`/orders/${o.id}`} className="item">
           <div className="item-head">
             <Badge tone={statusTone(o.status)}>{o.statusLabel}</Badge>
+            {o.market === 'naver' && <Badge tone="green">스마트스토어</Badge>}
             <span className="muted">{dt(o.ordered_at)}</span>
           </div>
           <div className="item-title">{o.item_name} × {o.qty}</div>

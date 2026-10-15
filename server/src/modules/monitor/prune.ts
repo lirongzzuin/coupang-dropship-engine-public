@@ -17,7 +17,8 @@ export interface Replaceable {
 
 /** 상한 계산과 같은 기준의 운영 상품 수(실등록 모드에선 모의 등록 제외) */
 export async function activeListingCount(ctx: AppContext): Promise<number> {
-  let q = ctx.db.selectFrom('listings').select((eb) => eb.fn.countAll<number>().as('n')).where('status', 'in', ['active', 'pending_approval']);
+  // 상한은 쿠팡 상품 기준(스마트스토어는 쿠팡 상품을 따라 올리며 naver.maxListings 로 따로 제한)
+  let q = ctx.db.selectFrom('listings').select((eb) => eb.fn.countAll<number>().as('n')).where('market', '=', 'coupang').where('status', 'in', ['active', 'pending_approval']);
   if (isLive(ctx.env, 'LIVE_LISTING')) q = q.where('dry_run', '=', false);
   return Number((await q.executeTakeFirst())?.n ?? 0);
 }
@@ -28,7 +29,7 @@ export async function pickReplaceable(ctx: AppContext, candidateMonthlyProfit: n
   if (!p.enabled || candidateMonthlyProfit < p.replaceMinGainKrw) return null;
   const now = ctx.clock.now();
   const minListed = new Date(now.getTime() - p.minAgeDays * 86400_000);
-  let q = ctx.db.selectFrom('listings').selectAll().where('status', '=', 'active').where('listed_at', '<', minListed);
+  let q = ctx.db.selectFrom('listings').selectAll().where('market', '=', 'coupang').where('status', '=', 'active').where('listed_at', '<', minListed);
   if (isLive(ctx.env, 'LIVE_LISTING')) q = q.where('dry_run', '=', false);
   const rows = (await q.execute()).filter((l) => !exclude.includes(l.id));
   if (!rows.length) return null;

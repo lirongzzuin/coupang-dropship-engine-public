@@ -8,7 +8,8 @@ import type {
  * 테스트 코드에서 seedOrder / deliver / addRevenue 등으로 상황을 만든다.
  */
 export class FakeMarket implements MarketPort {
-  readonly name = 'coupang';
+  /** 판매채널 이름(테스트에서 스마트스토어 흉내 시 'naver') */
+  constructor(readonly name = 'coupang', readonly label = name === 'naver' ? '스마트스토어' : '쿠팡') {}
   orders = new Map<string, MarketOrderLine[]>(); // shipmentBoxId → lines
   products = new Map<string, { payload: any; status: MarketProductStatus['status']; vendorItemIds: string[] }>();
   items = new Map<string, { price: number; qty: number; onSale: boolean }>();
@@ -166,7 +167,7 @@ export class FakeMarket implements MarketPort {
   }
 
   sellerCancels: Array<{ marketOrderId: string; vendorItemId: string; qty: number; reason: string }> = [];
-  async cancelOrder(input: { marketOrderId: string; vendorItemId: string; qty: number; reason: 'stock' | 'address' | 'price' }): Promise<MarketResult> {
+  async cancelOrder(input: { marketOrderId: string; vendorItemId: string; qty: number; reason: 'stock' | 'address' | 'price'; shipmentBoxId?: string }): Promise<MarketResult> {
     this.maybeFail('cancelOrder');
     const lines = [...this.orders.values()].flat().filter((l) => l.marketOrderId === input.marketOrderId && l.vendorItemId === input.vendorItemId);
     if (!lines.length || lines.some((l) => !['ACCEPT', 'INSTRUCT'].includes(l.status))) return { ok: false, retryable: false, message: '결제완료·상품준비중 상태가 아님' };
@@ -209,7 +210,8 @@ export class FakeMarket implements MarketPort {
 
   async createProduct(payload: any): Promise<{ sellerProductId: string }> {
     this.maybeFail('createProduct');
-    const id = `SP${++this.seq}`;
+    // 스마트스토어는 원상품번호(숫자)
+    const id = this.name === 'naver' ? String(900000 + ++this.seq) : `SP${++this.seq}`;
     this.products.set(id, { payload, status: 'IN_REVIEW', vendorItemIds: [] });
     return { sellerProductId: id };
   }
@@ -249,6 +251,21 @@ export class FakeMarket implements MarketPort {
     p.status = 'APPROVED';
     // 수정 후 재승인: 옵션ID는 그대로
     if (p.vendorItemIds.length && p.vendorItemIds.length === (p.payload?.items?.length ?? 1)) return p.vendorItemIds[0]!;
+    if (p.payload?.originProduct) {
+      // 스마트스토어 형식: 조합형 옵션(판매자 관리코드) 또는 단일 상품
+      const op = p.payload.originProduct;
+      const combos: any[] = op.detailAttribute?.optionInfo?.optionCombinations ?? [];
+      const rows = combos.length ? combos : [{ sellerManagerCode: op.detailAttribute?.sellerCodeInfo?.sellerManagementCode, price: 0, stockQuantity: op.stockQuantity, optionName1: '' }];
+      p.vendorItemIds = rows.map((c) => {
+        const code = String(c.sellerManagerCode ?? '').replace(/^NVI/, '');
+        const vi = `NV${sellerProductId}:${code || '0'}`;
+        this.items.set(vi, { price: op.salePrice + (c.price ?? 0), qty: c.stockQuantity ?? 0, onSale: true });
+        this.itemNames.set(vi, [c.optionName1, c.optionName2].filter(Boolean).join(' '));
+        this.sellerCodes.set(vi, String(c.sellerManagerCode ?? ''));
+        return vi;
+      });
+      return p.vendorItemIds[0]!;
+    }
     const payloadItems: any[] = p.payload?.items?.length ? p.payload.items : [{}];
     p.vendorItemIds = payloadItems.map((it) => {
       const vi = `VI${++this.seq}`;
@@ -259,6 +276,7 @@ export class FakeMarket implements MarketPort {
     return p.vendorItemIds[0]!;
   }
   itemNames = new Map<string, string>();
+  sellerCodes = new Map<string, string>();
 
   async getProductStatus(sellerProductId: string): Promise<MarketProductStatus> {
     this.maybeFail('getProductStatus');
@@ -266,7 +284,7 @@ export class FakeMarket implements MarketPort {
     const p = this.products.get(sellerProductId);
     if (!p) return { sellerProductId, status: 'UNKNOWN', rawStatus: '', vendorItemIds: [] };
     if (this.autoApprove && p.status === 'IN_REVIEW') this.approve(sellerProductId);
-    return { sellerProductId, status: p.status, rawStatus: p.status, vendorItemIds: p.vendorItemIds, items: p.vendorItemIds.map((v) => ({ vendorItemId: v, itemName: this.itemNames.get(v) ?? '' })) };
+    return { sellerProductId, status: p.status, rawStatus: p.status, vendorItemIds: p.vendorItemIds, items: p.vendorItemIds.map((v) => ({ vendorItemId: v, itemName: this.itemNames.get(v) ?? '', ...(this.sellerCodes.has(v) ? { sellerCode: this.sellerCodes.get(v) } : {}) })) };
   }
 
   private item(id: string) {

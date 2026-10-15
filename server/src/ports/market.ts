@@ -31,6 +31,10 @@ export interface MarketOrderLine {
   shipBy?: string;
   canceled?: boolean;
   invoiceNumber?: string;
+  /** 구매확정(스마트스토어) — 정산 예정 금액이 확정됨 */
+  decided?: boolean;
+  /** 정산 예정 금액(스마트스토어 expectedSettlementAmount) */
+  settlementAmount?: number;
 }
 
 export interface InvoiceInput {
@@ -90,8 +94,8 @@ export interface MarketProductStatus {
   status: 'APPROVED' | 'IN_REVIEW' | 'REJECTED' | 'DRAFT' | 'UNKNOWN';
   rawStatus: string;
   vendorItemIds: string[];
-  /** 옵션명별 옵션ID(묶음 옵션 매칭용) */
-  items?: Array<{ vendorItemId: string; itemName: string }>;
+  /** 옵션명별 옵션ID(묶음 옵션 매칭용). sellerCode = 등록 시 붙인 판매자 관리코드(스마트스토어 옵션 매칭) */
+  items?: Array<{ vendorItemId: string; itemName: string; sellerCode?: string }>;
   reason?: string;
 }
 
@@ -150,7 +154,10 @@ export interface MarketInquiry {
 }
 
 export interface MarketPort {
+  /** 판매채널 이름(listings.market·orders.market 값과 같음): coupang | naver */
   readonly name: string;
+  /** 화면·알림용 이름 */
+  readonly label?: string;
   // ── 주문 ──
   listOrders(from: Date, to: Date, status: MarketOrderStatus): Promise<MarketOrderLine[]>;
   getOrderLines(shipmentBoxId: string): Promise<MarketOrderLine[]>;
@@ -168,7 +175,7 @@ export interface MarketPort {
   /** 반품 입고 확인 → 반품 승인(환불). 빠른환불 대상이면 쿠팡이 자동 처리 */
   confirmReturn?(receiptId: string, count: number): Promise<MarketResult>;
   /** 판매자 주문 취소(공급처 품절 등). 판매자 점수(주문이행)가 떨어짐 */
-  cancelOrder?(input: { marketOrderId: string; vendorItemId: string; qty: number; reason: 'stock' | 'address' | 'price' }): Promise<MarketResult>;
+  cancelOrder?(input: { marketOrderId: string; vendorItemId: string; qty: number; reason: 'stock' | 'address' | 'price'; shipmentBoxId?: string }): Promise<MarketResult>;
   // ── 상품 ──
   predictCategory(productName: string): Promise<{ code: string; name: string } | null>;
   getCategoryMeta(code: string): Promise<CategoryMeta>;

@@ -194,6 +194,7 @@ export async function expandKeywords(ctx: AppContext, seeds: string[]): Promise<
  */
 export async function listedBefore(ctx: AppContext, source: string, sourceItemId: string): Promise<boolean> {
   const row = await ctx.db.selectFrom('listings').innerJoin('source_products', 'source_products.id', 'listings.source_product_id').select('listings.id')
+    .where('listings.market', '=', ctx.market.name)
     .where('source_products.source', '=', source).where('source_products.source_item_id', '=', sourceItemId)
     .where((eb) => eb.or([eb('listings.status', 'not in', ['stopped', 'rejected']), eb.and([eb('listings.status', '=', 'stopped'), eb('listings.dry_run', '=', false)])]))
     .executeTakeFirst();

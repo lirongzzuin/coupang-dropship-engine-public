@@ -7,7 +7,7 @@ import { LinkTool } from './LinkTool';
 const LAUNCH_DAYS = 10;
 
 interface Listing {
-  id: number; title: string; status: string; status_reason: string | null; sale_price: number; floor_price: number; markup: number; target_markup: number | null; fee_rate_actual: number | null; images: string[];
+  id: number; market: string; title: string; status: string; status_reason: string | null; sale_price: number; floor_price: number; markup: number; target_markup: number | null; fee_rate_actual: number | null; images: string[];
   vendor_item_id: string | null; seller_product_id: string | null; category_code: string | null; category_name: string | null; search_tags: string[];
   dry_run: boolean; listed_at: string | null; source: string; source_price: number; source_shipping: number; source_stock: number | null;
   source_url: string; image_reuse_allowed: boolean;
@@ -29,9 +29,15 @@ function checkLine(l: Listing): string | null {
 const STATUS_LABEL: Record<string, string> = { draft: '초안', pending_approval: '심사중', active: '판매중', paused: '일시중지', stopped: '판매종료', rejected: '반려', deleted: '쿠팡 삭제' };
 const FILTERS = ['', 'draft', 'pending_approval', 'active', 'paused', 'stopped', 'rejected', 'deleted'];
 
+interface Channel { name: string; label: string; connected: boolean; enabled: boolean; lastOrderPollAt: string | null; active: number; pending: number; failed?: number }
+
 export function Listings() {
   const [filter, setFilter] = useState('');
-  const { data, error, loading, reload } = useLoad<Listing[]>(`/api/listings${filter ? `?status=${filter}` : ''}`);
+  const [market, setMarket] = useState('');
+  const qs = new URLSearchParams({ ...(filter ? { status: filter } : {}), ...(market ? { market } : {}) }).toString();
+  const { data, error, loading, reload } = useLoad<Listing[]>(`/api/listings${qs ? `?${qs}` : ''}`);
+  const channels = useLoad<Channel[]>('/api/channels');
+  const naver = channels.data?.find((c) => c.name === 'naver');
   const [open, setOpen] = useState<number | null>(null);
   // 등록·중지 등으로 항목이 현재 필터에서 사라져도 결과가 보이도록 페이지 상단에 표시
   const act = useAction();
@@ -40,6 +46,16 @@ export function Listings() {
       <LinkTool onLinked={reload} />
       <NameFixes act={act} onChange={reload} />
       <Msg msg={act.msg} />
+      {naver && (
+        <div className="muted small">
+          스마트스토어: {!naver.connected ? '연결 안 됨(.env 에 커머스API 키 필요)' : !naver.enabled ? '꺼짐(설정 naver.enabled)' : `사용 중 · 판매 ${naver.active} · 심사 ${naver.pending}${naver.failed ? ` · 실패 ${naver.failed}` : ''}${naver.lastOrderPollAt ? ` · 주문 수집 ${dt(naver.lastOrderPollAt)}` : ''}`}
+        </div>
+      )}
+      {naver?.connected && (
+        <div className="tabs">
+          {[['', '모든 채널'], ['coupang', '쿠팡'], ['naver', '스마트스토어']].map(([v, label]) => <button key={v} className={market === v ? 'on' : ''} onClick={() => setMarket(v!)}>{label}</button>)}
+        </div>
+      )}
       <div className="tabs scroll">
         {FILTERS.map((f) => <button key={f} className={filter === f ? 'on' : ''} onClick={() => setFilter(f)}>{f ? STATUS_LABEL[f] : '전체'}</button>)}
       </div>
@@ -51,6 +67,7 @@ export function Listings() {
           <div className="item-head" onClick={() => setOpen(open === l.id ? null : l.id)}>
             {l.status === 'stopped' && l.status_reason?.startsWith('쿠팡에서 삭제됨') ? <Badge tone="gray">쿠팡 삭제</Badge> : <Badge tone={statusTone(l.status)}>{STATUS_LABEL[l.status] ?? l.status}</Badge>}
             {l.variants.length > 0 && <Badge tone="blue">옵션 {l.variants.length}개</Badge>}
+            {l.market === 'naver' && <Badge tone="green">스마트스토어</Badge>}
             {l.dry_run && l.status !== 'draft' && <Badge tone="amber">모의</Badge>}
             {l.status === 'active' && l.listed_at && Date.now() - new Date(l.listed_at).getTime() < LAUNCH_DAYS * 86400_000 && <Badge tone="blue">출시 가격</Badge>}
             <span className="muted">{l.source}</span>
@@ -178,7 +195,7 @@ function ListingEditor({ l, act, onChange }: { l: Listing; act: ReturnType<typeo
           <a className="btn" href={l.source_url} target="_blank" rel="noreferrer">공급처 보기</a>
         </div>
       )}
-      <div className="muted small">쿠팡 상품ID {l.seller_product_id ?? '-'} · 옵션ID {l.vendor_item_id ?? '-'} · 카테고리 {l.category_name ?? l.category_code ?? '-'} · 등록 {dt(l.listed_at)}</div>
+      <div className="muted small">{l.market === 'naver' ? '스마트스토어 원상품번호' : '쿠팡 상품ID'} {l.seller_product_id ?? '-'} · 옵션ID {l.vendor_item_id ?? '-'} · 카테고리 {l.category_name ?? l.category_code ?? '-'} · 등록 {dt(l.listed_at)}</div>
     </div>
   );
 }

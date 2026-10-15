@@ -1,9 +1,9 @@
 import { isLive } from '../../config/env.js';
-import { type AppContext, audit } from '../../context.js';
+import { allMarkets, type AppContext, audit, MARKET_LABEL, marketFor } from '../../context.js';
 import type { OrderClaimRow, OrderRow } from '../../db/schema.js';
 import { addDays, errMessage } from '../../lib/util.js';
 import type { ClaimStage, MarketClaim } from '../../ports/market.js';
-import { decryptReceiver, OrderError, resolveCourierCode, transition } from './service.js';
+import { channelEnabled, decryptReceiver, OrderError, resolveCourierCode, transition } from './service.js';
 import { canTransition, type OrderStatus, STATUS_LABEL } from './stateMachine.js';
 
 /**
@@ -18,6 +18,8 @@ import { canTransition, type OrderStatus, STATUS_LABEL } from './stateMachine.js
  * 고객 철회: 클레임 전 상태로 복구(공급처 취소를 이미 요청했으면 사람 확인)
  */
 const SYSTEM = 'system';
+/** 판매채널 관리 화면 이름(쿠팡 Wing / 스마트스토어센터) */
+const center = (market: string) => (market === 'naver' ? '스마트스토어센터' : 'Wing');
 const CLOSED_STAGES: ClaimStage[] = ['return_done', 'exchange_done', 'withdrawn'];
 
 /** 쿠팡 상태 → 진행 단계(어댑터가 stage 를 주지 않은 경우의 호환 처리) */
@@ -45,24 +47,40 @@ export async function pollClaims(ctx: AppContext): Promise<{ claims: number }> {
   // 열린 클레임은 상태 변화를 계속 봐야 하므로 가장 오래된 접수까지 조회(최대 30일)
   const oldest = Math.min(addDays(now, -3).getTime(), ...open.map((c) => new Date(c.requested_at).getTime() - 3600_000));
   const from = new Date(Math.max(oldest, addDays(now, -30).getTime()));
-  const claims = await ctx.market.listClaims(from, now);
   let n = 0;
   const seen = new Set<number>();
-  for (const c of claims) {
-    let q = ctx.db.selectFrom('orders').selectAll().where('market_order_id', '=', c.marketOrderId);
-    if (c.vendorItemId) q = q.where('vendor_item_id', '=', c.vendorItemId);
-    for (const o of await q.execute()) {
-      const row = await upsertClaim(ctx, o, c);
-      seen.add(row.id);
-      if (await handleClaimSafe(ctx, row.id)) n++;
+  const polled = new Set<string>();
+  for (const market of allMarkets(ctx)) {
+    if (!(await channelEnabled(ctx, market.name))) continue;
+    let claims: MarketClaim[];
+    try {
+      claims = await market.listClaims(from, now);
+    } catch (e) {
+      // 쿠팡 조회 실패는 기존처럼 작업 실패, 다른 채널 실패는 쿠팡 처리를 막지 않음
+      if (market === ctx.market) throw e;
+      ctx.log.error({ market: market.name, err: errMessage(e) }, '클레임 조회 실패');
+      continue;
+    }
+    polled.add(market.name);
+    for (const c of claims) {
+      let q = ctx.db.selectFrom('orders').selectAll().where('market', '=', market.name).where('market_order_id', '=', c.marketOrderId);
+      if (c.vendorItemId) q = q.where('vendor_item_id', '=', c.vendorItemId);
+      for (const o of await q.execute()) {
+        const row = await upsertClaim(ctx, o, c);
+        seen.add(row.id);
+        if (await handleClaimSafe(ctx, row.id)) n++;
+      }
     }
   }
   // 목록에 안 보이는 열린 클레임: 단건 조회로 최신 상태(고객 철회 포함) 확인 후 진행
   for (const row of open) {
     if (seen.has(row.id)) continue;
-    if (row.claim_type === 'RETURN' && ctx.market.getClaim && !row.receipt_id.includes('-')) {
+    const market = marketFor(ctx, row.market);
+    // 직접 만든 기록(seller-·reship-)은 조회 대상 아님. 쿠팡은 반품 접수만 단건 조회 가능, 스마트스토어는 상품주문 조회
+    const lookup = !row.receipt_id.includes('-') && (row.claim_type === 'RETURN' || row.receipt_id.includes(':'));
+    if (lookup && market.getClaim && polled.has(market.name)) {
       try {
-        const c = await ctx.market.getClaim(row.receipt_id);
+        const c = await market.getClaim(row.receipt_id);
         if (c) await ctx.db.updateTable('order_claims').set({ stage: stageOf(c), raw_status: c.status, updated_at: now }).where('id', '=', row.id).execute();
       } catch (e) {
         ctx.log.warn({ claim: row.id, err: errMessage(e) }, '클레임 단건 조회 실패');
@@ -211,7 +229,7 @@ async function handleCancel(ctx: AppContext, row: OrderClaimRow, o: OrderRow, co
   const count = row.count ?? o.qty;
   if (count < o.qty) {
     // 부분 취소: 공급처 부분 취소·부분 출고중지는 사람이 판단
-    await notifyOnce(ctx, row, 'partial', 'action', '부분 취소 요청', `${o.item_name}: 주문 ${o.qty}개 중 ${count}개 취소 요청.\n공급처 주문 수량을 조정(또는 취소 후 재주문)하고 Wing 반품/취소 관리에서 처리하세요.`);
+    await notifyOnce(ctx, row, 'partial', 'action', '부분 취소 요청', `${o.item_name}: 주문 ${o.qty}개 중 ${count}개 취소 요청.\n공급처 주문 수량을 조정(또는 취소 후 재주문)하고 ${center(o.market)} 반품/취소 관리에서 처리하세요.`);
     if (o.status !== 'MANUAL_REVIEW') await moveTo(ctx, o, 'MANUAL_REVIEW', `부분 취소 요청 ${count}/${o.qty}개`);
     return false;
   }
@@ -246,7 +264,7 @@ async function handleCancel(ctx: AppContext, row: OrderClaimRow, o: OrderRow, co
     }
     const code = resolveCourierCode(s.orders.courierAliases, src.tracking.courierName, src.tracking.courierCode);
     if (!code) {
-      await notifyOnce(ctx, row, 'shipped-nocode', 'action', '취소 요청 — 이미 발송됨(직접 처리)', `${o.item_name}: ${src.name}이 이미 보냈습니다(${src.tracking.courierName} ${src.tracking.trackingNo}). 택배사 코드를 몰라 자동 처리 못 함 → Wing 반품/취소 관리에서 [이미출고] 처리하세요.`);
+      await notifyOnce(ctx, row, 'shipped-nocode', 'action', '취소 요청 — 이미 발송됨(직접 처리)', `${o.item_name}: ${src.name}이 이미 보냈습니다(${src.tracking.courierName} ${src.tracking.trackingNo}). 택배사 코드를 몰라 자동 처리 못 함 → ${center(o.market)} 반품/취소 관리에서 [이미출고] 처리하세요.`);
       return false;
     }
     return shippedForClaim(ctx, row, o, code, src.tracking.trackingNo, `${src.name} 이미 발송`);
@@ -286,8 +304,9 @@ async function handleCancel(ctx: AppContext, row: OrderClaimRow, o: OrderRow, co
 }
 
 async function stopShipment(ctx: AppContext, row: OrderClaimRow, o: OrderRow, count: number): Promise<boolean> {
-  if (!ctx.market.stopShipment) return false;
-  const r = await ctx.market.stopShipment(row.receipt_id, count);
+  const market = marketFor(ctx, o.market);
+  if (!market.stopShipment) return false;
+  const r = await market.stopShipment(row.receipt_id, count);
   await audit(ctx, SYSTEM, 'claim.stop_shipment', String(o.id), { receiptId: row.receipt_id, ...r });
   if (r.ok) {
     await patchClaim(ctx, row, { action: 'stop_shipment', action_note: r.dryRun ? 'DRY_RUN 출고중지완료' : '출고중지완료 처리' });
@@ -295,17 +314,17 @@ async function stopShipment(ctx: AppContext, row: OrderClaimRow, o: OrderRow, co
   }
   if (r.retryable) return false;
   if (o.status !== 'CANCEL_REQUESTED') await moveTo(ctx, o, 'CANCEL_REQUESTED', `출고중지 처리 실패: ${r.message}`);
-  await notifyOnce(ctx, row, 'stop-failed', 'error', '출고중지 처리 실패', `${o.item_name}: ${r.message}\nWing 반품/취소 관리에서 [출고중지완료]를 직접 처리한 뒤 관리 화면 [공급처 취소 완료]를 누르세요.`);
+  await notifyOnce(ctx, row, 'stop-failed', 'error', '출고중지 처리 실패', `${o.item_name}: ${r.message}\n${center(o.market)} 반품/취소 관리에서 [출고중지완료]를 직접 처리한 뒤 관리 화면 [공급처 취소 완료]를 누르세요.`);
   return false;
 }
 
 async function shippedForClaim(ctx: AppContext, row: OrderClaimRow, o: OrderRow, courierCode: string, trackingNo: string, why: string): Promise<boolean> {
   if (row.action === 'already_shipped') return false;
-  const r = ctx.market.markShippedForClaim ? await ctx.market.markShippedForClaim(row.receipt_id, courierCode, trackingNo) : { ok: false, retryable: false, message: '지원 안 함' };
+  const r = marketFor(ctx, o.market).markShippedForClaim ? await marketFor(ctx, o.market).markShippedForClaim!(row.receipt_id, courierCode, trackingNo) : { ok: false, retryable: false, message: '지원 안 함' };
   await audit(ctx, SYSTEM, 'claim.already_shipped', String(o.id), { receiptId: row.receipt_id, ...r });
   if (!r.ok) {
     if (r.retryable) return false;
-    await notifyOnce(ctx, row, 'shipped-failed', 'error', '이미출고 처리 실패', `${o.item_name}: ${r.message}\nWing 반품/취소 관리에서 [이미출고]에 송장(${trackingNo})을 직접 입력하세요.`);
+    await notifyOnce(ctx, row, 'shipped-failed', 'error', '이미출고 처리 실패', `${o.item_name}: ${r.message}\n${center(o.market)} 반품/취소 관리에서 [이미출고]에 송장(${trackingNo})을 직접 입력하세요.`);
     return false;
   }
   await patchClaim(ctx, row, { action: 'already_shipped', action_note: `${why} → 이미출고 처리(${trackingNo})` });
@@ -335,7 +354,7 @@ async function handleReturnOpen(ctx: AppContext, row: OrderClaimRow, o: OrderRow
   } else if (row.stage === 'return_collected') {
     await notifyOnce(ctx, row, 'return_collected', 'action', '반품 입고완료 — 승인하면 환불', `${o.item_name}: 쿠팡에 반품 입고완료로 표시됐습니다. 상품 상태를 확인했으면 관리 화면 주문 > [반품 승인(환불)]을 누르세요.`);
   } else {
-    await notifyOnce(ctx, row, 'coupang_check', 'warn', '반품 — 쿠팡 확인 요청 중', `${o.item_name}: 쿠팡이 반품 건을 확인 중입니다(쿠팡확인요청). Wing 반품 관리에서 진행 상황을 확인하세요.`);
+    await notifyOnce(ctx, row, 'coupang_check', 'warn', '반품 — 쿠팡 확인 요청 중', `${o.item_name}: 쿠팡이 반품 건을 확인 중입니다(쿠팡확인요청). ${center(o.market)} 반품 관리에서 진행 상황을 확인하세요.`);
   }
   return moved;
 }
@@ -344,7 +363,7 @@ async function handleExchange(ctx: AppContext, row: OrderClaimRow, o: OrderRow):
   const s = await ctx.settings.get();
   let changed = false;
   if (row.claim_type === 'EXCHANGE') {
-    row = await notifyOnce(ctx, row, 'exchange_open', 'action', '교환 요청', `${o.item_name}: ${row.reason || '사유 없음'}\n① 공급처에 교환 접수(공급처 주문 ${o.source_order_id ?? '-'}) 또는 관리 화면 [공급처 재발송](새로 주문)\n② 재발송 송장을 Wing 교환 관리에 입력\n③ 회수 상품은 공급처로 반품`);
+    row = await notifyOnce(ctx, row, 'exchange_open', 'action', '교환 요청', `${o.item_name}: ${row.reason || '사유 없음'}\n① 공급처에 교환 접수(공급처 주문 ${o.source_order_id ?? '-'}) 또는 관리 화면 [공급처 재발송](새로 주문)\n② 재발송 송장을 ${center(o.market)} 교환 관리에 입력\n③ 회수 상품은 공급처로 반품`);
   }
   // 재발송 주문의 송장 회신
   if (row.reship_source_order_id && !row.reship_tracking) {
@@ -354,7 +373,7 @@ async function handleExchange(ctx: AppContext, row: OrderClaimRow, o: OrderRow):
     if (t?.trackingNo) {
       const code = resolveCourierCode(s.orders.courierAliases, t.courierName, t.courierCode) ?? t.courierName;
       row = await patchClaim(ctx, row, { reship_tracking: `${t.courierName} ${t.trackingNo}`, action_note: `재발송 송장 ${t.courierName} ${t.trackingNo}` });
-      await ctx.notifications.notify('action', row.claim_type === 'EXCHANGE' ? '교환 재발송 송장 — Wing에 입력' : '재발송 송장', `${o.item_name}: ${t.courierName}(${code}) ${t.trackingNo}${row.claim_type === 'EXCHANGE' ? '\nWing 교환 관리에서 교환상품 송장으로 입력하세요.' : '\n고객에게 새 송장을 안내하세요(쿠팡 고객문의 답변 등).'}`, { path: `/orders/${o.id}` });
+      await ctx.notifications.notify('action', row.claim_type === 'EXCHANGE' ? `교환 재발송 송장 — ${center(o.market)}에 입력` : '재발송 송장', `${o.item_name}: ${t.courierName}(${code}) ${t.trackingNo}${row.claim_type === 'EXCHANGE' ? `\n${center(o.market)} 교환 관리에서 교환상품 송장으로 입력하세요.` : '\n고객에게 새 송장을 안내하세요(쿠팡 고객문의 답변 등).'}`, { path: `/orders/${o.id}` });
       changed = true;
       if (row.claim_type === 'RESHIP') await close(ctx, row, `재발송 송장 ${t.courierName} ${t.trackingNo}`);
     }
@@ -410,8 +429,8 @@ export async function claimAction(ctx: AppContext, orderId: number, claimId: num
   if (input.action === 'source_cancelled') {
     if (!['stop_requested', 'cancelled'].includes(row.stage)) throw new OrderError('취소 요청 단계가 아닙니다');
     if (row.stage === 'stop_requested') {
-      const r = ctx.market.stopShipment ? await ctx.market.stopShipment(row.receipt_id, row.count ?? o.qty) : null;
-      if (!r?.ok) throw new OrderError(`쿠팡 출고중지완료 실패: ${r?.message ?? '지원 안 함'} — Wing에서 직접 처리 후 [처리 완료]`);
+      const r = marketFor(ctx, o.market).stopShipment ? await marketFor(ctx, o.market).stopShipment!(row.receipt_id, row.count ?? o.qty) : null;
+      if (!r?.ok) throw new OrderError(`쿠팡 출고중지완료 실패: ${r?.message ?? '지원 안 함'} — ${center(o.market)}에서 직접 처리 후 [처리 완료]`);
     }
     await moveTo(ctx, o, 'CANCELLED', `공급처 취소 완료(${actor})`, actor);
     await close(ctx, row, `공급처 취소 완료(${actor})${row.stage === 'stop_requested' ? ' → 출고중지완료' : ''}`);
@@ -427,7 +446,7 @@ export async function claimAction(ctx: AppContext, orderId: number, claimId: num
   }
   // approve_return
   if (!['return_requested', 'return_collected'].includes(row.stage)) throw new OrderError('반품 승인 단계가 아닙니다');
-  const r = ctx.market.confirmReturn ? await ctx.market.confirmReturn(row.receipt_id, row.count ?? o.qty) : null;
+  const r = marketFor(ctx, o.market).confirmReturn ? await marketFor(ctx, o.market).confirmReturn!(row.receipt_id, row.count ?? o.qty) : null;
   if (!r?.ok) throw new OrderError(`반품 승인 실패: ${r?.message ?? '지원 안 함'}`);
   await patchClaim(ctx, row, { stage: 'return_done', action: 'approve_return', action_note: `${actor} 반품 승인(환불)` });
   await handleClaim(ctx, row.id);
@@ -441,10 +460,11 @@ export async function claimAction(ctx: AppContext, orderId: number, claimId: num
 export async function sellerCancel(ctx: AppContext, orderId: number, reason: 'stock' | 'address' | 'price', actor: string) {
   const o = await getOrderRow(ctx, orderId);
   if (['CANCELLED', 'RETURNED', 'SETTLED'].includes(o.status) || o.tracking_no) throw new OrderError(`취소할 수 없는 상태: ${STATUS_LABEL[o.status as OrderStatus]}`);
-  if (!ctx.market.cancelOrder) throw new OrderError('이 판매채널은 판매자 취소를 지원하지 않습니다');
-  const r = await ctx.market.cancelOrder({ marketOrderId: o.market_order_id, vendorItemId: o.vendor_item_id, qty: o.qty, reason });
+  const market = marketFor(ctx, o.market);
+  if (!market.cancelOrder) throw new OrderError('이 판매채널은 판매자 취소를 지원하지 않습니다');
+  const r = await market.cancelOrder({ marketOrderId: o.market_order_id, vendorItemId: o.vendor_item_id, qty: o.qty, reason, shipmentBoxId: o.shipment_box_id });
   await audit(ctx, actor, 'order.seller_cancel', String(o.id), { reason, ...r });
-  if (!r.ok) throw new OrderError(`쿠팡 주문 취소 실패: ${r.message}`);
+  if (!r.ok) throw new OrderError(`${MARKET_LABEL[o.market] ?? o.market} 주문 취소 실패: ${r.message}`);
   const now = ctx.clock.now();
   const row = await ctx.db.insertInto('order_claims').values({
     order_id: o.id, market: o.market, receipt_id: `seller-${o.id}`, claim_type: 'CANCEL', stage: 'cancelled', raw_status: 'SELLER_CANCEL',

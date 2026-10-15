@@ -261,7 +261,25 @@ export const settingsSchema = z.object({
         '홈페이지', '고객센터', '로그인', '어플', '신청', '발급', '혜택', '대출', '보험', '은행', '증권', '요금', '예약', '조회', '연락처', '채용', '주가',
         '신용카드', '체크카드', '카드사', '국민카드', '신한카드', '삼성카드', '현대카드', '롯데카드', '하나카드', '우리카드', 'BC카드', 'NH카드', '마스터카드', '비자카드',
         '쿠팡', '네이버', '카카오', '당근', '11번가', '지마켓', '옥션', '티몬', '위메프',
+        // 카드·바우처류(실측 2026-10-15: '농협법인카드'·'아이사랑카드'·'하나원더카드'가 '메모카드' 연관어로 들어옴)
+        '법인카드', '기업카드', '복지카드', '교통카드', '사랑카드', '원더카드', '포인트카드', '바우처', '상품권', '기프티콘', '지원금',
       ]),
+      /**
+       * 공급처 확인: 연관 키워드는 공급처(오너클랜 등) 검색 결과 상품명에 그 키워드가 들어간 상품이 minMatches 개 이상일 때만 채택.
+       * 브랜드명('몰스킨노트')·다른 분야('고사양노트북')처럼 우리 공급처에서 팔 수 없는 검색어를 거른다. 이미 있는 미사용 키워드도 회차마다 조금씩 재확인.
+       */
+      supplyCheck: z.object({
+        enabled: z.boolean().default(true),
+        minMatches: z.number().int().default(3),
+        /** 1회 발굴에서 공급처 검색 최대 횟수(새 키워드 + 기존 재확인) */
+        perRun: z.number().int().default(200),
+        /** 공급 없음으로 판정한 키워드는 이 기간 동안 다시 채택하지 않음 */
+        rememberDays: z.number().int().default(30),
+        /** 검색 순서: 빠른 공급처부터(실측 2026-10-15: 도매꾹 0.2~0.4초, 오너클랜 4~50초). 없는 공급처는 건너뜀 */
+        sources: z.array(z.string()).default(['domeggook', 'ownerclan']),
+        /** 1회 발굴에서 공급처 확인에 쓰는 최대 시간(초) — 넘으면 나머지는 다음 발굴로 */
+        maxSeconds: z.number().int().default(120),
+      }).default({}),
       /** 연관 키워드는 원래 힌트·카테고리와 단어가 겹칠 때만 채택(엉뚱한 연관어 방지) */
       relatedRequireOverlap: z.boolean().default(true),
       /** 상품 카테고리 허용 목록(allowTopCategories)을 적용할 공급처(카테고리 체계가 같은 곳) */
@@ -386,6 +404,38 @@ export const settingsSchema = z.object({
     })
     .default({}),
 
+  /**
+   * 네이버 스마트스토어(두 번째 판매채널). 커머스API 키(.env NAVER_COMMERCE_CLIENT_ID/SECRET)가 있고 enabled=true일 때만 동작.
+   * 쿠팡에서 판매 중인 상품을 스마트스토어에도 올리고(수수료가 낮아 가격을 다시 계산), 주문·송장·취소·반품은 같은 흐름으로 처리.
+   */
+  naver: z
+    .object({
+      enabled: z.boolean().default(false),
+      /** 스마트스토어 수수료(판매 2.73% + 결제 최대 3.63%, 부가세 포함 여유) — 하한가·판매가 계산에 사용 */
+      feeRate: z.number().default(0.07),
+      /** 한 번에 새로 올릴 상품 수 / 스마트스토어 판매 상품 최대 수 */
+      perRun: z.number().int().default(5),
+      maxListings: z.number().int().default(200),
+      /** 제주·도서산간 추가 배송비(쿠팡은 배송 불가로 막지만 스마트스토어는 추가 배송비로 받음) */
+      remoteAreaExtraFee: z.number().int().default(5000),
+      /** 교환 배송비(왕복) — 반품 배송비는 coupang.returnCharge */
+      exchangeFee: z.number().int().default(6000),
+      /** 출고지·반품지 주소록 번호(0 = 스마트스토어 주소록의 첫 출고지·반품/교환지) */
+      shippingAddressId: z.number().int().default(0),
+      returnAddressId: z.number().int().default(0),
+      /** A/S 안내(전화번호 비우면 coupang.companyContactNumber) */
+      asPhone: z.string().default(''),
+      asGuide: z.string().default('상품 문의는 스마트스토어 문의하기로 남겨 주세요.'),
+      /** 네이버쇼핑 노출(네이버쇼핑 서비스 신청한 스토어만 반영) */
+      naverShopping: z.boolean().default(true),
+      /** 카테고리: 공급처 카테고리 경로 → 스마트스토어 카테고리 자동 매칭 최소 점수, 직접 지정(경로 → 카테고리ID) */
+      minCategoryScore: z.number().default(0.5),
+      categoryMap: z.record(z.string()).default({}),
+      /** KC 인증 상품은 인증정보 입력이 필요해 자동 등록하지 않음 */
+      skipKcProducts: z.boolean().default(true),
+    })
+    .default({}),
+
   orders: z
     .object({
       /** approve: 구매 전 사람이 확인 | auto: API 가능한 소스는 자동 발주 */
@@ -467,6 +517,8 @@ export const settingsSchema = z.object({
       repairMinutes: z.number().default(60),
       listingStatusMinutes: z.number().default(30),
       csMinutes: z.number().default(30),
+      /** 스마트스토어 자동 등록(쿠팡 판매 상품 → 스마트스토어) 주기 */
+      naverMirrorMinutes: z.number().default(60),
       reconcileHours: z.number().default(24),
       selectionHours: z.number().default(24),
       /** 키워드 자동 발굴 주기(시간) */
