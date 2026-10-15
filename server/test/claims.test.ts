@@ -197,7 +197,7 @@ describe('결제완료 즉시취소·판매자 취소', () => {
     expect((await orderByBox(h, line.shipmentBoxId)).status).toBe('MANUAL_REVIEW');
     const r = await sellerCancel(h.ctx, o.id, 'stock', 'admin');
     expect(r.message).toContain('취소');
-    expect(h.market.sellerCancels).toEqual([{ marketOrderId: line.marketOrderId, vendorItemId: o.vendor_item_id, qty: 1, reason: 'stock' }]);
+    expect(h.market.sellerCancels).toEqual([{ marketOrderId: line.marketOrderId, vendorItemId: o.vendor_item_id, qty: 1, reason: 'stock', shipmentBoxId: line.shipmentBoxId }]);
     expect((await orderByBox(h, line.shipmentBoxId)).status).toBe('CANCELLED');
     await expect(sellerCancel(h.ctx, o.id, 'stock', 'admin')).rejects.toThrow('취소할 수 없는 상태');
   });

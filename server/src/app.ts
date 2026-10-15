@@ -10,6 +10,7 @@ import { FakeMarket } from './adapters/fake/fakeMarket.js';
 import { MockSource } from './adapters/fake/mockSource.js';
 import { DemoMarketData, demoSources } from './adapters/fake/demo.js';
 import { NaverClient } from './adapters/naver/client.js';
+import { NaverCommerceClient, NaverMarket } from './adapters/naver/commerce.js';
 import { ElevenstSearchClient } from './adapters/elevenst/search.js';
 import { OwnerclanSource } from './adapters/ownerclan/source.js';
 import { SourceRegistry } from './adapters/registry.js';
@@ -30,6 +31,9 @@ import type { MarketDataProvider, Notifier, ObjectStorage } from './ports/misc.j
  */
 export interface BuildOverrides {
   market?: MarketPort;
+  /** 테스트: 스마트스토어 채널(가짜) */
+  naverMarket?: MarketPort;
+  naverApi?: NaverMarket;
   sources?: SourceRegistry;
   marketData?: MarketDataProvider;
   notifier?: Notifier;
@@ -66,6 +70,16 @@ export async function buildContext(env: Env, o: BuildOverrides = {}): Promise<Ap
     inner = fake;
   }
   const market = o.rawMarket ? inner : new DryRunMarket(inner, env, log);
+
+  // 스마트스토어(두 번째 판매채널): 커머스API 키가 있을 때만. 실제 동작은 설정 naver.enabled + LIVE_* 플래그
+  let naverApi = o.naverApi;
+  let naverInner = o.naverMarket;
+  if (!naverInner && env.NAVER_COMMERCE_CLIENT_ID && env.NAVER_COMMERCE_CLIENT_SECRET && env.MARKET_ADAPTER === 'coupang') {
+    naverApi = new NaverMarket(new NaverCommerceClient({ clientId: env.NAVER_COMMERCE_CLIENT_ID, clientSecret: env.NAVER_COMMERCE_CLIENT_SECRET, logger: log }));
+    naverInner = naverApi;
+  }
+  const markets: Record<string, MarketPort> = { [market.name]: market };
+  if (naverInner) markets.naver = o.rawMarket ? naverInner : new DryRunMarket(naverInner, env, log);
 
   const naver = new NaverClient({
     clientId: env.NAVER_CLIENT_ID,
@@ -108,6 +122,8 @@ export async function buildContext(env: Env, o: BuildOverrides = {}): Promise<Ap
     settings,
     kv,
     market,
+    markets,
+    naverApi,
     sources,
     marketData: o.marketData ?? (demo ? new DemoMarketData() : marketData),
     notifications: new NotificationService(db, notifier, env.PUBLIC_BASE_URL, clock),

@@ -1,5 +1,5 @@
 import type { Settings } from '../../config/settings.js';
-import type { AppContext } from '../../context.js';
+import { type AppContext, marketFor } from '../../context.js';
 import type { ListingItemRow, ListingRow, SourceProductRow } from '../../db/schema.js';
 import { kstDate } from '../../lib/util.js';
 import type { SourceOption, SourceProductDetail } from '../../ports/source.js';
@@ -150,7 +150,7 @@ export async function reprice(ctx: AppContext, l: ListingRow, markup: number, re
     let newPrice = it.sale_price;
     if (g.price !== null) {
       if (it.vendor_item_id) {
-        const r = await ctx.market.updatePrice(it.vendor_item_id, g.price);
+        const r = await marketFor(ctx, l.market).updatePrice(it.vendor_item_id, g.price);
         if (!r.ok) {
           ctx.log.warn({ listing: l.id, item: it.vendor_item_id, msg: r.message }, '가격 변경 실패');
           continue;

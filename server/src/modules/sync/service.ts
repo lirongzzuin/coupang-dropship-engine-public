@@ -1,5 +1,5 @@
 import type { Settings } from '../../config/settings.js';
-import type { AppContext } from '../../context.js';
+import { type AppContext, marketFor } from '../../context.js';
 import type { ListingRow, SourceProductRow } from '../../db/schema.js';
 import { addDays, errMessage } from '../../lib/util.js';
 import type { SourceProductDetail } from '../../ports/source.js';
@@ -123,10 +123,10 @@ export async function syncListings(ctx: AppContext): Promise<{ checked: number; 
         resumedNow.push(l.title);
       }
       if (d.stock !== null) for (const it of await ctx.db.selectFrom('listing_items').selectAll().where('listing_id', '=', l.id).execute()) {
-        if (it.vendor_item_id) await ctx.market.updateQuantity(it.vendor_item_id, Math.min(Math.floor(d.stock / it.unit_qty), 999));
+        if (it.vendor_item_id) await marketFor(ctx, l.market).updateQuantity(it.vendor_item_id, Math.min(Math.floor(d.stock / it.unit_qty), 999));
       }
       if (d.stock !== null && current.vendor_item_id && !(await ctx.db.selectFrom('listing_items').select('id').where('listing_id', '=', l.id).executeTakeFirst())) {
-        await ctx.market.updateQuantity(current.vendor_item_id, Math.min(d.stock, 999));
+        await marketFor(ctx, l.market).updateQuantity(current.vendor_item_id, Math.min(d.stock, 999));
       }
     } catch (e) {
       stats.errors++;
@@ -207,7 +207,7 @@ async function syncVariants(ctx: AppContext, s: Settings, l: ListingRow, sp: Sou
       continue;
     }
     if (it.item_status === 'paused' && pauseKind(it.item_reason) === 'supply' && !halted) await resumeItem(ctx, it, listingActive);
-    if (it.vendor_item_id && o!.stock !== null && listingActive) await ctx.market.updateQuantity(it.vendor_item_id, Math.min(Math.floor(o!.stock / it.unit_qty), 999));
+    if (it.vendor_item_id && o!.stock !== null && listingActive) await marketFor(ctx, l.market).updateQuantity(it.vendor_item_id, Math.min(Math.floor(o!.stock / it.unit_qty), 999));
   }
   // 공급처 사유로 멈췄던 상품: 판매 가능한 옵션이 있으니 재개(멈춘 옵션은 그대로)
   if (l.status === 'paused' && kind === 'supply' && !halted && (await resumeListing(ctx, l))) out.resumedListing = true;

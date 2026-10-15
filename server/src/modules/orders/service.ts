@@ -1,5 +1,5 @@
 import { isLive } from '../../config/env.js';
-import { type AppContext, audit } from '../../context.js';
+import { allMarkets, type AppContext, audit, MARKET_LABEL, marketFor } from '../../context.js';
 import type { OrderRow } from '../../db/schema.js';
 import { hashAddress } from '../../lib/crypto.js';
 import { maskName } from '../../lib/logger.js';
@@ -70,18 +70,45 @@ export function decryptReceiver(ctx: AppContext, o: OrderRow) {
 // ── 1. 주문 감지 ─────────────────────────────────────────────────────
 
 export async function pollNewOrders(ctx: AppContext): Promise<{ fetched: number; inserted: number }> {
+  const out = { fetched: 0, inserted: 0 };
+  for (const m of allMarkets(ctx)) {
+    // 쿠팡 외 채널은 연결·사용 설정된 경우만(스마트스토어: naver.enabled)
+    if (m !== ctx.market && !(await channelEnabled(ctx, m.name))) continue;
+    try {
+      const r = await pollMarketOrders(ctx, m);
+      out.fetched += r.fetched;
+      out.inserted += r.inserted;
+    } catch (e) {
+      // 쿠팡 수집 실패는 기존처럼 작업 실패로(감시·알림), 다른 채널 실패는 쿠팡 수집을 막지 않음
+      if (m === ctx.market) throw e;
+      ctx.log.error({ market: m.name, err: errMessage(e) }, '주문 수집 실패');
+    }
+  }
+  return out;
+}
+
+/** 추가 판매채널 사용 여부(설정 naver.enabled 등) */
+export async function channelEnabled(ctx: AppContext, name: string): Promise<boolean> {
+  if (name === ctx.market.name) return true;
+  if (!ctx.markets?.[name]) return false;
+  const s = await ctx.settings.get();
+  return name === 'naver' ? s.naver.enabled : false;
+}
+
+async function pollMarketOrders(ctx: AppContext, market: import('../../ports/market.js').MarketPort): Promise<{ fetched: number; inserted: number }> {
   const s = await ctx.settings.get();
   const now = ctx.clock.now();
-  const last = await ctx.kv.get<string>('orders.lastPollAt');
+  const key = market === ctx.market ? 'orders.lastPollAt' : `orders.lastPollAt.${market.name}`;
+  const last = await ctx.kv.get<string>(key);
   const from = last ? new Date(new Date(last).getTime() - s.coupang.orderPollOverlapMinutes * 60_000) : addDays(now, -1);
-  const lines = await ctx.market.listOrders(from, now, 'ACCEPT');
+  const lines = await market.listOrders(from, now, 'ACCEPT');
   let inserted = 0;
   for (const l of lines) {
     if (l.canceled) continue;
     const res = await ctx.db
       .insertInto('orders')
       .values({
-        market: ctx.market.name,
+        market: market.name,
         market_order_id: l.marketOrderId,
         shipment_box_id: l.shipmentBoxId,
         vendor_item_id: l.vendorItemId,
@@ -104,8 +131,10 @@ export async function pollNewOrders(ctx: AppContext): Promise<{ fetched: number;
       await ctx.db.insertInto('order_events').values({ order_id: res.id, from_status: null, to_status: 'NEW', reason: '주문 감지', actor: SYSTEM, at: now }).execute();
     }
   }
-  await ctx.kv.set('orders.lastPollAt', now.toISOString());
-  await ctx.kv.set('orders.lastPollOkAt', now.toISOString());
+  await ctx.kv.set(key, now.toISOString());
+  if (market === ctx.market) await ctx.kv.set('orders.lastPollOkAt', now.toISOString());
+  else await ctx.kv.set(`orders.lastPollOkAt.${market.name}`, now.toISOString());
+  if (inserted && market !== ctx.market) ctx.log.info({ market: market.name, inserted }, '새 주문');
   return { fetched: lines.length, inserted };
 }
 
@@ -228,14 +257,14 @@ export async function processOrder(ctx: AppContext, orderId: number, opts: { ove
 
   // 상품준비중 처리 → 고객 즉시취소 방지. 이후 배송지 재확인(결제완료 단계에서 변경 가능)
   if (!o.acked_at) {
-    const ack = (await ctx.market.acknowledge([o.shipment_box_id]))[o.shipment_box_id];
+    const ack = (await marketFor(ctx, o.market).acknowledge([o.shipment_box_id]))[o.shipment_box_id];
     if (!ack?.ok) {
       if (ack?.retryable) return transition(ctx, o, 'SOURCE_ERROR', `상품준비중 처리 실패(재시도): ${ack?.message}`, actor);
-      const lines = await ctx.market.getOrderLines(o.shipment_box_id).catch(() => []);
+      const lines = await marketFor(ctx, o.market).getOrderLines(o.shipment_box_id).catch(() => []);
       if (lines.some((l) => l.vendorItemId === o.vendor_item_id && (l.canceled || l.status === 'CANCELED'))) return transition(ctx, o, 'CANCELLED', '고객 취소', actor);
       return transition(ctx, o, 'MANUAL_REVIEW', `상품준비중 처리 실패: ${ack?.message}`, actor);
     }
-    const lines = await ctx.market.getOrderLines(o.shipment_box_id);
+    const lines = await marketFor(ctx, o.market).getOrderLines(o.shipment_box_id);
     const line = lines.find((l) => l.vendorItemId === o.vendor_item_id);
     const patch: Record<string, unknown> = { acked_at: ctx.clock.now(), market_status: line?.status ?? 'INSTRUCT' };
     if (line) Object.assign(patch, encReceiver(ctx, line));
@@ -342,8 +371,8 @@ export async function confirmPurchase(ctx: AppContext, orderId: number, input: {
   const sourceOrderId = input.sourceOrderId?.trim() || o.source_order_id;
   if (!sourceOrderId) throw new OrderError('원주문번호를 입력하세요');
   if (!o.acked_at) {
-    const ack = (await ctx.market.acknowledge([o.shipment_box_id]))[o.shipment_box_id];
-    if (!ack?.ok) throw new OrderError(`쿠팡 상품준비중 처리 실패: ${ack?.message}`);
+    const ack = (await marketFor(ctx, o.market).acknowledge([o.shipment_box_id]))[o.shipment_box_id];
+    if (!ack?.ok) throw new OrderError(`${MARKET_LABEL[o.market] ?? o.market} 발주 확인(상품준비중) 처리 실패: ${ack?.message}`);
   }
   await audit(ctx, actor, 'order.purchase_confirmed', String(o.id), { sourceOrderId, cost: input.cost });
   return transition(ctx, o, 'PURCHASED', '구매 확인', actor, {
@@ -416,7 +445,7 @@ export async function submitTracking(ctx: AppContext, orderId: number, courier: 
   }
   // 같은 묶음배송에 다른 상품이 있으면(공급처별로 따로 출고) 분리배송으로 등록
   const siblings = await ctx.db.selectFrom('orders').select(['status']).where('shipment_box_id', '=', o.shipment_box_id).where('id', '!=', o.id).execute();
-  const res = await ctx.market.uploadInvoice({
+  const res = await marketFor(ctx, o.market).uploadInvoice({
     shipmentBoxId: o.shipment_box_id, marketOrderId: o.market_order_id, vendorItemId: o.vendor_item_id, courierCode: code, trackingNo: no,
     splitShipping: siblings.length > 0,
     preSplitShipped: siblings.some((x) => ['TRACKING_UPLOADED', 'IN_TRANSIT', 'DELIVERED', 'SETTLED'].includes(x.status)),
@@ -530,14 +559,24 @@ export async function pollFulfillment(ctx: AppContext): Promise<{ tracked: numbe
     }
   }
   // 배송 상태 동기화(감지는 kill switch와 무관)
-  const shipping = await ctx.db.selectFrom('orders').selectAll().where('status', 'in', ['TRACKING_UPLOADED', 'IN_TRANSIT']).execute();
+  // 스마트스토어는 매출내역 API 대신 구매확정 시 정산 예정 금액으로 정산(배송완료 주문도 계속 확인)
+  const shipping = await ctx.db.selectFrom('orders').selectAll()
+    .where((eb) => eb.or([eb('status', 'in', ['TRACKING_UPLOADED', 'IN_TRANSIT']), eb.and([eb('status', '=', 'DELIVERED'), eb('market', '!=', ctx.market.name)])]))
+    .execute();
   for (const o of shipping) {
     try {
-      const line = (await ctx.market.getOrderLines(o.shipment_box_id)).find((l) => l.vendorItemId === o.vendor_item_id);
+      const line = (await marketFor(ctx, o.market).getOrderLines(o.shipment_box_id)).find((l) => l.vendorItemId === o.vendor_item_id);
       if (!line) continue;
       if (line.status === 'FINAL_DELIVERY') {
-        await transition(ctx, o, 'DELIVERED', '배송완료', SYSTEM, { delivered_at: ctx.clock.now(), market_status: line.status });
-        delivered++;
+        let cur = o;
+        if (o.status !== 'DELIVERED') {
+          cur = await transition(ctx, o, 'DELIVERED', '배송완료', SYSTEM, { delivered_at: ctx.clock.now(), market_status: line.status });
+          delivered++;
+        }
+        if (line.decided && typeof line.settlementAmount === 'number') {
+          const profit = line.settlementAmount - (cur.purchase_cost ?? cur.expected_cost ?? 0) - (cur.purchase_shipping ?? 0) - (cur.extra_cost ?? 0);
+          await transition(ctx, cur, 'SETTLED', `구매확정 — 정산 예정 ${line.settlementAmount.toLocaleString()}원`, SYSTEM, { settlement_amount: line.settlementAmount, profit, settled_at: ctx.clock.now() });
+        }
         continue;
       }
       if (line.status === 'DELIVERING' && o.status === 'TRACKING_UPLOADED') {
@@ -572,8 +611,9 @@ async function watchStuckShipment(ctx: AppContext, o: OrderRow, marketStatus: st
     const t = info?.tracking;
     if (t?.trackingNo) {
       const code = resolveCourierCode(s.orders.courierAliases, t.courierName, t.courierCode);
-      if (code && (t.trackingNo !== o.tracking_no || code !== o.courier_code) && ctx.market.updateInvoice) {
-        const r = await ctx.market.updateInvoice({ shipmentBoxId: o.shipment_box_id, marketOrderId: o.market_order_id, vendorItemId: o.vendor_item_id, courierCode: code, trackingNo: t.trackingNo });
+      const mk = marketFor(ctx, o.market);
+      if (code && (t.trackingNo !== o.tracking_no || code !== o.courier_code) && mk.updateInvoice) {
+        const r = await mk.updateInvoice({ shipmentBoxId: o.shipment_box_id, marketOrderId: o.market_order_id, vendorItemId: o.vendor_item_id, courierCode: code, trackingNo: t.trackingNo });
         await audit(ctx, SYSTEM, 'order.invoice_update', String(o.id), { from: `${o.courier_code} ${o.tracking_no}`, to: `${code} ${t.trackingNo}`, ...r });
         if (r.ok) {
           await ctx.db.updateTable('orders').set({ courier_code: code, courier_name: t.courierName, tracking_no: t.trackingNo, tracking_uploaded_at: now }).where('id', '=', o.id).execute();

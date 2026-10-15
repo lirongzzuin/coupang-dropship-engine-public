@@ -55,6 +55,9 @@ export const envSchema = z.object({
   OWNERCLAN_USERNAME: optStr,
   OWNERCLAN_PASSWORD: optStr,
   OWNERCLAN_SANDBOX: bool(false),
+  /** 네이버 스마트스토어 커머스API(두 번째 판매채널) — 커머스API센터 > 애플리케이션 ID·시크릿. 비우면 스마트스토어 기능 꺼짐 */
+  NAVER_COMMERCE_CLIENT_ID: optStr,
+  NAVER_COMMERCE_CLIENT_SECRET: optStr,
   NAVER_CLIENT_ID: optStr,
   NAVER_CLIENT_SECRET: optStr,
   NAVER_SEARCHAD_CUSTOMER_ID: optStr,

@@ -2,7 +2,7 @@ import { isLive } from '../../config/env.js';
 import type { MarketPort } from '../../ports/market.js';
 import type { SourceProductDetail } from '../../ports/source.js';
 import { orderQtyIssue } from '../orderQty.js';
-import { type AppContext, audit } from '../../context.js';
+import { type AppContext, audit, MARKET_LABEL, marketFor } from '../../context.js';
 import type { ListingRow, SourceProductRow } from '../../db/schema.js';
 import { errMessage } from '../../lib/util.js';
 import { detailOf } from '../catalog.js';
@@ -21,7 +21,7 @@ export async function createDraftFromCandidate(ctx: AppContext, candidateId: num
   const s = await ctx.settings.get();
   const cand = await ctx.db.selectFrom('candidates').selectAll().where('id', '=', candidateId).executeTakeFirst();
   if (!cand) throw new ListingError('후보 없음');
-  const existing = await ctx.db.selectFrom('listings').selectAll().where('source_product_id', '=', cand.source_product_id).where('status', 'not in', ['stopped', 'rejected']).executeTakeFirst();
+  const existing = await ctx.db.selectFrom('listings').selectAll().where('market', '=', ctx.market.name).where('source_product_id', '=', cand.source_product_id).where('status', 'not in', ['stopped', 'rejected']).executeTakeFirst();
   if (existing) return existing;
   const sp = await ctx.db.selectFrom('source_products').selectAll().where('id', '=', cand.source_product_id).executeTakeFirstOrThrow();
   const d = detailOf(sp);
@@ -120,7 +120,7 @@ export async function validateListing(ctx: AppContext, l: ListingRow): Promise<s
     if (missing.length) problems.push(`설정 > 쿠팡 정보 미입력: ${missing.join(', ')}`);
   }
   // 실등록 모드에서는 모의(DRY_RUN) 등록분을 상한 계산에서 제외
-  let activeQ = ctx.db.selectFrom('listings').select((eb) => eb.fn.countAll<number>().as('n')).where('status', 'in', ['active', 'pending_approval']);
+  let activeQ = ctx.db.selectFrom('listings').select((eb) => eb.fn.countAll<number>().as('n')).where('market', '=', 'coupang').where('status', 'in', ['active', 'pending_approval']);
   if (isLive(ctx.env, 'LIVE_LISTING')) activeQ = activeQ.where('dry_run', '=', false);
   const active = await activeQ.executeTakeFirst();
   if (Number(active?.n ?? 0) >= s.listing.maxActiveListings && l.status === 'draft') problems.push(`운영 상품 수 상한(${s.listing.maxActiveListings}) 도달`);
@@ -177,14 +177,17 @@ export async function refreshListingStatuses(ctx: AppContext): Promise<{ approve
   let approved = 0, rejected = 0;
   for (const l of pending) {
     if (!l.seller_product_id) continue;
+    const market = marketFor(ctx, l.market);
+    const label = MARKET_LABEL[l.market] ?? l.market;
     try {
-      const st = await ctx.market.getProductStatus(l.seller_product_id);
+      const st = await market.getProductStatus(l.seller_product_id);
       if (st.status === 'APPROVED' && st.vendorItemIds.length) {
-        // 옵션명으로 옵션ID 매칭(없으면 등록 순서)
+        // 판매자 관리코드(스마트스토어) → 옵션명 → 등록 순서로 옵션ID 매칭
         const items = await ctx.db.selectFrom('listing_items').selectAll().where('listing_id', '=', l.id).orderBy('unit_qty').execute();
         const named = st.items ?? [];
         items.forEach((it, idx) => {
-          it.vendor_item_id = named.find((n) => n.itemName === it.item_name)?.vendorItemId ?? st.vendorItemIds[idx] ?? null;
+          it.vendor_item_id = named.find((n) => n.sellerCode && n.sellerCode === `NVI${it.id}`)?.vendorItemId
+            ?? named.find((n) => n.itemName === it.item_name)?.vendorItemId ?? st.vendorItemIds[idx] ?? null;
         });
         for (const it of items) await ctx.db.updateTable('listing_items').set({ vendor_item_id: it.vendor_item_id }).where('id', '=', it.id).execute();
         const base = items.find((i) => i.unit_qty === 1)?.vendor_item_id ?? st.vendorItemIds[0]!;
@@ -196,14 +199,15 @@ export async function refreshListingStatuses(ctx: AppContext): Promise<{ approve
           await pauseListing(ctx, fresh, HALT_REASON);
           continue;
         }
-        await ctx.notifications.notify('info', '상품 판매 시작', `${l.title} (${l.sale_price.toLocaleString()}원)`, { path: `/listings` });
+        await ctx.notifications.notify('info', l.market === 'coupang' ? '상품 판매 시작' : `${label} 판매 시작`, `${l.title} (${l.sale_price.toLocaleString()}원)`, { path: `/listings` });
       } else if (st.rawStatus === '상품삭제') {
         // 심사 중에 Wing에서 삭제 → 판매종료로 정리(반려로 남기면 다시 등록 대상이 됨)
-        await ctx.db.updateTable('listings').set({ status: 'stopped', status_reason: `${PAUSE.deleted}(Wing에서 삭제)`, updated_at: ctx.clock.now() }).where('id', '=', l.id).execute();
+        await ctx.db.updateTable('listings').set({ status: 'stopped', status_reason: l.market === 'coupang' ? `${PAUSE.deleted}(Wing에서 삭제)` : `${label}에서 삭제됨`, updated_at: ctx.clock.now() }).where('id', '=', l.id).execute();
       } else if (st.status === 'REJECTED') {
-        await ctx.db.updateTable('listings').set({ status: 'rejected', status_reason: `쿠팡 승인 반려(${st.rawStatus}) — Wing에서 사유 확인`, updated_at: ctx.clock.now() }).where('id', '=', l.id).execute();
+        const where = l.market === 'coupang' ? 'Wing' : `${label}센터`;
+        await ctx.db.updateTable('listings').set({ status: 'rejected', status_reason: `${label} 승인 반려(${st.rawStatus}) — ${where}에서 사유 확인`, updated_at: ctx.clock.now() }).where('id', '=', l.id).execute();
         rejected++;
-        await ctx.notifications.notify('warn', '상품 승인 반려', `${l.title}: Wing에서 반려 사유를 확인하세요.`, { path: `/listings` });
+        await ctx.notifications.notify('warn', l.market === 'coupang' ? '상품 승인 반려' : `${label} 상품 승인 반려`, `${l.title}: ${where}에서 반려 사유를 확인하세요.`, { path: `/listings` });
       }
     } catch (e) {
       ctx.log.warn({ listing: l.id, err: errMessage(e) }, '상품 상태 조회 실패');

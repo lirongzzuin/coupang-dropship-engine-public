@@ -4,6 +4,7 @@ import { errMessage, kstDate, kstHour } from '../lib/util.js';
 import { pollInquiries } from '../modules/cs/service.js';
 import { reconcile } from '../modules/finance/service.js';
 import { refreshListingStatuses } from '../modules/listing/service.js';
+import { naverMirror } from '../modules/naver/mirror.js';
 import { checkDelays, pollClaims, pollFulfillment, pollNewOrders, processPending, purgePii } from '../modules/orders/service.js';
 import { sendDailyReport, watchdog } from '../modules/reports/service.js';
 import { runSelection } from '../modules/selection/service.js';
@@ -64,6 +65,8 @@ export const JOBS: JobDef[] = [
     run: async (ctx) => ({ prices: await optimizePrices(ctx), cost: await scoutCheaperSources(ctx) }),
   },
   { name: 'cs.poll', label: '고객문의', intervalMs: (s) => min(s.schedule.csMinutes), run: pollInquiries },
+  // 스마트스토어 키가 없거나 naver.enabled=false 면 아무것도 하지 않음
+  { name: 'naver.mirror', label: '스마트스토어 자동 등록', intervalMs: (s) => min(s.schedule.naverMirrorMinutes), run: naverMirror },
   { name: 'finance.reconcile', label: '정산 대사', intervalMs: (s) => s.schedule.reconcileHours * 3600_000, run: async (ctx) => ({ reconcile: await reconcile(ctx), pii: await purgePii(ctx) }) },
   { name: 'keywords.discover', label: '키워드 자동 발굴', intervalMs: (s) => s.schedule.discoveryHours * 3600_000, run: discoverKeywords },
   { name: 'selection.run', label: '상품 선정', intervalMs: (s) => s.schedule.selectionHours * 3600_000, run: (ctx) => runSelection(ctx) },

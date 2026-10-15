@@ -4,6 +4,7 @@ import { CoupangPartnersClient } from '../adapters/coupang/partners.js';
 import { DomeggookSource } from '../adapters/domeggook/source.js';
 import { GoogleTrendsClient } from '../adapters/google/trends.js';
 import { NaverClient } from '../adapters/naver/client.js';
+import { NaverCommerceClient, NaverMarket } from '../adapters/naver/commerce.js';
 import { ElevenstSearchClient } from '../adapters/elevenst/search.js';
 import { OwnerclanSource } from '../adapters/ownerclan/source.js';
 import { loadEnv } from '../config/env.js';
@@ -62,6 +63,17 @@ export async function checkAll(env = loadEnv()): Promise<Result[]> {
     const d = await dg.getProduct(items[0]!.sourceItemId);
     return `상품 목록·상세 조회 성공(예: ${items[0]!.title.slice(0, 20)} ${items[0]!.price.toLocaleString()}원, 이미지 재사용 ${d?.imageReuseAllowed ? '허용' : '불가'})`;
   }));
+
+  r.push(await run('스마트스토어 커머스API(두 번째 판매채널)', !!(env.NAVER_COMMERCE_CLIENT_ID && env.NAVER_COMMERCE_CLIENT_SECRET),
+    '선택: 커머스API센터(apicenter.commerce.naver.com) > 애플리케이션 등록 → NAVER_COMMERCE_CLIENT_ID / NAVER_COMMERCE_CLIENT_SECRET', async () => {
+      const m = new NaverMarket(new NaverCommerceClient({ clientId: env.NAVER_COMMERCE_CLIENT_ID!, clientSecret: env.NAVER_COMMERCE_CLIENT_SECRET!, logger: log, retryBaseMs: 300 }));
+      const cats = await m.listCategories();
+      const places = await m.listShippingPlaces();
+      const now = new Date();
+      const orders = await m.listOrders(new Date(now.getTime() - 3600_000), now, 'ACCEPT');
+      const warn = !places.outbound.length || !places.returns.length ? ' — ⚠ 스마트스토어센터 > 판매자 정보 > 주소록에 출고지·반품/교환지를 등록하세요' : '';
+      return `인증·조회 성공(카테고리 ${cats.length.toLocaleString()}개, 출고지 ${places.outbound.length} · 반품지 ${places.returns.length}, 최근 1시간 신규 주문 ${orders.length}건)${warn}`;
+    }));
 
   const naver = new NaverClient({
     clientId: env.NAVER_CLIENT_ID, clientSecret: env.NAVER_CLIENT_SECRET, datalabEnabled: env.NAVER_DATALAB_ENABLED, logger: log,

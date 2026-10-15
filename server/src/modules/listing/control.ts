@@ -1,4 +1,4 @@
-import type { AppContext } from '../../context.js';
+import { type AppContext, marketFor } from '../../context.js';
 import type { ListingItemRow, ListingRow } from '../../db/schema.js';
 import { findByVendorItem, getItems, vendorItemIds } from './items.js';
 
@@ -42,7 +42,7 @@ export async function pauseListing(ctx: AppContext, listing: ListingRow, reason:
     return false;
   }
   for (const vid of await vendorItemIds(ctx, listing)) {
-    const r = await ctx.market.stopSale(vid);
+    const r = await marketFor(ctx, listing.market).stopSale(vid);
     if (!r.ok) {
       ctx.log.warn({ listing: listing.id, msg: r.message }, '판매중지 실패');
       return false;
@@ -63,7 +63,7 @@ export async function resumeListing(ctx: AppContext, listing: ListingRow): Promi
   // 옵션 단위로 멈춘 옵션(그 옵션만 품절 등)은 다시 켜지 않음
   const vids = all.filter((i) => i.item_status !== 'paused').map((i) => i.vendor_item_id).filter((x): x is string => !!x);
   for (const vid of vids) {
-    const r = await ctx.market.resumeSale(vid);
+    const r = await marketFor(ctx, listing.market).resumeSale(vid);
     if (!r.ok) return false;
   }
   await ctx.db.updateTable('listings').set({ status: 'active', status_reason: null, paused_at: null, updated_at: ctx.clock.now() }).where('id', '=', listing.id).execute();
@@ -80,7 +80,7 @@ export async function pauseItem(ctx: AppContext, item: ListingItemRow, reason: s
     return false;
   }
   if (item.vendor_item_id) {
-    const r = await ctx.market.stopSale(item.vendor_item_id);
+    const r = await (await itemMarket(ctx, item)).stopSale(item.vendor_item_id);
     if (!r.ok) {
       ctx.log.warn({ item: item.vendor_item_id, msg: r.message }, '옵션 판매중지 실패');
       return false;
@@ -94,11 +94,17 @@ export async function pauseItem(ctx: AppContext, item: ListingItemRow, reason: s
 export async function resumeItem(ctx: AppContext, item: ListingItemRow, listingActive: boolean): Promise<boolean> {
   if (item.item_status !== 'paused') return false;
   if (listingActive && item.vendor_item_id) {
-    const r = await ctx.market.resumeSale(item.vendor_item_id);
+    const r = await (await itemMarket(ctx, item)).resumeSale(item.vendor_item_id);
     if (!r.ok) return false;
   }
   if (item.id) await ctx.db.updateTable('listing_items').set({ item_status: 'active', item_reason: null }).where('id', '=', item.id).execute();
   return true;
+}
+
+/** 옵션이 속한 상품의 판매채널 */
+async function itemMarket(ctx: AppContext, item: ListingItemRow) {
+  const l = await ctx.db.selectFrom('listings').select('market').where('id', '=', item.listing_id).executeTakeFirst();
+  return marketFor(ctx, l?.market);
 }
 
 export async function findListingByVendorItem(ctx: AppContext, vendorItemId: string): Promise<ListingRow | undefined> {

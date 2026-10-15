@@ -68,6 +68,11 @@ COUPANG_SECRET_KEY=
 OWNERCLAN_USERNAME=
 OWNERCLAN_PASSWORD=
 DOMEGGOOK_API_KEY=
+# ── 네이버 스마트스토어(두 번째 판매채널, 선택) ──────────────────
+# 커머스API센터(apicenter.commerce.naver.com) > 애플리케이션 등록(상품·주문·판매자정보·문의 권한) 후 ID·시크릿.
+# 키를 넣고 restart.sh → bash check.sh 로 확인 → 관리 화면 설정에서 '스마트스토어 판매'를 켬
+NAVER_COMMERCE_CLIENT_ID=
+NAVER_COMMERCE_CLIENT_SECRET=
 NAVER_CLIENT_ID=
 NAVER_CLIENT_SECRET=
 # 네이버 광고주센터(ads.naver.com) > 도구 > API 관리에서 발급(2025-09 계정 통합 이후)

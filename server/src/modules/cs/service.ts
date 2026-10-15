@@ -1,4 +1,6 @@
-import { type AppContext, audit } from '../../context.js';
+import { allMarkets, type AppContext, audit, MARKET_LABEL, marketFor } from '../../context.js';
+import type { MarketPort } from '../../ports/market.js';
+import { channelEnabled } from '../orders/service.js';
 import { addDays } from '../../lib/util.js';
 
 /**
@@ -13,15 +15,33 @@ export function classify(content: string, templates: Array<{ name: string; keywo
 }
 
 export async function pollInquiries(ctx: AppContext): Promise<{ fetched: number; autoAnswered: number; drafted: number }> {
+  const out = { fetched: 0, autoAnswered: 0, drafted: 0 };
+  for (const market of allMarkets(ctx)) {
+    if (!(await channelEnabled(ctx, market.name))) continue;
+    try {
+      const r = await pollMarketInquiries(ctx, market);
+      out.fetched += r.fetched;
+      out.autoAnswered += r.autoAnswered;
+      out.drafted += r.drafted;
+    } catch (e) {
+      if (market === ctx.market) throw e;
+      ctx.log.error({ market: market.name, err: e instanceof Error ? e.message : String(e) }, '고객문의 조회 실패');
+    }
+  }
+  return out;
+}
+
+async function pollMarketInquiries(ctx: AppContext, market: MarketPort): Promise<{ fetched: number; autoAnswered: number; drafted: number }> {
   const s = await ctx.settings.get();
   const now = ctx.clock.now();
-  const list = await ctx.market.listInquiries(addDays(now, -6), now);
+  const label = MARKET_LABEL[market.name] ?? market.name;
+  const list = await market.listInquiries(addDays(now, -6), now);
   let fetched = 0, autoAnswered = 0, drafted = 0;
   for (const q of list) {
     if (q.answered) continue;
     const ins = await ctx.db
       .insertInto('inquiries')
-      .values({ market: ctx.market.name, market_inquiry_id: q.inquiryId, kind: q.kind, vendor_item_id: q.vendorItemId ?? null, content: q.content, asked_at: q.askedAt, status: 'new' })
+      .values({ market: market.name, market_inquiry_id: q.inquiryId, kind: q.kind, vendor_item_id: q.vendorItemId ?? null, content: q.content, asked_at: q.askedAt, status: 'new' })
       .onConflict((oc) => oc.columns(['market', 'kind', 'market_inquiry_id']).doNothing())
       .returningAll()
       .executeTakeFirst();
@@ -36,7 +56,7 @@ export async function pollInquiries(ctx: AppContext): Promise<{ fetched: number;
     }
     const tpl = classify(q.content, s.cs.templates);
     if (tpl && s.cs.autoReplyTemplates && !s.killSwitch) {
-      const r = await ctx.market.replyInquiry({ inquiryId: q.inquiryId, kind: q.kind }, tpl.reply);
+      const r = await market.replyInquiry({ inquiryId: q.inquiryId, kind: q.kind }, tpl.reply);
       if (r.ok) {
         await ctx.db.updateTable('inquiries').set({ status: 'answered', answer: tpl.reply, answered_at: now, dry_run: !!r.dryRun }).where('id', '=', ins.id).execute();
         autoAnswered++;
@@ -48,11 +68,11 @@ export async function pollInquiries(ctx: AppContext): Promise<{ fetched: number;
   }
   // Wing에서 직접 답변한 문의는 미답변 목록에서 빠짐 → 우리 기록도 답변됨으로(재알림 중단)
   const open = new Set(list.filter((q) => !q.answered).map((q) => `${q.kind}:${q.inquiryId}`));
-  const mine = await ctx.db.selectFrom('inquiries').select(['id', 'kind', 'market_inquiry_id']).where('status', 'in', ['new', 'drafted']).where('asked_at', '>=', addDays(now, -6)).execute();
+  const mine = await ctx.db.selectFrom('inquiries').select(['id', 'kind', 'market_inquiry_id']).where('market', '=', market.name).where('status', 'in', ['new', 'drafted']).where('asked_at', '>=', addDays(now, -6)).execute();
   for (const m of mine) {
-    if (!open.has(`${m.kind}:${m.market_inquiry_id}`)) await ctx.db.updateTable('inquiries').set({ status: 'answered', answer: '(Wing에서 답변)', answered_at: now }).where('id', '=', m.id).execute();
+    if (!open.has(`${m.kind}:${m.market_inquiry_id}`)) await ctx.db.updateTable('inquiries').set({ status: 'answered', answer: market === ctx.market ? '(Wing에서 답변)' : `(${label}센터에서 답변)`, answered_at: now }).where('id', '=', m.id).execute();
   }
-  if (drafted) await ctx.notifications.notify('action', `고객문의 ${drafted}건 답변 필요`, '자동 답변하지 않은 문의가 있습니다(불만/환불/기타).', { path: '/inquiries' });
+  if (drafted) await ctx.notifications.notify('action', market === ctx.market ? `고객문의 ${drafted}건 답변 필요` : `${label} 고객문의 ${drafted}건 답변 필요`, '자동 답변하지 않은 문의가 있습니다(불만/환불/기타).', { path: '/inquiries' });
   return { fetched, autoAnswered, drafted };
 }
 
@@ -61,7 +81,7 @@ export async function answerInquiry(ctx: AppContext, id: number, text: string, a
   if (!q) throw new Error('문의 없음');
   if (q.status === 'answered') throw new Error('이미 답변한 문의입니다');
   if (!text.trim()) throw new Error('답변 내용을 입력하세요');
-  const r = await ctx.market.replyInquiry({ inquiryId: q.market_inquiry_id, kind: q.kind as 'product' | 'callcenter' }, text.trim());
+  const r = await marketFor(ctx, q.market).replyInquiry({ inquiryId: q.market_inquiry_id, kind: q.kind as 'product' | 'callcenter' }, text.trim());
   if (!r.ok) throw new Error(`답변 실패: ${r.message}`);
   await ctx.db.updateTable('inquiries').set({ status: 'answered', answer: text.trim(), answered_at: ctx.clock.now(), dry_run: !!r.dryRun }).where('id', '=', id).execute();
   await audit(ctx, actor, 'inquiry.answer', String(id));

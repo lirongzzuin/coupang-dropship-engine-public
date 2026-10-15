@@ -14,6 +14,10 @@ import { categoryPhrases, DEFAULT_STOPWORDS, extractPhrases, keywordScore } from
  */
 
 export interface DiscoveryResult {
+  /** 공급처에서 팔지 않아 제외·정리한 키워드 수 */
+  noSupply?: number;
+  /** 검색 한도로 이번에 공급처 확인을 못 해 다음 발굴로 미룬 키워드 수 */
+  supplyDeferred?: number;
   categories: number;
   hints: number;
   found: number;
@@ -125,6 +129,7 @@ export async function discoverKeywords(ctx: AppContext): Promise<DiscoveryResult
   // 3) 필터·점수·저장
   const blockedWords = [...s.selection.blockedKeywords, ...s.selection.blockedCategoryKeywords, ...stop.filter((w) => w.length >= 3)];
   const now = ctx.clock.now();
+  const supply = new SupplyChecker(ctx, d.supplyCheck);
   for (const k of found.values()) {
     if (k.volume < d.minVolume || k.volume > d.maxVolume) continue;
     if (d.excludeHighCompetition && k.competition === '높음') continue;
@@ -132,6 +137,13 @@ export async function discoverKeywords(ctx: AppContext): Promise<DiscoveryResult
     if (d.noiseWords.some((w) => w && norm(k.keyword).includes(norm(w)))) continue;
     if ([...norm(k.keyword)].length < 2) continue;
     const existing = await ctx.db.selectFrom('keywords').selectAll().where('keyword', '=', k.keyword).executeTakeFirst();
+    // 연관 키워드(검색광고가 붙여 준 단어)는 공급처에서 실제로 파는지 확인(상품명·카테고리에서 나온 키워드는 이미 공급처 상품 기반)
+    if (!existing && k.origin === 'related' && !(await supply.ok(k.keyword, 'new'))) {
+      // 공급 없음으로 확인된 것만 집계(검색 한도로 이번에 확인 못 한 키워드는 다음 발굴에서 다시)
+      if (supply.lastWasDefinitive) res.noSupply = (res.noSupply ?? 0) + 1;
+      else res.supplyDeferred = (res.supplyDeferred ?? 0) + 1;
+      continue;
+    }
     const base = { volume: k.volume, competition: k.competition, last_checked_at: now };
     if (existing) {
       const score = keywordScore({ ...existing, ...base }, d.sweetSpotVolume);
@@ -150,8 +162,83 @@ export async function discoverKeywords(ctx: AppContext): Promise<DiscoveryResult
     .map((r) => r.keyword)
     .filter((kw) => stop.includes(kw) || blockedWords.some((b) => b && norm(kw).includes(norm(b))) || d.noiseWords.some((w) => w && norm(kw).includes(norm(w))));
   if (stale.length) await ctx.db.deleteFrom('keywords').where('keyword', 'in', stale).execute();
+  // 예전에 공급처 확인 없이 들어온 미사용 연관 키워드 재확인(남은 검색 횟수만큼, 공급 없으면 정리)
+  const unchecked = await ctx.db.selectFrom('keywords').select('keyword').where('origin', '=', 'related').where('status', '=', 'active').where('runs', '=', 0)
+    .where((eb) => eb.or([eb('note', 'is', null), eb('note', '!=', SUPPLY_OK)])).orderBy('score', 'desc').execute();
+  for (const { keyword } of unchecked) {
+    if (!supply.hasBudget('recheck')) break;
+    if (await supply.ok(keyword, 'recheck')) await ctx.db.updateTable('keywords').set({ note: SUPPLY_OK }).where('keyword', '=', keyword).execute();
+    else if (supply.lastWasDefinitive) {
+      await ctx.db.deleteFrom('keywords').where('keyword', '=', keyword).execute();
+      res.noSupply = (res.noSupply ?? 0) + 1;
+    }
+  }
   await prunePool(ctx);
   return res;
+}
+
+const SUPPLY_OK = '공급처 상품 확인';
+
+/**
+ * 공급처 확인: 검색 결과 상품명에 키워드(띄어쓰기 무시)가 들어간 상품 수를 센다.
+ * 검색 실패는 판단 보류(키워드를 버리지 않음), 공급 없음 판정은 rememberDays 동안 기억해 같은 검색을 반복하지 않는다.
+ */
+class SupplyChecker {
+  /** 새 키워드 확인은 한도의 3/4까지(나머지는 예전 키워드 재확인 몫) */
+  private used = { new: 0, recheck: 0 };
+  lastWasDefinitive = false;
+  constructor(private readonly ctx: AppContext, private readonly cfg: { enabled: boolean; minMatches: number; perRun: number; rememberDays: number }) {}
+
+  private limit(kind: 'new' | 'recheck'): number {
+    const forNew = Math.ceil(this.cfg.perRun * 0.75);
+    return kind === 'new' ? forNew : this.cfg.perRun - Math.min(this.used.new, forNew);
+  }
+
+  hasBudget(kind: 'new' | 'recheck'): boolean {
+    return this.cfg.enabled && this.used[kind] < this.limit(kind);
+  }
+
+  async ok(keyword: string, kind: 'new' | 'recheck' = 'new'): Promise<boolean> {
+    this.lastWasDefinitive = false;
+    if (!this.cfg.enabled) return true;
+    const memo = (await this.ctx.kv.get<Record<string, string>>('discovery.noSupply')) ?? {};
+    const since = memo[keyword];
+    if (since && this.ctx.clock.now().getTime() - new Date(since).getTime() < this.cfg.rememberDays * 86400_000) {
+      this.lastWasDefinitive = true;
+      return false;
+    }
+    if (!this.hasBudget(kind)) return false; // 이번 회차 검색 한도 → 다음 발굴에서 다시
+    const s = await this.ctx.settings.get();
+    const sources = s.selection.sources.map((id) => this.ctx.sources.get(id)).filter((x) => !!x);
+    if (!sources.length) return true;
+    const key = keyword.replace(/\s+/g, '').toLowerCase();
+    let matches = 0;
+    let searched = 0;
+    let complete = true;
+    for (const src of sources) {
+      if (matches >= this.cfg.minMatches) break;
+      if (!this.hasBudget(kind)) {
+        complete = false; // 모든 공급처를 못 봄 → 이번엔 판단 보류
+        break;
+      }
+      try {
+        this.used[kind]++;
+        const items = await src!.search(keyword, { limit: 40 });
+        searched++;
+        matches += items.filter((i) => i.title.replace(/\s+/g, '').toLowerCase().includes(key)).length;
+      } catch (e) {
+        complete = false;
+        this.ctx.log.warn({ keyword, source: src!.id, err: errMessage(e) }, '키워드 공급처 확인 실패(판단 보류)');
+      }
+    }
+    if (matches >= this.cfg.minMatches) return true;
+    if (!searched) return true; // 검색 실패 → 버리지 않음
+    if (!complete) return false; // 일부 공급처만 봄 → 다음 회차에 다시
+
+    this.lastWasDefinitive = true;
+    await this.ctx.kv.set('discovery.noSupply', { ...memo, [keyword]: this.ctx.clock.now().toISOString() });
+    return false;
+  }
 }
 
 /** 풀 크기 제한: 한 번도 안 쓴 낮은 점수 자동 키워드부터 삭제 */

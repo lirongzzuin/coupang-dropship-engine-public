@@ -34,7 +34,7 @@ afterEach(async () => h && (await h.close()));
 
 async function setupDiscovery() {
   h = await makeHarness({ live: true });
-  await h.ctx.settings.update({ selection: { mode: 'manual_approve' }, discovery: { categoriesPerRun: 5, keywordsPerRun: 5, minVolume: 1000, maxVolume: 100000 } });
+  await h.ctx.settings.update({ selection: { mode: 'manual_approve' }, discovery: { categoriesPerRun: 5, keywordsPerRun: 5, minVolume: 1000, maxVolume: 100000, supplyCheck: { enabled: false } } });
   h.apiSource.categories = [
     { code: '12_00_00_00_00', name: '생활용품', path: '생활용품', leaf: false },
     { code: '12_03_00_00_00', name: '수납/정리', path: '생활용품>수납/정리', leaf: false },
@@ -134,5 +134,68 @@ describe('키워드 자동 발굴 → 상품 선정', () => {
     const r = await discoverKeywords(h.ctx);
     expect(r.errors.join()).toMatch(/검색광고 키/);
     expect(await h.ctx.db.selectFrom('keywords').selectAll().execute()).toHaveLength(0);
+  });
+});
+
+describe('키워드 품질: 공급처에서 파는 상품인지 확인', () => {
+  it('연관 키워드는 공급처 상품명에 3개 이상 있어야 채택, 공급 없음은 기억, 카드·바우처류는 제외, 예전 미사용 키워드도 재확인', async () => {
+    await setupDiscovery();
+    await h.ctx.settings.update({ discovery: { supplyCheck: { enabled: true, minMatches: 3, perRun: 40 } } });
+    for (let i = 0; i < 3; i++) h.apiSource.add({ sourceItemId: `J${i}`, title: `원목 수납장 ${i}단`, price: 15000 });
+    for (let i = 0; i < 3; i++) h.apiSource.add({ sourceItemId: `N${i}`, title: `노트북가방 서류가방 ${i}`, price: 15000 });
+    h.apiSource.add({ sourceItemId: 'D1', title: '서랍정리함 하나', price: 15000 }); // 1개뿐 → 부족
+    h.marketData.stats.set('정리함', [{ keyword: '정리함', volume: 40000, competition: '중간' }, { keyword: '농협법인카드', volume: 5000, competition: '낮음' }]);
+    // 예전 규칙으로 들어온 미사용 연관 키워드
+    const now = h.clock.now();
+    await h.ctx.db.insertInto('keywords').values([
+      { keyword: '고사양노트북', origin: 'related', status: 'active', volume: 3000, score: 0.5, discovered_at: now },
+      { keyword: '노트북가방', origin: 'related', status: 'active', volume: 3000, score: 0.5, discovered_at: now },
+    ]).execute();
+    const r = await discoverKeywords(h.ctx);
+    const names = (await h.ctx.db.selectFrom('keywords').select('keyword').execute()).map((x) => x.keyword);
+    expect(names).toContain('수납장'); // 공급처 상품 3개
+    expect(names).not.toContain('서랍정리함'); // 1개뿐
+    expect(names).not.toContain('농협법인카드'); // 카드류
+    expect(names).toContain('수납 정리함'); // 상품명에서 나온 키워드는 확인 없이 채택
+    expect(names).not.toContain('고사양노트북'); // 예전 키워드 재확인 → 정리
+    expect(names).toContain('노트북가방');
+    expect((await h.ctx.db.selectFrom('keywords').select('note').where('keyword', '=', '노트북가방').executeTakeFirstOrThrow()).note).toBe('공급처 상품 확인');
+    expect(r.noSupply).toBe(2);
+    // 공급 없음은 기억 → 다음 발굴에서 같은 검색 안 함
+    const calls: string[] = [];
+    const orig = h.apiSource.search.bind(h.apiSource);
+    h.apiSource.search = async (k: string, o?: any) => (calls.push(k), orig(k, o));
+    await discoverKeywords(h.ctx);
+    expect(calls).not.toContain('서랍정리함');
+    expect(calls).not.toContain('노트북가방'); // 이미 확인된 키워드
+  });
+
+  it('검색 한도: 새 키워드는 한도의 3/4까지만 확인하고 나머지는 다음 발굴로(공급 없음으로 세지 않음), 남은 몫은 예전 키워드 재확인', async () => {
+    await setupDiscovery();
+    await h.ctx.settings.update({ discovery: { supplyCheck: { enabled: true, minMatches: 3, perRun: 4 } } });
+    h.manualSource.search = async () => [];
+    const searched: string[] = [];
+    h.apiSource.search = async (k: string) => (searched.push(k), []);
+    await h.ctx.db.insertInto('keywords').values({ keyword: '예전키워드', origin: 'related', status: 'active', volume: 3000, score: 0.1, discovered_at: h.clock.now() }).execute();
+    const r = await discoverKeywords(h.ctx);
+    // 한도 4: 새 키워드 몫 3회(서랍정리함 2개 공급처 = 2회 → 공급 없음, 수납장 1회만 → 판단 보류), 재확인 몫 1회(예전키워드 일부만 → 보류)
+    expect(r.noSupply).toBe(1);
+    expect(r.supplyDeferred).toBe(1);
+    expect(searched.length).toBe(3); // apiSource 검색: 서랍정리함·수납장·예전키워드
+    const names = (await h.ctx.db.selectFrom('keywords').select('keyword').execute()).map((x) => x.keyword);
+    expect(names).toContain('예전키워드'); // 다 못 봤으니 지우지 않음
+    expect(names).not.toContain('수납장'); // 이번엔 추가 안 함(다음 발굴에서 다시 확인)
+  });
+
+  it('공급처 검색이 실패하면 판단 보류(키워드를 버리지 않음), 검색 한도를 넘으면 다음 회차로', async () => {
+    await setupDiscovery();
+    await h.ctx.settings.update({ discovery: { supplyCheck: { enabled: true, minMatches: 3, perRun: 40 } } });
+    h.manualSource.search = h.apiSource.search = async () => {
+      throw new Error('timeout');
+    };
+    await discoverKeywords(h.ctx);
+    const names = (await h.ctx.db.selectFrom('keywords').select('keyword').execute()).map((x) => x.keyword);
+    expect(names).toContain('서랍정리함');
+    expect(names).toContain('수납장');
   });
 });
