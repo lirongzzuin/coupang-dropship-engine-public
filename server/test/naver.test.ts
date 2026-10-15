@@ -174,6 +174,11 @@ describe('스마트스토어 어댑터', () => {
     await api.market.updateQuantity('NV901:3', 7);
     expect(api.calls.at(-1)).toMatchObject({ method: 'PATCH', path: '/v1/products/origin-products/multi-update', body: { multiProductUpdateRequestVos: [{ originProductNo: 901, multiUpdateTypes: ['STOCK'], stockQuantity: 7 }] } });
     expect(await api.market.getItemSaleState('NV901:3')).toEqual({ onSale: true, quantity: 5, price: 9000 });
+    // 값이 그대로면 수정 호출 없음(매시간 동기화)
+    const n = api.calls.length;
+    expect(await api.market.updateQuantity('NV901:3', 5)).toMatchObject({ ok: true, message: '변경 없음' });
+    expect(await api.market.updateQuantity('NV900:1', 10)).toMatchObject({ ok: true, message: '변경 없음' });
+    expect(api.calls.slice(n).every((c) => c.method === 'GET')).toBe(true);
     expect(await api.market.getItemSaleState('NV900:2')).toMatchObject({ onSale: false });
   });
 

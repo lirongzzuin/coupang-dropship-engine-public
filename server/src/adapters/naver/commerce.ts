@@ -470,7 +470,13 @@ export class NaverMarket implements MarketPort {
       if (!p) return { ok: false, retryable: false, message: '스마트스토어에 상품 없음(삭제됨)' };
       const op = p.originProduct;
       const combos: any[] = op?.detailAttribute?.optionInfo?.optionCombinations ?? [];
+      const same = { ok: true, retryable: false, message: '변경 없음' } as MarketResult;
       if (!combos.length) {
+        // 값이 그대로면 호출하지 않음(동기화가 매시간 재고를 다시 보냄)
+        const unchanged = (edit.price === undefined || Math.round(edit.price / 10) * 10 === op.salePrice)
+          && (edit.stock === undefined || edit.stock === op.stockQuantity)
+          && (edit.usable === undefined || edit.usable === (op.statusType === 'SALE'));
+        if (unchanged) return same;
         const types: string[] = [];
         const vo: Record<string, unknown> = { originProductNo: Number(originNo) };
         if (edit.price !== undefined) (types.push('SALE_PRICE'), (vo.productSalePrice = { salePrice: Math.round(edit.price / 10) * 10 }));
@@ -482,6 +488,8 @@ export class NaverMarket implements MarketPort {
       }
       const target = combos.find((c) => c.sellerManagerCode === code);
       if (!target) return { ok: false, retryable: false, message: `옵션 없음(${code})` };
+      const curPrice = Number(op.salePrice) + Number(target.price ?? 0);
+      if ((edit.price === undefined || Math.round(edit.price / 10) * 10 === curPrice) && (edit.stock === undefined || edit.stock === target.stockQuantity) && (edit.usable === undefined || edit.usable === (target.usable !== false))) return same;
       // 옵션별 실제 가격 = 판매가 + 옵션가. 한 옵션 가격만 바꾸고 기준(최저가)을 다시 잡음
       const abs = new Map<any, number>(combos.map((c) => [c, Number(op.salePrice) + Number(c.price ?? 0)]));
       if (edit.price !== undefined) abs.set(target, Math.round(edit.price / 10) * 10);
