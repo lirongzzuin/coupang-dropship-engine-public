@@ -145,6 +145,8 @@ export interface SourceAdapter {
   readonly displayName: string;
   readonly capabilities: SourceCapabilities;
   search(keyword: string, opts?: { limit?: number; minPrice?: number; maxPrice?: number }): Promise<SourceProductSummary[]>;
+  /** 상품명만(가벼운 검색, 키워드 공급처 확인용). 없으면 search() 사용 */
+  searchTitles?(keyword: string, limit?: number): Promise<string[]>;
   /**
    * 상품 상세. hint.option 이 있으면 그 옵션(쿠팡에 올린 옵션) 기준으로 가격·재고·상태를 낸다
    * (그 옵션이 없어지거나 품절이면 다른 옵션으로 바꾸지 않고 판매 불가로 보고).
