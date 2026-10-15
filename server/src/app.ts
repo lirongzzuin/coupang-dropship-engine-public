@@ -126,7 +126,7 @@ export async function buildContext(env: Env, o: BuildOverrides = {}): Promise<Ap
     naverApi,
     sources,
     marketData: o.marketData ?? (demo ? new DemoMarketData() : marketData),
-    notifications: new NotificationService(db, notifier, env.PUBLIC_BASE_URL, clock),
+    notifications: new NotificationService(db, notifier, env.PUBLIC_BASE_URL, clock, settings),
     storage: o.storage ?? new LocalStorage(join(env.DATA_DIR, 'media'), env.MEDIA_PUBLIC_BASE_URL || env.PUBLIC_BASE_URL),
     pii: new PiiCipher(env.PII_KEY),
     publicIp: o.publicIp === null ? undefined : (o.publicIp ?? (env.PUBLIC_IP_CHECK ? lookupPublicIp : undefined)),

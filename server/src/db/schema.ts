@@ -311,6 +311,8 @@ export interface NotificationsTable {
   body: string;
   link: string | null;
   delivered: boolean;
+  /** 방해금지 시간이라 보류(아침에 모아서 보냄) */
+  held: Generated<boolean>;
   at: Ts;
 }
 

@@ -436,6 +436,24 @@ export const settingsSchema = z.object({
     })
     .default({}),
 
+  /** 알림 */
+  notify: z
+    .object({
+      /**
+       * 방해금지 시간(한국시간): 이 시간에는 급한 알림만 바로 보내고 나머지는 보류 → 끝나는 시각에 모아서 한 번에.
+       * 급한 알림 = 장사가 멈추거나 손해가 커지는 일(안전장치 판매 중지, 주문 수집 중단, 쿠팡 판매중지 실패, 공인 IP 변경 등)
+       */
+      quietHours: z.object({
+        enabled: z.boolean().default(true),
+        /** 시작·끝 시(0~23, 한국시간). 23 → 7 이면 23:00~다음날 07:00 */
+        start: z.number().int().min(0).max(23).default(23),
+        end: z.number().int().min(0).max(23).default(7),
+        /** 제목이 이 말로 시작하면 방해금지 시간에도 바로 보냄(코드에서 urgent 로 표시한 알림도) */
+        urgentTitles: z.array(z.string()).default(['🛑', '주문 수집이 멈췄습니다', '쿠팡 판매중지 실패', '공인 IP 변경', '작업 실패: 주문 수집']),
+      }).default({}),
+    })
+    .default({}),
+
   orders: z
     .object({
       /** approve: 구매 전 사람이 확인 | auto: API 가능한 소스는 자동 발주 */

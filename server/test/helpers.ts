@@ -142,6 +142,7 @@ export async function makeHarness(opts: { live?: boolean; env?: Record<string, s
     fees: { monthlyServiceFee: 0 },
     selection: { sources: ['mockapi', 'mockmanual'], minSupplyPrice: 5000, minStock: 1 },
     listing: { convertImages: false }, // 테스트는 외부 이미지 다운로드 안 함(media.test 에서 따로 검증)
+    notify: { quietHours: { enabled: false } }, // 시계를 넘기는 테스트가 많아 기본은 끔(quiet.test 에서 따로 검증)
   });
   return { ctx, market, apiSource, manualSource, marketData, notifier, clock, naver, naverApi, close: () => ctx.db.destroy() };
 }
