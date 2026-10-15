@@ -186,8 +186,9 @@ const SUPPLY_OK = '공급처 상품 확인';
 class SupplyChecker {
   /** 새 키워드 확인은 한도의 3/4까지(나머지는 예전 키워드 재확인 몫) */
   private used = { new: 0, recheck: 0 };
+  private readonly startedAt = Date.now();
   lastWasDefinitive = false;
-  constructor(private readonly ctx: AppContext, private readonly cfg: { enabled: boolean; minMatches: number; perRun: number; rememberDays: number }) {}
+  constructor(private readonly ctx: AppContext, private readonly cfg: { enabled: boolean; minMatches: number; perRun: number; rememberDays: number; sources: string[]; maxSeconds: number }) {}
 
   private limit(kind: 'new' | 'recheck'): number {
     const forNew = Math.ceil(this.cfg.perRun * 0.75);
@@ -195,7 +196,7 @@ class SupplyChecker {
   }
 
   hasBudget(kind: 'new' | 'recheck'): boolean {
-    return this.cfg.enabled && this.used[kind] < this.limit(kind);
+    return this.cfg.enabled && this.used[kind] < this.limit(kind) && Date.now() - this.startedAt < this.cfg.maxSeconds * 1000;
   }
 
   async ok(keyword: string, kind: 'new' | 'recheck' = 'new'): Promise<boolean> {
@@ -209,7 +210,9 @@ class SupplyChecker {
     }
     if (!this.hasBudget(kind)) return false; // 이번 회차 검색 한도 → 다음 발굴에서 다시
     const s = await this.ctx.settings.get();
-    const sources = s.selection.sources.map((id) => this.ctx.sources.get(id)).filter((x) => !!x);
+    // 빠른 공급처부터(설정 순서), 그다음 상품 선정에 쓰는 나머지 공급처
+    const ids = [...new Set([...this.cfg.sources, ...s.selection.sources])].filter((id) => s.selection.sources.includes(id) || this.cfg.sources.includes(id));
+    const sources = ids.map((id) => this.ctx.sources.get(id)).filter((x) => !!x);
     if (!sources.length) return true;
     const key = keyword.replace(/\s+/g, '').toLowerCase();
     let matches = 0;

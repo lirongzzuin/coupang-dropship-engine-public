@@ -187,6 +187,17 @@ describe('키워드 품질: 공급처에서 파는 상품인지 확인', () => {
     expect(names).not.toContain('수납장'); // 이번엔 추가 안 함(다음 발굴에서 다시 확인)
   });
 
+  it('시간 한도(maxSeconds)를 넘으면 공급처 검색을 멈추고 나머지는 다음 발굴로', async () => {
+    await setupDiscovery();
+    await h.ctx.settings.update({ discovery: { supplyCheck: { enabled: true, minMatches: 3, perRun: 80, maxSeconds: 0 } } });
+    const searched: string[] = [];
+    h.manualSource.search = h.apiSource.search = async (k: string) => (searched.push(k), []);
+    const r = await discoverKeywords(h.ctx);
+    expect(searched).toEqual([]);
+    expect(r.noSupply ?? 0).toBe(0);
+    expect(r.supplyDeferred).toBeGreaterThan(0);
+  });
+
   it('공급처 검색이 실패하면 판단 보류(키워드를 버리지 않음), 검색 한도를 넘으면 다음 회차로', async () => {
     await setupDiscovery();
     await h.ctx.settings.update({ discovery: { supplyCheck: { enabled: true, minMatches: 3, perRun: 40 } } });

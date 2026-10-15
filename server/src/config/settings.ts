@@ -275,6 +275,10 @@ export const settingsSchema = z.object({
         perRun: z.number().int().default(80),
         /** 공급 없음으로 판정한 키워드는 이 기간 동안 다시 채택하지 않음 */
         rememberDays: z.number().int().default(30),
+        /** 검색 순서: 빠른 공급처부터(실측 2026-10-15: 도매꾹 0.2~0.4초, 오너클랜 4~50초). 없는 공급처는 건너뜀 */
+        sources: z.array(z.string()).default(['domeggook', 'ownerclan']),
+        /** 1회 발굴에서 공급처 확인에 쓰는 최대 시간(초) — 넘으면 나머지는 다음 발굴로 */
+        maxSeconds: z.number().int().default(120),
       }).default({}),
       /** 연관 키워드는 원래 힌트·카테고리와 단어가 겹칠 때만 채택(엉뚱한 연관어 방지) */
       relatedRequireOverlap: z.boolean().default(true),
