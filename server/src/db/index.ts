@@ -14,6 +14,7 @@ import * as m007 from './migrations/007_winner.js';
 import * as m008 from './migrations/008_repair.js';
 import * as m009 from './migrations/009_variants.js';
 import * as m010 from './migrations/010_claims.js';
+import * as m011 from './migrations/011_shipping.js';
 import type { DB } from './schema.js';
 
 export type Database = Kysely<DB>;
@@ -30,6 +31,7 @@ const MIGRATIONS: Record<string, Migration> = {
   '008_repair': m008,
   '009_variants': m009,
   '010_claims': m010,
+  '011_shipping': m011,
 };
 
 class StaticProvider implements MigrationProvider {

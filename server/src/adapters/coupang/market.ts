@@ -78,8 +78,19 @@ export class CoupangMarket implements MarketPort {
     return out;
   }
 
-  async uploadInvoice(input: InvoiceInput): Promise<MarketResult> {
-    const res = await this.client.request('POST', `${OPEN}/v4/vendors/${this.v}/orders/invoices`, {
+  uploadInvoice(input: InvoiceInput): Promise<MarketResult> {
+    return this.invoiceCall('invoices', input);
+  }
+
+  /** 송장 수정: POST …/orders/updateInvoices (같은 요청 형식, 배송지시 이후 상태에서만) */
+  updateInvoice(input: InvoiceInput): Promise<MarketResult> {
+    return this.invoiceCall('updateInvoices', input);
+  }
+
+  private async invoiceCall(kind: 'invoices' | 'updateInvoices', input: InvoiceInput): Promise<MarketResult> {
+    let res: any;
+    try {
+      res = await this.client.request('POST', `${OPEN}/v4/vendors/${this.v}/orders/${kind}`, {
       body: {
         vendorId: this.v,
         orderSheetInvoiceApplyDtos: [
@@ -95,10 +106,17 @@ export class CoupangMarket implements MarketPort {
           },
         ],
       },
-    });
+      });
+    } catch (e) {
+      // 400: 택배사 코드 오류·송장번호 형식 오류(택배사별 자릿수) — 같은 값으로 재시도해도 실패
+      if (e instanceof HttpError && e.status === 400) return { ok: false, retryable: false, message: `INVALID_FORMAT: ${e.message.replace(/^coupang [A-Z]+ \S+ → 400: /, '')}` };
+      throw e;
+    }
     const r = res?.data?.responseList?.[0];
     if (!r) return { ok: res?.data?.responseCode === 0, retryable: true, message: res?.data?.responseMessage ?? 'no result' };
-    return { ok: !!r.succeed, retryable: !!r.retryRequired, message: r.resultMessage ?? r.resultCode ?? '' };
+    // 메시지 앞에 결과 코드(INVALID_INVOICE_NUMBER 등)를 붙여 상위에서 원인별로 안내
+    const msg = [r.resultCode, r.resultMessage].filter((x) => x && x !== 'OK').join(': ');
+    return { ok: !!r.succeed, retryable: !!r.retryRequired, message: msg || 'OK' };
   }
 
   /**
@@ -501,6 +519,7 @@ export function parseReturnReceipt(r: any): MarketClaim[] {
       shipmentBoxId: it.shipmentBoxId ? String(it.shipmentBoxId) : undefined,
       faultBy: r.faultByType || undefined,
       returnShippingCharge: r.returnShippingCharge == null ? undefined : money(r.returnShippingCharge),
+      pickupType: r.returnDeliveryType ?? undefined,
       reason: [r.cancelReasonCategory1, r.cancelReasonCategory2, r.cancelReason].filter(Boolean).join(' / ') || String(r.reasonCodeText ?? ''),
       requestedAt: new Date(r.createdAt ? `${String(r.createdAt).slice(0, 19)}+09:00` : Date.now()),
     };

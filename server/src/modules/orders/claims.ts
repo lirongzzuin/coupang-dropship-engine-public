@@ -85,12 +85,13 @@ async function upsertClaim(ctx: AppContext, o: OrderRow, c: MarketClaim): Promis
       ...(existing.closed_at && !CLOSED_STAGES.includes(stage) && stage !== 'cancelled' ? { closed_at: null } : {}),
       ...(c.returnShippingCharge !== undefined ? { return_shipping_charge: c.returnShippingCharge } : {}),
       ...(c.faultBy ? { fault_by: c.faultBy } : {}),
+      ...(c.pickupType !== undefined ? { pickup_type: c.pickupType } : {}),
     }).where('id', '=', existing.id).returningAll().executeTakeFirstOrThrow();
   }
   const row = await ctx.db.insertInto('order_claims').values({
     order_id: o.id, market: o.market, receipt_id: c.receiptId, claim_type: c.type, stage, raw_status: c.status,
     count: c.count ?? null, reason: c.reason ?? '', fault_by: c.faultBy ?? null, return_shipping_charge: c.returnShippingCharge ?? null,
-    prev_status: o.status, requested_at: c.requestedAt, created_at: now, updated_at: now,
+    prev_status: o.status, pickup_type: c.pickupType ?? null, requested_at: c.requestedAt, created_at: now, updated_at: now,
   }).returningAll().executeTakeFirstOrThrow();
   await ctx.db.insertInto('order_events').values({ order_id: o.id, from_status: o.status, to_status: o.status, reason: `${c.type === 'EXCHANGE' ? '교환' : c.type === 'CANCEL' ? '취소' : '취소·반품'} 접수 ${c.receiptId}: ${STAGE_LABEL[stage]} — ${c.reason || '사유 없음'}`, actor: SYSTEM, at: now }).execute();
   return row;
@@ -141,7 +142,7 @@ async function moveTo(ctx: AppContext, o: OrderRow, to: OrderStatus, reason: str
 type SourceInfo =
   | { kind: 'none' } // 공급처 주문 없음(구매 전·모의)
   | { kind: 'manual'; name: string } // 공급처 자동 취소·조회 불가 → 사람이 처리
-  | { kind: 'api'; name: string; state: string; rawStatus: string; tracking: { courierName: string; trackingNo: string } | null };
+  | { kind: 'api'; name: string; state: string; rawStatus: string; tracking: { courierName: string; trackingNo: string; courierCode?: string } | null };
 
 async function sourceInfo(ctx: AppContext, o: OrderRow): Promise<SourceInfo> {
   if (!o.source_order_id || o.source_order_id.startsWith('DRY-')) return { kind: 'none' };
@@ -243,7 +244,7 @@ async function handleCancel(ctx: AppContext, row: OrderClaimRow, o: OrderRow, co
       await close(ctx, row, '공급처 이미 발송 — 반품 접수 필요');
       return true;
     }
-    const code = resolveCourierCode(s.orders.courierAliases, src.tracking.courierName);
+    const code = resolveCourierCode(s.orders.courierAliases, src.tracking.courierName, src.tracking.courierCode);
     if (!code) {
       await notifyOnce(ctx, row, 'shipped-nocode', 'action', '취소 요청 — 이미 발송됨(직접 처리)', `${o.item_name}: ${src.name}이 이미 보냈습니다(${src.tracking.courierName} ${src.tracking.trackingNo}). 택배사 코드를 몰라 자동 처리 못 함 → Wing 반품/취소 관리에서 [이미출고] 처리하세요.`);
       return false;
@@ -270,6 +271,11 @@ async function handleCancel(ctx: AppContext, row: OrderClaimRow, o: OrderRow, co
     if (after.kind === 'api' && after.state === 'cancelled') return handleCancel(ctx, row, o, coupangDone);
     await ctx.notifications.notify('info', '고객 취소 — 공급처 취소 요청함', `${o.item_name}: ${r.note}. 공급사가 수락하면 자동으로 ${coupangDone ? '취소 완료' : '쿠팡 출고중지 처리'}합니다.`, { path: `/orders/${o.id}` });
     return true;
+  }
+  // 공급사가 취소 요청을 거절(취소요청 → 다시 결제완료·준비중) → 사람이 판단(보내면 자동으로 이미출고 처리)
+  if (src.state === 'ok') {
+    await notifyOnce(ctx, row, 'cancel-rejected', 'error', '공급처가 취소를 거절했어요', `${o.item_name}: ${src.name} 주문 ${o.source_order_id}의 취소 요청이 받아들여지지 않았습니다(현재 ${src.rawStatus}).\n${src.name} 1:1 문의로 취소를 다시 요청하세요. 그대로 발송되면 자동으로 쿠팡 이미출고 처리되고 고객은 반품으로 진행합니다(왕복 배송비 판매자 부담일 수 있음).`);
+    return false;
   }
   // 공급사 수락 대기
   const waited = (ctx.clock.now().getTime() - new Date(row.source_cancel_at).getTime()) / 3600_000;
@@ -321,7 +327,11 @@ async function handleReturnOpen(ctx: AppContext, row: OrderClaimRow, o: OrderRow
   const fault = row.fault_by ? ` · 귀책 ${row.fault_by}` : '';
   const src = o.source_order_id ? `공급처 주문 ${o.source_order_id}` : '공급처 주문 없음';
   if (row.stage === 'return_requested') {
-    await notifyOnce(ctx, row, 'return_requested', 'action', '반품 요청', `${o.item_name}: ${row.reason || '사유 없음'}${fault}${feeText}\n① 공급처에 반품 접수(${src}) — 회수 상품은 공급처로\n② 회수되면 쿠팡 빠른환불(10만원 미만)이 자동 환불하거나, 공급처 입고 확인 후 관리 화면 [반품 승인(환불)]`);
+    // 수기관리: 쿠팡이 회수하지 않음 → 공급처 반품 접수(공급처가 회수) 또는 판매자가 회수 송장 등록
+    const pickup = row.pickup_type === '수기관리'
+      ? '\n※ 회수 방식 "수기관리" — 쿠팡이 회수하지 않습니다. 공급처 반품 접수 시 공급처 택배로 회수를 요청하고, 회수 송장은 Wing 반품관리에 입력하세요.'
+      : row.pickup_type ? `\n회수 방식: ${row.pickup_type}` : '';
+    await notifyOnce(ctx, row, 'return_requested', 'action', '반품 요청', `${o.item_name}: ${row.reason || '사유 없음'}${fault}${feeText}\n① 공급처에 반품 접수(${src}) — 회수 상품은 공급처로\n② 회수되면 쿠팡 빠른환불(10만원 미만)이 자동 환불하거나, 공급처 입고 확인 후 관리 화면 [반품 승인(환불)]${pickup}`);
   } else if (row.stage === 'return_collected') {
     await notifyOnce(ctx, row, 'return_collected', 'action', '반품 입고완료 — 승인하면 환불', `${o.item_name}: 쿠팡에 반품 입고완료로 표시됐습니다. 상품 상태를 확인했으면 관리 화면 주문 > [반품 승인(환불)]을 누르세요.`);
   } else {
@@ -342,7 +352,7 @@ async function handleExchange(ctx: AppContext, row: OrderClaimRow, o: OrderRow):
     const src = sp ? ctx.sources.get(sp.source) : undefined;
     const t = src?.getOrderInfo && !row.reship_source_order_id.startsWith('DRY-') ? (await src.getOrderInfo(row.reship_source_order_id)).tracking : null;
     if (t?.trackingNo) {
-      const code = resolveCourierCode(s.orders.courierAliases, t.courierName) ?? t.courierName;
+      const code = resolveCourierCode(s.orders.courierAliases, t.courierName, t.courierCode) ?? t.courierName;
       row = await patchClaim(ctx, row, { reship_tracking: `${t.courierName} ${t.trackingNo}`, action_note: `재발송 송장 ${t.courierName} ${t.trackingNo}` });
       await ctx.notifications.notify('action', row.claim_type === 'EXCHANGE' ? '교환 재발송 송장 — Wing에 입력' : '재발송 송장', `${o.item_name}: ${t.courierName}(${code}) ${t.trackingNo}${row.claim_type === 'EXCHANGE' ? '\nWing 교환 관리에서 교환상품 송장으로 입력하세요.' : '\n고객에게 새 송장을 안내하세요(쿠팡 고객문의 답변 등).'}`, { path: `/orders/${o.id}` });
       changed = true;

@@ -140,9 +140,11 @@ export async function reconcileMarketState(ctx: AppContext): Promise<ReconcileRe
   const out: ReconcileResult = { checked: 0, restopped: 0, marketStopped: 0, errors: 0 };
   if (s.killSwitch || !s.monitor.enabled || !s.monitor.reconcileMarket || !ctx.market.getItemSaleState) return out;
   const recent = addDays(ctx.clock.now(), -7);
-  const rows = await ctx.db.selectFrom('listings').selectAll().where('dry_run', '=', false)
+  const rowsAll = await ctx.db.selectFrom('listings').selectAll().where('dry_run', '=', false)
     .where((eb) => eb.or([eb('status', 'in', ['active', 'paused']), eb.and([eb('status', '=', 'stopped'), eb('updated_at', '>=', recent)])]))
     .orderBy('id').execute();
+  // 이미 '쿠팡에서 삭제됨'으로 정리한 상품은 다시 보지 않음(매시간 같은 정리 알림이 반복되던 문제)
+  const rows = rowsAll.filter((l) => !(l.status === 'stopped' && l.status_reason?.startsWith(PAUSE.deleted)));
   const restopped: string[] = [];
   const failed: string[] = [];
   const marketStopped: string[] = [];

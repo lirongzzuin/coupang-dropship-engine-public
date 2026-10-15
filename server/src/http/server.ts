@@ -19,6 +19,7 @@ import { forceStop, requestResume } from '../modules/monitor/repair.js';
 import { findByVendorItem } from '../modules/listing/items.js';
 import { linkExistingListing, ListingError, quoteSourceItem, listNameFixes, markNameFixed, registerListing, relistWithOption, updateDraft, validateListing } from '../modules/listing/service.js';
 import { importCoupangSalesCsv } from '../modules/marketdata/csvImport.js';
+import { COUPANG_COURIERS, resolveCourier } from '../modules/orders/couriers.js';
 import { claimAction, listOrderClaims, reshipOrder, sellerCancel } from '../modules/orders/claims.js';
 import { confirmPurchase, decryptReceiver, OrderError, overrideAndProcess, submitTracking, transition } from '../modules/orders/service.js';
 import { ACTION_STATUSES, EXCEPTION_STATUSES, ORDER_STATUSES, type OrderStatus, STATUS_LABEL } from '../modules/orders/stateMachine.js';
@@ -230,6 +231,9 @@ export async function buildServer(ctx: AppContext, scheduler: Scheduler | null, 
         events,
         profitEstimate: profitIfCost,
         courierAliases: Object.keys(s.orders.courierAliases),
+        couriers: COUPANG_COURIERS.map(([code, name]) => ({ code, name })),
+        // 공급처 표기로 추정한 쿠팡 택배사(못 맞추면 null → 화면에서 고르게)
+        courierGuess: o.courier_code ?? (o.courier_name ? resolveCourier({ name: o.courier_name }, s.orders.courierAliases)?.code ?? null : null),
         claims: await listOrderClaims(ctx, id),
       };
     });
@@ -262,8 +266,9 @@ export async function buildServer(ctx: AppContext, scheduler: Scheduler | null, 
       return confirmPurchase(ctx, idParam(req), b, actor(req));
     });
     api.post('/api/orders/:id/tracking', async (req) => {
-      const b = z.object({ courier: z.string().min(1), trackingNo: z.string().min(4) }).parse(req.body);
-      return submitTracking(ctx, idParam(req), b.courier, b.trackingNo, actor(req));
+      // courierCode: 쿠팡 택배사 목록에서 고른 코드(공급처 표기 courier 와 함께 오면 별칭으로 기억)
+      const b = z.object({ courier: z.string().default(''), courierCode: z.string().optional(), trackingNo: z.string().min(4) }).refine((x) => x.courier || x.courierCode, '택배사를 고르세요').parse(req.body);
+      return submitTracking(ctx, idParam(req), b.courier || b.courierCode!, b.trackingNo, actor(req), { courierCode: b.courierCode || undefined });
     });
     api.post('/api/orders/:id/override', async (req) => overrideAndProcess(ctx, idParam(req), actor(req)));
     api.post('/api/orders/:id/status', async (req) => {

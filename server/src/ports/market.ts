@@ -78,6 +78,8 @@ export interface MarketClaim {
   faultBy?: string;
   /** 반품 배송비(+ 판매자 부담, - 고객 부담) */
   returnShippingCharge?: number;
+  /** 반품 회수 방식: 전담택배·연동택배·수기관리(판매자가 회수 접수) · '' = 고객 직접 발송·회수 없음 */
+  pickupType?: string;
   reason: string;
   requestedAt: Date;
 }
@@ -154,6 +156,8 @@ export interface MarketPort {
   getOrderLines(shipmentBoxId: string): Promise<MarketOrderLine[]>;
   acknowledge(shipmentBoxIds: string[]): Promise<Record<string, MarketResult>>;
   uploadInvoice(input: InvoiceInput): Promise<MarketResult>;
+  /** 송장 수정(이미 등록한 송장이 틀렸을 때). 배송지시·배송중·배송완료·업체직송 상태에서만 가능 */
+  updateInvoice?(input: InvoiceInput): Promise<MarketResult>;
   listClaims(from: Date, to: Date): Promise<MarketClaim[]>;
   /** 반품·취소 접수 단건(최신 상태). 고객이 철회했으면 stage='withdrawn', 조회할 수 없으면 null */
   getClaim?(receiptId: string): Promise<MarketClaim | null>;

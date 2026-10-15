@@ -99,6 +99,17 @@ export class FakeMarket implements MarketPort {
     return { ok: true, retryable: false, message: 'OK' };
   }
 
+  /** 테스트: 송장 수정 기록 */
+  invoiceUpdates: InvoiceInput[] = [];
+  async updateInvoice(input: InvoiceInput): Promise<MarketResult> {
+    this.maybeFail('updateInvoice');
+    const lines = this.orders.get(input.shipmentBoxId);
+    if (!lines?.some((l) => ['DEPARTURE', 'DELIVERING', 'FINAL_DELIVERY', 'NONE_TRACKING'].includes(l.status))) return { ok: false, retryable: false, message: 'INVALID_STATUS' };
+    this.invoiceUpdates.push(input);
+    lines.forEach((l) => (l.invoiceNumber = input.trackingNo));
+    return { ok: true, retryable: false, message: 'OK' };
+  }
+
   async listClaims(from: Date, to: Date): Promise<MarketClaim[]> {
     this.maybeFail('listClaims');
     return this.claims.filter((c) => c.requestedAt >= from && c.requestedAt <= to).map((c) => ({ ...c }));

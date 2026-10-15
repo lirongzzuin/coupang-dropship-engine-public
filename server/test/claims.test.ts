@@ -216,13 +216,14 @@ describe('반품', () => {
 
   it('반품 접수 → 안내 1회(귀책·반품배송비) → 입고완료 → [반품 승인] → 반품완료 → 환불 정산 시 손익 기록', async () => {
     const { vendorItemId, line, o } = await delivered();
-    claim({ receiptId: '701', marketOrderId: line.marketOrderId, vendorItemId, type: 'RETURN', stage: 'return_requested', faultBy: 'CUSTOMER', returnShippingCharge: -5000, reason: '단순변심' });
+    claim({ receiptId: '701', marketOrderId: line.marketOrderId, vendorItemId, type: 'RETURN', stage: 'return_requested', faultBy: 'CUSTOMER', returnShippingCharge: -5000, reason: '단순변심', pickupType: '수기관리' });
     await cycle();
     await cycle();
     expect((await orderByBox(h, line.shipmentBoxId)).status).toBe('RETURN_REQUESTED');
     const n = h.notifier.sent.filter((m) => m.title === '반품 요청');
     expect(n).toHaveLength(1);
     expect(n[0]!.body).toContain('고객 부담 5,000원');
+    expect(n[0]!.body).toContain('쿠팡이 회수하지 않습니다');
     h.market.setClaimStage('701', 'return_collected');
     await cycle();
     expect(h.notifier.titles()).toContain('반품 입고완료 — 승인하면 환불');

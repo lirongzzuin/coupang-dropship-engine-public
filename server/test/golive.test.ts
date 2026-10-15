@@ -160,7 +160,7 @@ describe('공급처 결제·취소 자동 감지', () => {
     h.apiSource.ship(o.source_order_id!, '999888777666', '알수없는택배');
     await pollFulfillment(h.ctx);
     expect((await orderByBox(h, line.shipmentBoxId)).status).toBe('PURCHASED');
-    expect(h.notifier.titles()).toContain('송장 자동 등록 실패');
+    expect(h.notifier.titles()).toContain('택배사 선택 필요');
   });
 });
 
