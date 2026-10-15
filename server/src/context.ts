@@ -62,7 +62,11 @@ export class KvStore {
   }
 }
 
-/** 알림: DB에 항상 기록하고 외부 채널(텔레그램)로 전송. 같은 dedupeKey는 일정 시간 내 1회만 */
+/** 알림: DB에 항상 기록하고 외부 채널(텔레그램)로 전송. 같은 dedupeKey는 일정 시간 내 1회만.
+ *  방해금지 시간(설정 notify.quietHours, 한국시간)에는 급한 알림만 바로 보내고 나머지는 보류 → 끝나면 flushHeld()가 모아서 한 번에 */
+const LEVEL_RANK: Record<string, number> = { info: 0, action: 1, warn: 2, error: 3 };
+const LEVEL_ICON: Record<string, string> = { info: 'ℹ️', action: '👉', warn: '⚠️', error: '❗' };
+
 export class NotificationService {
   private recent = new Map<string, number>();
   constructor(
@@ -70,9 +74,25 @@ export class NotificationService {
     private readonly notifier: Notifier,
     private readonly publicBase: string,
     private readonly clock: Clock,
+    private readonly settings?: SettingsService,
   ) {}
 
-  async notify(level: 'info' | 'warn' | 'error' | 'action', title: string, body: string, opts: { path?: string; dedupeKey?: string; dedupeMinutes?: number } = {}): Promise<void> {
+  /** 지금이 방해금지 시간인지(한국시간) */
+  async isQuiet(at: Date = this.clock.now()): Promise<boolean> {
+    if (!this.settings) return false;
+    const q = (await this.settings.get()).notify.quietHours;
+    if (!q.enabled || q.start === q.end) return false;
+    const h = (at.getUTCHours() + 9) % 24;
+    return q.start > q.end ? h >= q.start || h < q.end : h >= q.start && h < q.end;
+  }
+
+  private async isUrgent(title: string, urgent?: boolean): Promise<boolean> {
+    if (urgent) return true;
+    if (!this.settings) return true;
+    return (await this.settings.get()).notify.quietHours.urgentTitles.some((t) => t && title.startsWith(t));
+  }
+
+  async notify(level: 'info' | 'warn' | 'error' | 'action', title: string, body: string, opts: { path?: string; dedupeKey?: string; dedupeMinutes?: number; /** 방해금지 시간에도 바로 보냄 */ urgent?: boolean } = {}): Promise<void> {
     if (opts.dedupeKey) {
       const last = this.recent.get(opts.dedupeKey);
       const now = this.clock.now().getTime();
@@ -80,8 +100,40 @@ export class NotificationService {
       this.recent.set(opts.dedupeKey, now);
     }
     const link = opts.path ? `${this.publicBase.replace(/\/$/, '')}${opts.path}` : undefined;
+    if ((await this.isQuiet()) && !(await this.isUrgent(title, opts.urgent))) {
+      await this.db.insertInto('notifications').values({ level, title, body, link: link ?? null, delivered: false, held: true, at: this.clock.now() }).execute();
+      return;
+    }
     const delivered = await this.notifier.send({ level, title, body, link });
     await this.db.insertInto('notifications').values({ level, title, body, link: link ?? null, delivered, at: this.clock.now() }).execute();
+  }
+
+  /** 방해금지 시간이 끝나면 보류한 알림을 한 통으로 모아서 보냄(제목별 묶음·건수). 보낸 개수 반환 */
+  async flushHeld(): Promise<number> {
+    if (await this.isQuiet()) return 0;
+    const rows = await this.db.selectFrom('notifications').selectAll().where('held', '=', true).orderBy('id').execute();
+    if (!rows.length) return 0;
+    const groups = new Map<string, { level: string; n: number; first: string; link: string | null }>();
+    for (const r of rows) {
+      const g = groups.get(r.title);
+      const first = r.body.split('\n')[0]!.slice(0, 90);
+      if (g) {
+        g.n++;
+        if (LEVEL_RANK[r.level]! > LEVEL_RANK[g.level]!) g.level = r.level;
+      } else groups.set(r.title, { level: r.level, n: 1, first, link: r.link });
+    }
+    const top = rows.reduce<string>((a, r) => (LEVEL_RANK[r.level]! > LEVEL_RANK[a]! ? r.level : a), 'info') as 'info' | 'warn' | 'error' | 'action';
+    const list = [...groups.entries()].sort((a, b) => LEVEL_RANK[b[1].level]! - LEVEL_RANK[a[1].level]!);
+    const lines = list.slice(0, 25).map(([title, g]) => `${LEVEL_ICON[g.level] ?? '•'} ${title}${g.n > 1 ? ` ×${g.n}` : ''}${g.n === 1 && g.first ? ` — ${g.first}` : ''}`);
+    if (list.length > 25) lines.push(`… 외 ${list.length - 25}종류`);
+    const title = `🌙 밤사이 알림 ${rows.length}건`;
+    const body = `${lines.join('\n')}\n\n자세한 내용은 관리 화면 홈의 알림에서 확인하세요.`;
+    const link = `${this.publicBase.replace(/\/$/, '')}/`;
+    const delivered = await this.notifier.send({ level: top, title, body, link });
+    if (!delivered) return 0; // 전송 실패 → 보류 유지(다음 확인 때 다시)
+    await this.db.updateTable('notifications').set({ held: false, delivered: true }).where('id', 'in', rows.map((r) => r.id)).execute();
+    await this.db.insertInto('notifications').values({ level: top, title, body, link, delivered: true, at: this.clock.now() }).execute();
+    return rows.length;
   }
 }
 

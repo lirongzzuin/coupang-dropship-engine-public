@@ -65,6 +65,8 @@ export const JOBS: JobDef[] = [
     run: async (ctx) => ({ prices: await optimizePrices(ctx), cost: await scoutCheaperSources(ctx) }),
   },
   { name: 'cs.poll', label: '고객문의', intervalMs: (s) => min(s.schedule.csMinutes), run: pollInquiries },
+  // 방해금지 시간(기본 23~07시)에 보류한 알림을 끝나는 시각에 모아서 보냄
+  { name: 'notify.digest', label: '밤사이 알림 모아 보내기', intervalMs: () => min(5), run: async (ctx) => ({ sent: await ctx.notifications.flushHeld() }) },
   // 스마트스토어 키가 없거나 naver.enabled=false 면 아무것도 하지 않음
   { name: 'naver.mirror', label: '스마트스토어 자동 등록', intervalMs: (s) => min(s.schedule.naverMirrorMinutes), run: naverMirror },
   { name: 'finance.reconcile', label: '정산 대사', intervalMs: (s) => s.schedule.reconcileHours * 3600_000, run: async (ctx) => ({ reconcile: await reconcile(ctx), pii: await purgePii(ctx) }) },
