@@ -9,7 +9,20 @@ import type {
  */
 export class FakeMarket implements MarketPort {
   /** 판매채널 이름(테스트에서 스마트스토어 흉내 시 'naver') */
-  constructor(readonly name = 'coupang', readonly label = name === 'naver' ? '스마트스토어' : '쿠팡') {}
+  constructor(readonly name = 'coupang', readonly label = name === 'naver' ? '스마트스토어' : '쿠팡') {
+    if (name === 'naver') {
+      this.delayDispatch = async (shipmentBoxId, dueDate, reason) => {
+        this.maybeFail('delayDispatch');
+        this.delays.push({ shipmentBoxId, dueDate, reason });
+        return { ok: true, retryable: false, message: 'OK' };
+      };
+      this.redeliverExchange = async (receiptId, courierCode, trackingNo) => {
+        this.maybeFail('redeliverExchange');
+        this.redeliveries.push({ receiptId, courierCode, trackingNo });
+        return { ok: true, retryable: false, message: 'OK' };
+      };
+    }
+  }
   orders = new Map<string, MarketOrderLine[]>(); // shipmentBoxId → lines
   products = new Map<string, { payload: any; status: MarketProductStatus['status']; vendorItemIds: string[] }>();
   items = new Map<string, { price: number; qty: number; onSale: boolean }>();
@@ -164,6 +177,21 @@ export class FakeMarket implements MarketPort {
 
   async confirmReturn(receiptId: string, count: number): Promise<MarketResult> {
     return this.claimStep('confirmReturn', receiptId, ['return_requested', 'return_collected'], 'return_done', { count });
+  }
+
+  /** 테스트: 발송 지연 처리 기록(스마트스토어 흉내 시 사용) */
+  delays: Array<{ shipmentBoxId: string; dueDate: Date; reason: string }> = [];
+  /** 스마트스토어 흉내(name='naver')일 때만 있는 기능 — 쿠팡에는 없음 */
+  delayDispatch?: (shipmentBoxId: string, dueDate: Date, reason: string) => Promise<MarketResult>;
+
+  /** 테스트: 교환 재배송 기록 */
+  redeliveries: Array<{ receiptId: string; courierCode: string; trackingNo: string }> = [];
+  redeliverExchange?: (receiptId: string, courierCode: string, trackingNo: string) => Promise<MarketResult>;
+
+  /** 테스트: 발주 확인 뒤 배송지 변경 */
+  addressChanges: MarketOrderLine[] = [];
+  async listAddressChanges(): Promise<MarketOrderLine[]> {
+    return this.addressChanges.map((l) => structuredClone(l));
   }
 
   sellerCancels: Array<{ marketOrderId: string; vendorItemId: string; qty: number; reason: string }> = [];

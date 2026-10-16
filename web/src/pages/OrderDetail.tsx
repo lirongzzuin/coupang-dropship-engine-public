@@ -27,6 +27,9 @@ interface Claim {
   fault_by: string | null; return_shipping_charge: number | null; action_note: string | null; reship_source_order_id: string | null; reship_cost: number | null;
   reship_tracking: string | null; requested_at: string; closed_at: string | null;
 }
+/** 판매채널 이름·판매자센터 */
+const label = (m: string) => (m === 'naver' ? '스마트스토어' : '쿠팡');
+const center = (m: string) => (m === 'naver' ? '스마트스토어센터' : 'Wing');
 const CLAIM_TYPE: Record<string, string> = { CANCEL: '취소', RETURN: '취소·반품', EXCHANGE: '교환', RESHIP: '재발송' };
 /** 판매자 취소 가능(아직 보내지 않음) */
 const SELLER_CANCELABLE = ['NEW', 'AWAITING_PURCHASE', 'PAYMENT_PENDING', 'PURCHASED', 'OUT_OF_STOCK', 'MARGIN_NEGATIVE', 'LIMIT_EXCEEDED', 'SOURCE_ERROR', 'MANUAL_REVIEW', 'SHIPPING_DELAYED'];
@@ -74,7 +77,7 @@ export function OrderDetail() {
       {o.source && (
         <Card title={`공급처: ${o.source.sourceName}`} right={o.source.apiOrder ? <Badge tone="green">자동 발주</Badge> : <Badge tone="blue">직접 구매</Badge>}>
           <div>{o.source.title}</div>
-          {o.source.option && <div><b>옵션: {o.source.option}</b> <span className="muted">(쿠팡에 올린 옵션 — 이 옵션으로 구매)</span> <CopyButton value={o.source.option} /></div>}
+          {o.source.option && <div><b>옵션: {o.source.option}</b> <span className="muted">({label(o.market)}에 올린 옵션 — 이 옵션으로 구매)</span> <CopyButton value={o.source.option} /></div>}
           <div className="muted">공급가 {won(o.source.price)} · 배송비 {won(o.source.shippingFee)}</div>
           {o.source.url && <a className="btn primary block" href={o.source.url} target="_blank" rel="noreferrer">공급처 상품 페이지 열기</a>}
         </Card>
@@ -124,10 +127,10 @@ export function OrderDetail() {
 
       {OVERRIDABLE.includes(o.status) && (
         <Card title="예외 처리">
-          <p className="muted">확인 후 그대로 진행하려면 [강행]을 누르세요(한도·마진·재고 검사 생략). 고객 취소가 필요하면 쿠팡 Wing에서 처리 후 상태를 '취소됨'으로 바꾸세요.</p>
+          <p className="muted">확인 후 그대로 진행하려면 [강행]을 누르세요(한도·마진·재고 검사 생략). 고객 취소가 필요하면 {center(o.market)}에서 처리 후 상태를 '취소됨'으로 바꾸세요.</p>
           <div className="row">
             <button className="btn danger" disabled={act.busy} onClick={() => void act.run(() => api.post(`/api/orders/${o.id}/override`).then(reload), '진행했습니다')}>강행</button>
-            <button className="btn" disabled={act.busy} onClick={() => void act.run(() => api.post(`/api/orders/${o.id}/status`, { status: 'CANCELLED', reason: 'Wing에서 취소 처리' }).then(reload), '취소로 표시')}>취소됨으로 표시</button>
+            <button className="btn" disabled={act.busy} onClick={() => void act.run(() => api.post(`/api/orders/${o.id}/status`, { status: 'CANCELLED', reason: `${center(o.market)}에서 취소 처리` }).then(reload), '취소로 표시')}>취소됨으로 표시</button>
           </div>
         </Card>
       )}
@@ -142,8 +145,8 @@ export function OrderDetail() {
           <div className="row">
             {SELLER_CANCELABLE.includes(o.status) && !o.tracking_no && (
               armed === 'cancel'
-                ? <button className="btn danger" disabled={act.busy} onClick={() => { setArmed(null); void act.run(() => api.post<{ message: string }>(`/api/orders/${o.id}/cancel`, { reason: 'stock' }).then((r) => { reload(); return r.message; })); }}>한 번 더 누르면 쿠팡 주문 취소</button>
-                : <button className="btn" disabled={act.busy} onClick={() => setArmed('cancel')}>쿠팡 주문 취소(품절)</button>
+                ? <button className="btn danger" disabled={act.busy} onClick={() => { setArmed(null); void act.run(() => api.post<{ message: string }>(`/api/orders/${o.id}/cancel`, { reason: 'stock' }).then((r) => { reload(); return r.message; })); }}>한 번 더 누르면 {label(o.market)} 주문 취소</button>
+                : <button className="btn" disabled={act.busy} onClick={() => setArmed('cancel')}>{label(o.market)} 주문 취소(품절)</button>
             )}
             {RESHIPPABLE.includes(o.status) && o.source?.apiOrder && (
               armed === 'reship'
@@ -151,7 +154,7 @@ export function OrderDetail() {
                 : <button className="btn" disabled={act.busy} onClick={() => setArmed('reship')}>공급처 재발송(교환·분실)</button>
             )}
           </div>
-          <p className="muted small">쿠팡 주문 취소: 공급처 품절 등으로 보낼 수 없을 때. 고객은 바로 환불되고 공급처 주문도 자동 취소되지만 <b>쿠팡 판매자 점수(주문이행)가 떨어집니다</b>. 재발송: 같은 상품을 고객 주소로 다시 주문(비용은 이 주문 손익에서 차감), 송장이 나오면 알려드립니다.</p>
+          <p className="muted small">주문 취소: 공급처 품절 등으로 보낼 수 없을 때. 고객은 바로 환불되고 공급처 주문도 자동 취소되지만 <b>{o.market === 'naver' ? '스마트스토어 판매 페널티가 생길 수 있습니다' : '쿠팡 판매자 점수(주문이행)가 떨어집니다'}</b>. 재발송: 같은 상품을 고객 주소로 다시 주문(비용은 이 주문 손익에서 차감), 송장이 나오면 알려드립니다.</p>
         </Card>
       ) : null}
 
@@ -190,8 +193,8 @@ function ClaimRow({ o, c, act, reload, couriers }: { o: Detail; c: Claim; act: R
       {open && ['stop_requested', 'cancelled'].includes(c.stage) && (
         <div className="stack">
           <div className="row">
-            <button className="btn primary" disabled={act.busy} onClick={() => run({ action: 'source_cancelled' })}>공급처 취소 완료{c.stage === 'stop_requested' ? '(쿠팡 출고중지)' : ''}</button>
-            <button className="btn" disabled={act.busy} onClick={() => run({ action: 'close' })}>Wing에서 처리함</button>
+            <button className="btn primary" disabled={act.busy} onClick={() => run({ action: 'source_cancelled' })}>공급처 취소 완료{c.stage === 'stop_requested' ? `(${label(o.market)} ${o.market === 'naver' ? '취소 승인' : '출고중지'})` : ''}</button>
+            <button className="btn" disabled={act.busy} onClick={() => run({ action: 'close' })}>{center(o.market)}에서 처리함</button>
           </div>
           {c.stage === 'stop_requested' && (
             <form className="row" onSubmit={(e) => { e.preventDefault(); run({ action: 'shipped', ...trk }); }}>
@@ -206,11 +209,11 @@ function ClaimRow({ o, c, act, reload, couriers }: { o: Detail; c: Claim; act: R
       {open && ['return_requested', 'return_collected'].includes(c.stage) && (
         <div className="row">
           <button className="btn primary" disabled={act.busy} title="공급처가 반품 상품을 받았는지 확인한 뒤 누르세요" onClick={() => run({ action: 'approve_return' })}>반품 승인(환불)</button>
-          <button className="btn" disabled={act.busy} onClick={() => run({ action: 'close' })}>Wing에서 처리함</button>
+          <button className="btn" disabled={act.busy} onClick={() => run({ action: 'close' })}>{center(o.market)}에서 처리함</button>
         </div>
       )}
       {open && ['exchange_open', 'coupang_check'].includes(c.stage) && (
-        <button className="btn small" disabled={act.busy} onClick={() => run({ action: 'close' })}>처리 끝(Wing에서 처리함)</button>
+        <button className="btn small" disabled={act.busy} onClick={() => run({ action: 'close' })}>처리 끝({center(o.market)}에서 처리함)</button>
       )}
     </div>
   );
@@ -226,12 +229,12 @@ function TrackingCard({ o, act, reload }: { o: Detail; act: ReturnType<typeof us
   const needPick = !!o.tracking_no && !o.courier_code;
   return (
     <Card title={needPick ? '택배사 선택 필요' : '송장 입력'}>
-      {needPick && <p className="item-reason">공급처가 알려준 택배사 "{o.courier_name}"를 쿠팡 택배사로 맞추지 못했습니다. 공급처 주문 화면에서 택배사를 확인하고 아래에서 고르세요. 한 번 고르면 다음부터 자동으로 처리됩니다.</p>}
+      {needPick && <p className="item-reason">공급처가 알려준 택배사 "{o.courier_name}"를 택배사 코드로 맞추지 못했습니다. 공급처 주문 화면에서 택배사를 확인하고 아래에서 고르세요. 한 번 고르면 다음부터 자동으로 처리됩니다.</p>}
       <form
         className="form"
         onSubmit={(e) => {
           e.preventDefault();
-          void act.run(() => api.post(`/api/orders/${o.id}/tracking`, { courier: o.courier_name ?? '', courierCode: code, trackingNo: no }).then(reload), '쿠팡에 송장 등록됨');
+          void act.run(() => api.post(`/api/orders/${o.id}/tracking`, { courier: o.courier_name ?? '', courierCode: code, trackingNo: no }).then(reload), `${label(o.market)}에 송장 등록됨`);
         }}
       >
         <label>택배사

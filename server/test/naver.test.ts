@@ -102,7 +102,7 @@ describe('스마트스토어 어댑터', () => {
     let page = 0;
     const api = mockApi((_m, path, body, url) => {
       if (path.endsWith('/last-changed-statuses')) {
-        expect(url.searchParams.get('lastChangedType')).toBe('PAYED');
+        expect(url.searchParams.get('lastChangedType')).toBeNull(); // 유형으로 거르지 않음(결제 직후 배송지 변경한 주문 누락 방지)
         page++;
         return json({ data: page === 1 ? { lastChangeStatuses: [{ productOrderId: 'PO1' }], more: { moreFrom: '2026-10-15T10:30:00.000+09:00', moreSequence: '00001' } } : { lastChangeStatuses: [{ productOrderId: 'PO2' }] } });
       }

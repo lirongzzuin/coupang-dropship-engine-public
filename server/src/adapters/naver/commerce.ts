@@ -228,13 +228,36 @@ export function parseClaim(row: any): MarketClaim | null {
     count: Number(cur.requestQuantity ?? po.quantity ?? 1),
     shipmentBoxId: String(po.productOrderId ?? ''),
     reason: [REASON[reasonCode] ?? reasonCode, cur.cancelDetailedReason ?? cur.returnDetailedReason ?? cur.exchangeDetailedReason].filter(Boolean).join(' / '),
+    // 스마트스토어는 반품·교환 배송비를 고객에게 청구한 금액(claimDeliveryFeeDemandAmount) → 고객 부담(음수)
+    ...(typeof cur.claimDeliveryFeeDemandAmount === 'number' && cur.claimDeliveryFeeDemandAmount > 0 ? { returnShippingCharge: -cur.claimDeliveryFeeDemandAmount } : {}),
+    ...(cur.collectDeliveryMethod ? { pickupType: COLLECT_METHOD[cur.collectDeliveryMethod] ?? String(cur.collectDeliveryMethod) } : {}),
     requestedAt: new Date(cur.claimRequestDate ?? Date.now()),
   };
 }
 
+/** 수거 방법(스마트스토어 수거 배송 방법 코드) */
+const COLLECT_METHOD: Record<string, string> = { RETURN_DESIGNATED: '지정 반품택배(자동 수거)', RETURN_DELIVERY: '일반 반품택배', RETURN_INDIVIDUAL: '고객 직접 반송', RETURN_MERCHANT: '판매자 직접 수거', DELIVERY: '택배', DIRECT_DELIVERY: '직접 전달', NOTHING: '수거 없음' };
+
+/**
+ * 처리 결과 해석. 스마트스토어 오류 코드를 쿠팡과 같은 사유 이름으로 바꿔 상위 로직(재시도·안내)을 공유한다.
+ * 출처: 발송 처리 API 오류 코드 정의(확인 2026-10-17)
+ */
+const NAVER_FAIL: Record<string, { name: string; retryable: boolean }> = {
+  '104122': { name: 'INVALID_INVOICE_NUMBER', retryable: true }, // 배송 송장 오류(비유효 송장)
+  '104121': { name: 'DUPLICATE_INVOICE_NUMBER', retryable: true }, // 기사용 송장
+  '104120': { name: 'INVALID_INVOICE_NUMBER', retryable: true }, // 송장 번호 미입력
+  '104119': { name: 'INVALID_FORMAT', retryable: false }, // 택배사 코드 확인
+  '104118': { name: 'INVALID_FORMAT', retryable: false }, // 택배사 미입력
+  '104442': { name: 'INVALID_STATUS', retryable: false }, // 상품 주문 상태 확인 필요
+  '104443': { name: 'INVALID_STATUS', retryable: false }, // 발주 상태 확인 필요
+  '9999': { name: 'UNDEFINED_ERROR_OCCUR', retryable: true },
+};
 function result(res: any, id?: string): MarketResult {
   const fail = (res?.data?.failProductOrderInfos ?? []).find((x: any) => !id || String(x.productOrderId) === id);
-  if (fail) return { ok: false, retryable: String(fail.code) === '9999', message: `${fail.code}: ${fail.message ?? ''}` };
+  if (fail) {
+    const m = NAVER_FAIL[String(fail.code)];
+    return { ok: false, retryable: m?.retryable ?? false, message: `${m ? `${m.name}(${fail.code})` : fail.code}: ${fail.message ?? ''}` };
+  }
   return { ok: true, retryable: false, message: 'OK' };
 }
 
@@ -251,15 +274,15 @@ export class NaverMarket implements MarketPort {
   // ── 주문 ────────────────────────────────────────────────────────
 
   /** 변경된 상품주문(24시간 구간·more 페이지) */
-  private async changed(from: Date, to: Date, type?: string): Promise<Array<{ productOrderId: string; claimType?: string }>> {
-    const out: Array<{ productOrderId: string; claimType?: string }> = [];
+  private async changed(from: Date, to: Date, type?: string): Promise<Array<{ productOrderId: string; claimType?: string; lastChangedType?: string; receiverAddressChanged?: boolean }>> {
+    const out: Array<{ productOrderId: string; claimType?: string; lastChangedType?: string; receiverAddressChanged?: boolean }> = [];
     for (let cursor = from.getTime(); cursor < to.getTime(); cursor += 24 * 3600_000) {
       const end = new Date(Math.min(cursor + 24 * 3600_000 - 1000, to.getTime()));
       let moreFrom: string | undefined = kst(new Date(cursor));
       let moreSequence: string | undefined;
       for (let page = 0; page < 50 && moreFrom; page++) {
         const res: any = await this.client.request('GET', '/v1/pay-order/seller/product-orders/last-changed-statuses', { query: { lastChangedFrom: moreFrom, lastChangedTo: kst(end), lastChangedType: type, moreSequence } });
-        for (const x of res?.data?.lastChangeStatuses ?? []) out.push({ productOrderId: String(x.productOrderId), claimType: x.claimType ?? undefined });
+        for (const x of res?.data?.lastChangeStatuses ?? []) out.push({ productOrderId: String(x.productOrderId), claimType: x.claimType ?? undefined, lastChangedType: x.lastChangedType ?? undefined, receiverAddressChanged: !!x.receiverAddressChanged });
         moreFrom = res?.data?.more?.moreFrom;
         moreSequence = res?.data?.more?.moreSequence;
       }
@@ -277,10 +300,48 @@ export class NaverMarket implements MarketPort {
     return out;
   }
 
+  /**
+   * 새 주문: 변경 내역 전체에서 상품주문을 모아 상세 조회 → 결제완료·발주 미확인만.
+   * (lastChangedType=PAYED 로 거르면 결제 직후 배송지를 바꾼 주문은 '마지막 변경'이 배송지 변경이라 빠짐)
+   */
   async listOrders(from: Date, to: Date, status: MarketOrderStatus): Promise<MarketOrderLine[]> {
-    const ids = (await this.changed(from, to, 'PAYED')).map((x) => x.productOrderId);
+    const ids = (await this.changed(from, to)).filter((x) => !x.claimType || status !== 'ACCEPT').map((x) => x.productOrderId);
     if (!ids.length) return [];
     return (await this.queryProductOrders(ids)).map(parseProductOrder).filter((l) => l.status === status);
+  }
+
+  /** 발주 확인 뒤 고객이 배송지를 바꾼 상품주문(새 배송지) */
+  async listAddressChanges(from: Date, to: Date): Promise<MarketOrderLine[]> {
+    const ids = (await this.changed(from, to)).filter((x) => x.lastChangedType === 'DELIVERY_ADDRESS_CHANGED' || x.receiverAddressChanged).map((x) => x.productOrderId);
+    if (!ids.length) return [];
+    return (await this.queryProductOrders(ids)).map(parseProductOrder);
+  }
+
+  /** 발송 지연 처리: 발송 기한을 넘기면 페널티 → 기한 전에 새 기한·사유 등록 */
+  async delayDispatch(shipmentBoxId: string, dueDate: Date, reason: string): Promise<MarketResult> {
+    try {
+      const res = await this.client.request('POST', `/v1/pay-order/seller/product-orders/${shipmentBoxId}/delay`, {
+        body: { dispatchDueDate: kst(dueDate), delayedDispatchReason: 'PRODUCT_PREPARE', dispatchDelayedDetailedReason: reason.slice(0, 200) },
+      });
+      return result(res, shipmentBoxId);
+    } catch (e) {
+      return httpResult(e);
+    }
+  }
+
+  /** 교환: 회수 상품 수거 완료 승인(이미 됐으면 무시) → 재배송 송장 등록 */
+  async redeliverExchange(receiptId: string, courierCode: string, trackingNo: string): Promise<MarketResult> {
+    const id = receiptId.split(':')[0]!;
+    try {
+      await this.client.request('POST', `/v1/pay-order/seller/product-orders/${id}/claim/exchange/collect/approve`).catch(() => undefined);
+      const direct = courierCode === 'DIRECT';
+      const res = await this.client.request('POST', `/v1/pay-order/seller/product-orders/${id}/claim/exchange/dispatch`, {
+        body: { reDeliveryMethod: direct ? 'DIRECT_DELIVERY' : 'DELIVERY', ...(direct ? {} : { reDeliveryCompany: naverCourierCode(courierCode), reDeliveryTrackingNumber: trackingNo }) },
+      });
+      return result(res, id);
+    } catch (e) {
+      return httpResult(e);
+    }
   }
 
   async getOrderLines(shipmentBoxId: string): Promise<MarketOrderLine[]> {
@@ -435,9 +496,16 @@ export class NaverMarket implements MarketPort {
     }
   }
 
+  /** 원상품 조회 캐시(30초): 동기화가 같은 상품의 옵션마다 조회하므로 호출 수를 줄임. 수정하면 지움 */
+  private productCache = new Map<string, { at: number; data: any }>();
+
   async readProduct(originNo: string): Promise<any | null> {
+    const hit = this.productCache.get(originNo);
+    if (hit && Date.now() - hit.at < 30_000) return structuredClone(hit.data);
     try {
-      return await this.client.request('GET', `/v2/products/origin-products/${originNo}`);
+      const data = await this.client.request('GET', `/v2/products/origin-products/${originNo}`);
+      this.productCache.set(originNo, { at: Date.now(), data });
+      return structuredClone(data);
     } catch (e) {
       if (e instanceof HttpError && e.status === 404) return null;
       throw e;
@@ -483,6 +551,7 @@ export class NaverMarket implements MarketPort {
         if (edit.stock !== undefined) (types.push('STOCK'), (vo.stockQuantity = edit.stock));
         if (edit.usable !== undefined) types.push(edit.usable ? 'PRODUCT_STATUS_SALE' : 'PRODUCT_STATUS_SUSPENSION');
         vo.multiUpdateTypes = types;
+        this.productCache.delete(originNo);
         await this.client.request('PATCH', '/v1/products/origin-products/multi-update', { body: { multiProductUpdateRequestVos: [vo] } });
         return { ok: true, retryable: false, message: 'OK' };
       }
@@ -498,6 +567,7 @@ export class NaverMarket implements MarketPort {
       const base = Math.min(...combos.map((c) => abs.get(c)!));
       // 스마트스토어 정책: 옵션가는 판매가의 -50%~+50% 이내
       if (combos.some((c) => abs.get(c)! - base > base * 0.5)) return { ok: false, retryable: false, message: '옵션가가 판매가의 50%를 넘음(스마트스토어 정책) — 상품을 다시 등록해야 함' };
+      this.productCache.delete(originNo);
       await this.client.request('PUT', `/v1/products/origin-products/${originNo}/option-stock`, {
         body: {
           productSalePrice: { salePrice: base },
@@ -551,21 +621,30 @@ export class NaverMarket implements MarketPort {
     return [];
   }
 
+  /** 상품 문의(상품 Q&A, GET /v1/contents/qnas) + 주문 관련 1:1 고객문의(GET /v1/pay-user/inquiries) */
   async listInquiries(from: Date, to: Date): Promise<MarketInquiry[]> {
     const out: MarketInquiry[] = [];
     for (let page = 1; page <= 20; page++) {
+      const res = await this.client.request('GET', '/v1/contents/qnas', { query: { fromDate: kst(from), toDate: kst(to), page, size: 100 } });
+      for (const q of res?.contents ?? []) {
+        out.push({ inquiryId: String(q.questionId), kind: 'product', content: [q.productName ? `[${q.productName}]` : '', q.question].filter(Boolean).join('\n'), askedAt: new Date(q.createDate ?? Date.now()), answered: !!q.answered });
+      }
+      if (res?.last !== false || !(res?.contents ?? []).length) break;
+    }
+    for (let page = 1; page <= 20; page++) {
       const res = await this.client.request('GET', '/v1/pay-user/inquiries', { query: { startSearchDate: kstDay(from), endSearchDate: kstDay(to), page, size: 100 } });
       for (const q of res?.content ?? []) {
-        out.push({ inquiryId: String(q.inquiryNo), kind: 'product', content: [q.title, q.inquiryContent].filter(Boolean).join('\n'), askedAt: new Date(q.inquiryRegistrationDateTime ?? Date.now()), answered: !!q.answered });
+        out.push({ inquiryId: String(q.inquiryNo), kind: 'order', content: [q.category ? `[${q.category}]` : '', q.title, q.inquiryContent].filter(Boolean).join('\n'), askedAt: new Date(q.inquiryRegistrationDateTime ?? Date.now()), answered: !!q.answered });
       }
-      if (res?.last !== false) break;
+      if (res?.last !== false || !(res?.content ?? []).length) break;
     }
     return out;
   }
 
-  async replyInquiry(inq: { inquiryId: string }, text: string): Promise<MarketResult> {
+  async replyInquiry(inq: { inquiryId: string; kind: 'product' | 'callcenter' | 'order' }, text: string): Promise<MarketResult> {
     try {
-      await this.client.request('POST', `/v1/pay-merchant/inquiries/${inq.inquiryId}/answer`, { body: { answerComment: text } });
+      if (inq.kind === 'product') await this.client.request('PUT', `/v1/contents/qnas/${inq.inquiryId}`, { body: { commentContent: text } });
+      else await this.client.request('POST', `/v1/pay-merchant/inquiries/${inq.inquiryId}/answer`, { body: { answerComment: text } });
       return { ok: true, retryable: false, message: 'OK' };
     } catch (e) {
       return httpResult(e);

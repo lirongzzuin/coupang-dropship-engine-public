@@ -87,6 +87,25 @@ export async function pollNewOrders(ctx: AppContext): Promise<{ fetched: number;
   return out;
 }
 
+/**
+ * 배송지 변경(스마트스토어는 발주 확인 뒤에도 발송 전이면 고객이 바꿀 수 있음):
+ * 새 배송지를 저장하고, 공급처에 이미 주문했으면 공급처 주문의 배송지도 바꾸라고 알림(공급처 API로는 바꿀 수 없음)
+ */
+async function applyAddressChanges(ctx: AppContext, market: import('../../ports/market.js').MarketPort, from: Date, to: Date): Promise<void> {
+  const lines = await market.listAddressChanges!(from, to);
+  for (const l of lines) {
+    const o = await ctx.db.selectFrom('orders').selectAll().where('market', '=', market.name).where('shipment_box_id', '=', l.shipmentBoxId).where('vendor_item_id', '=', l.vendorItemId).executeTakeFirst();
+    if (!o || o.pii_purged_at || ['CANCELLED', 'RETURNED', 'SETTLED', 'DELIVERED', 'IN_TRANSIT', 'TRACKING_UPLOADED'].includes(o.status)) continue;
+    const enc = encReceiver(ctx, l);
+    if (enc.address_hash === o.address_hash) continue;
+    await ctx.db.updateTable('orders').set({ ...enc, updated_at: ctx.clock.now() }).where('id', '=', o.id).execute();
+    await ctx.db.insertInto('order_events').values({ order_id: o.id, from_status: o.status, to_status: o.status, reason: `고객이 배송지 변경(${maskName(l.receiver.name)}, ${l.receiver.addr1.slice(0, 12)}…)`, actor: SYSTEM, at: ctx.clock.now() }).execute();
+    if (o.source_order_id && !o.source_order_id.startsWith('DRY-')) {
+      await ctx.notifications.notify('action', '배송지 변경 — 공급처 주문도 수정하세요', `${o.item_name}: 고객이 배송지를 바꿨습니다. 공급처 주문 ${o.source_order_id}의 배송지를 새 주소로 바꿔 주세요(공급처 1:1 문의). 관리 화면 주문 > 배송지 전체 보기에서 새 주소를 복사할 수 있습니다.`, { path: `/orders/${o.id}`, dedupeKey: `addr-${o.id}-${enc.address_hash}`, dedupeMinutes: 1440 });
+    }
+  }
+}
+
 /** 추가 판매채널 사용 여부(설정 naver.enabled 등) */
 export async function channelEnabled(ctx: AppContext, name: string): Promise<boolean> {
   if (name === ctx.market.name) return true;
@@ -131,6 +150,7 @@ async function pollMarketOrders(ctx: AppContext, market: import('../../ports/mar
       await ctx.db.insertInto('order_events').values({ order_id: res.id, from_status: null, to_status: 'NEW', reason: '주문 감지', actor: SYSTEM, at: now }).execute();
     }
   }
+  if (market.listAddressChanges) await applyAddressChanges(ctx, market, from, now);
   await ctx.kv.set(key, now.toISOString());
   if (market === ctx.market) await ctx.kv.set('orders.lastPollOkAt', now.toISOString());
   else await ctx.kv.set(`orders.lastPollOkAt.${market.name}`, now.toISOString());
@@ -289,8 +309,9 @@ export async function processOrder(ctx: AppContext, orderId: number, opts: { ove
 /** 실제 주문인데 자동 처리 스위치가 꺼져 있음 → 구매 필요(사람)로 넘기고 할 일을 구체적으로 알림 */
 async function handOver(ctx: AppContext, o: OrderRow, units: number, profit: number, flag: 'LIVE_FULFILLMENT' | 'LIVE_ORDERING', actor: string): Promise<OrderRow> {
   if (o.status === 'AWAITING_PURCHASE') return o;
+  const center = o.market === 'naver' ? '스마트스토어센터' : 'Wing';
   const steps = flag === 'LIVE_FULFILLMENT'
-    ? '① Wing 주문관리에서 [발주확인] ② 오너클랜에서 직접 주문 ③ 관리 화면 주문에 원주문번호 입력 ④ 송장은 Wing에 직접 입력'
+    ? `① ${center} 주문관리에서 [발주확인] ② 오너클랜에서 직접 주문 ③ 관리 화면 주문에 원주문번호 입력 ④ 송장은 ${center}에 직접 입력`
     : '① 오너클랜에서 직접 주문 ② 관리 화면 주문에 원주문번호 입력(송장은 자동 등록)';
   o = await transition(ctx, o, 'AWAITING_PURCHASE', `실제 주문 — 자동 처리 꺼짐(${flag}=false)`, actor, { purchase_strategy: 'assisted' });
   await ctx.notifications.notify('action', '실제 주문 — 직접 처리 필요',
@@ -440,8 +461,14 @@ export async function submitTracking(ctx: AppContext, orderId: number, courier: 
   if (s.killSwitch) return o;
   if (!isLive(ctx.env, 'LIVE_FULFILLMENT') && (await isRealOrder(ctx, o))) {
     // 실제 주문인데 송장 자동 등록이 꺼져 있음 → 모의 업로드로 '등록됨' 처리하면 쿠팡엔 송장이 없음
-    await ctx.notifications.notify('action', '송장 직접 입력 필요', `${o.item_name}: ${courierName(code)} ${no}\nWing 주문관리에서 송장을 입력하세요(LIVE_FULFILLMENT=false).`, { path: `/orders/${o.id}`, dedupeKey: `manual-invoice-${o.id}`, dedupeMinutes: 720 });
+    await ctx.notifications.notify('action', '송장 직접 입력 필요', `${o.item_name}: ${courierName(code)} ${no}\n${o.market === 'naver' ? '스마트스토어센터' : 'Wing'} 주문관리에서 송장을 입력하세요(LIVE_FULFILLMENT=false).`, { path: `/orders/${o.id}`, dedupeKey: `manual-invoice-${o.id}`, dedupeMinutes: 720 });
     return o.status === 'MANUAL_REVIEW' ? o : transition(ctx, o, 'MANUAL_REVIEW', '송장 직접 입력 필요(자동 등록 꺼짐)', actor);
+  }
+  // 고객 취소 요청(출고중지요청)이 열려 있으면 일반 송장 등록 대신 취소 흐름이 처리(공급처가 이미 보냈으면 이미출고/발송 처리)
+  const stopReq = await ctx.db.selectFrom('order_claims').select('id').where('order_id', '=', o.id).where('stage', '=', 'stop_requested').where('closed_at', 'is', null).executeTakeFirst();
+  if (stopReq) {
+    ctx.log.info({ order: o.id }, '취소 요청 진행 중이라 송장 등록 보류(취소 흐름이 처리)');
+    return o;
   }
   // 같은 묶음배송에 다른 상품이 있으면(공급처별로 따로 출고) 분리배송으로 등록
   const siblings = await ctx.db.selectFrom('orders').select(['status']).where('shipment_box_id', '=', o.shipment_box_id).where('id', '!=', o.id).execute();
@@ -575,6 +602,15 @@ export async function pollFulfillment(ctx: AppContext): Promise<{ tracked: numbe
         }
         if (line.decided && typeof line.settlementAmount === 'number') {
           const profit = line.settlementAmount - (cur.purchase_cost ?? cur.expected_cost ?? 0) - (cur.purchase_shipping ?? 0) - (cur.extra_cost ?? 0);
+          // 실제 수수료율 = 1 - 정산 예정 금액 / 결제 금액(무료배송이라 배송비 없음) → 상품별 지수평균(가격 계산에 사용)
+          if (cur.listing_id && cur.sale_amount > 0) {
+            const ratio = 1 - line.settlementAmount / cur.sale_amount;
+            if (ratio > 0 && ratio < 0.3) {
+              const l = await ctx.db.selectFrom('listings').select(['fee_rate_actual']).where('id', '=', cur.listing_id).executeTakeFirst();
+              const next = l?.fee_rate_actual ? l.fee_rate_actual * 0.7 + ratio * 0.3 : ratio;
+              await ctx.db.updateTable('listings').set({ fee_rate_actual: Math.round(next * 10000) / 10000 }).where('id', '=', cur.listing_id).execute();
+            }
+          }
           await transition(ctx, cur, 'SETTLED', `구매확정 — 정산 예정 ${line.settlementAmount.toLocaleString()}원`, SYSTEM, { settlement_amount: line.settlementAmount, profit, settled_at: ctx.clock.now() });
         }
         continue;
@@ -636,10 +672,11 @@ export { pollClaims } from './claims.js';
 
 // ── 6. 지연 경고·개인정보 파기 ───────────────────────────────────
 
-export async function checkDelays(ctx: AppContext): Promise<{ alerts: number }> {
+export async function checkDelays(ctx: AppContext): Promise<{ alerts: number; delayed?: number }> {
   const s = await ctx.settings.get();
   const now = ctx.clock.now();
   let alerts = 0;
+  const delayed = await delayDispatches(ctx);
   const pending = await ctx.db.selectFrom('orders').selectAll().where('status', 'in', ['AWAITING_PURCHASE', 'PAYMENT_PENDING', 'PURCHASED']).execute();
   for (const o of pending) {
     const since = (o.status === 'PURCHASED' ? o.purchased_at : o.updated_at) ?? o.created_at;
@@ -657,7 +694,40 @@ export async function checkDelays(ctx: AppContext): Promise<{ alerts: number }> 
       await ctx.notifications.notify('action', dueToday ? '오늘 출고기한 주문' : '미처리 구매 작업', `${o.item_name} — ${STATUS_LABEL[o.status as OrderStatus]} (${Math.floor(hours)}시간 경과)`, { path: `/orders/${o.id}` });
     }
   }
-  return { alerts };
+  return { alerts, ...(delayed ? { delayed } : {}) };
+}
+
+/**
+ * 발송 지연 처리(채널이 지원할 때 — 스마트스토어): 발송 기한이 오늘(한국시간)인데 아직 송장이 없는 주문은
+ * 기한을 orders.dispatchDelayDays(2)일 미루고 사유(상품 준비 중)를 등록한다. 기한을 넘기면 판매 페널티.
+ * 주문당 최대 2번(그래도 안 보내면 사람이 공급처 확인).
+ */
+async function delayDispatches(ctx: AppContext): Promise<number> {
+  const s = await ctx.settings.get();
+  if (s.killSwitch) return 0;
+  const today = kstDate(ctx.clock.now());
+  const rows = await ctx.db.selectFrom('orders').selectAll().where('market', '!=', ctx.market.name)
+    .where('status', 'in', ['NEW', 'AWAITING_PURCHASE', 'PAYMENT_PENDING', 'PURCHASED', 'SHIPPING_DELAYED', 'SOURCE_ERROR', 'MANUAL_REVIEW', 'OUT_OF_STOCK', 'LIMIT_EXCEEDED', 'MARGIN_NEGATIVE'])
+    .where('tracking_no', 'is', null).where('ship_by', '<=', today).execute();
+  let n = 0;
+  for (const o of rows) {
+    const market = marketFor(ctx, o.market);
+    if (!market.delayDispatch || !o.acked_at) continue;
+    const done = Number((await ctx.db.selectFrom('order_events').select((eb) => eb.fn.countAll<number>().as('n')).where('order_id', '=', o.id).where('reason', 'like', '발송 지연 처리%').executeTakeFirst())?.n ?? 0);
+    if (done >= 2) continue;
+    const due = addDays(new Date(`${o.ship_by}T23:59:00+09:00`), s.orders.dispatchDelayDays);
+    const r = await market.delayDispatch(o.shipment_box_id, due, '공급처 출고 준비 중(위탁 배송) — 출고되는 대로 바로 발송합니다.');
+    await audit(ctx, SYSTEM, 'order.delay_dispatch', String(o.id), { due: kstDate(due), ...r });
+    if (r.ok) {
+      n++;
+      await ctx.db.updateTable('orders').set({ ship_by: kstDate(due), updated_at: ctx.clock.now() }).where('id', '=', o.id).execute();
+      await ctx.db.insertInto('order_events').values({ order_id: o.id, from_status: o.status, to_status: o.status, reason: `발송 지연 처리 → 발송 기한 ${kstDate(due)}`, actor: SYSTEM, at: ctx.clock.now() }).execute();
+      await ctx.notifications.notify('info', `${MARKET_LABEL[o.market] ?? o.market} 발송 지연 처리`, `${o.item_name}: 발송 기한(${o.ship_by})까지 송장이 없어 기한을 ${kstDate(due)}로 미뤘습니다(페널티 방지). 공급처 출고를 확인하세요.`, { path: `/orders/${o.id}` });
+    } else {
+      await ctx.notifications.notify('warn', `${MARKET_LABEL[o.market] ?? o.market} 발송 지연 처리 실패`, `${o.item_name}: ${r.message}\n오늘이 발송 기한입니다. 판매자센터에서 발송 지연 처리 또는 송장 입력을 하세요(기한을 넘기면 페널티).`, { path: `/orders/${o.id}`, dedupeKey: `delay-fail-${o.id}`, dedupeMinutes: 720 });
+    }
+  }
+  return n;
 }
 
 export async function purgePii(ctx: AppContext): Promise<{ purged: number }> {

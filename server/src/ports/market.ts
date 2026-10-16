@@ -146,7 +146,8 @@ export interface RevenueLine {
 
 export interface MarketInquiry {
   inquiryId: string;
-  kind: 'product' | 'callcenter';
+  /** product = 상품 문의(Q&A), callcenter = 쿠팡 고객센터 이관(사람이 직접), order = 주문 관련 1:1 문의(스마트스토어) */
+  kind: 'product' | 'callcenter' | 'order';
   vendorItemId?: string;
   content: string;
   askedAt: Date;
@@ -198,7 +199,14 @@ export interface MarketPort {
   // ── 정산·CS ──
   listRevenue(fromDate: string, toDate: string): Promise<RevenueLine[]>;
   listInquiries(from: Date, to: Date): Promise<MarketInquiry[]>;
-  replyInquiry(inq: { inquiryId: string; kind: 'product' | 'callcenter' }, text: string): Promise<MarketResult>;
+  replyInquiry(inq: { inquiryId: string; kind: 'product' | 'callcenter' | 'order' }, text: string): Promise<MarketResult>;
+  // ── 채널 전용(있으면 사용) ──
+  /** 발송 지연 처리(스마트스토어: 발송 기한을 넘기면 페널티 → 기한 전에 지연 처리) */
+  delayDispatch?(shipmentBoxId: string, dueDate: Date, reason: string): Promise<MarketResult>;
+  /** 교환 재배송 처리(스마트스토어: 수거 완료 승인 → 재배송 송장) */
+  redeliverExchange?(receiptId: string, courierCode: string, trackingNo: string): Promise<MarketResult>;
+  /** 발주 확인 뒤 고객이 배송지를 바꾼 주문(스마트스토어) */
+  listAddressChanges?(from: Date, to: Date): Promise<MarketOrderLine[]>;
 }
 
 export interface ShippingPlaces {
