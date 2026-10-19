@@ -135,10 +135,10 @@ export function buildNaverPayload(s: Settings, p: NaverPayloadInput): Record<str
             qualityAssuranceStandard: '0',
             compensationProcedure: '0',
             troubleShootingContents: '0',
-            itemName: name.slice(0, 100),
+            itemName: name.slice(0, 49), // 50자 미만
             modelName: '상세페이지 참조',
             manufacturer: d?.manufacturer || '상세페이지 참조',
-            afterServiceDirector: phone,
+            // A/S 책임자·상담 전화는 둘 중 하나만 보내야 통과(둘 다 보내면 네이버가 거부)
             customerServicePhoneNumber: phone,
           },
         },

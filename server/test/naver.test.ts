@@ -216,6 +216,11 @@ describe('스마트스토어 상품 등록 요청', () => {
     ]);
     expect(op.deliveryInfo.deliveryFee).toEqual({ deliveryFeeType: 'FREE', deliveryFeePayType: 'PREPAID', deliveryFeeByArea: { deliveryAreaType: 'AREA_2', area2extraFee: 5000 } });
     expect(op.detailAttribute.productInfoProvidedNotice.productInfoProvidedNoticeType).toBe('ETC');
+    // A/S 책임자·상담 전화는 하나만(둘 다면 네이버가 거부), 품명은 50자 미만
+    const etc = op.detailAttribute.productInfoProvidedNotice.etc;
+    expect(etc.afterServiceDirector).toBeUndefined();
+    expect(etc).toHaveProperty('customerServicePhoneNumber');
+    expect((buildNaverPayload(s, { ...base, title: '가'.repeat(80), items: [{ id: 1, units: 1, option: '', salePrice: 10000, stock: 3 }] } as any) as any).originProduct.detailAttribute.productInfoProvidedNotice.etc.itemName.length).toBeLessThan(50);
     expect(p.smartstoreChannelProduct).toEqual({ naverShoppingRegistration: true, channelProductDisplayStatusType: 'ON' });
   });
 
@@ -416,5 +421,42 @@ describe('스마트스토어 통합', () => {
     expect(r.errors).toHaveLength(1);
     expect((await naverListing())!).toMatchObject({ status: 'rejected' });
     expect(h.notifier.titles().some((t) => t.startsWith('스마트스토어 등록 요청 0개 · 실패 1개'))).toBe(true);
+  });
+
+  it('KC·어린이제품 인증이 필요한 카테고리 거부는 실패가 아니라 건너뜀(알림 경고 없음)', async () => {
+    await coupangActive();
+    h.naver.createProduct = async () => { throw new Error('productCertificationInfos: KC 인증대상 인증 종류를 선택하셔야 합니다. | modelName: 어린이인증 대상 카테고리 상품은 모델명 입력이 필수입니다'); };
+    const r = await naverMirror(h.ctx);
+    expect(r.errors).toHaveLength(0);
+    expect(r.skipped[0]).toMatch(/인증 필요 카테고리/);
+    expect(h.notifier.titles().some((t) => t.includes('실패'))).toBe(false);
+  });
+
+  it('등록 오류 수정 뒤 한 번: 예전 등록 실패(반려) 행·재시도 메모를 지우고 바로 다시 등록', async () => {
+    const cl = await coupangActive();
+    const now = h.clock.now();
+    await h.ctx.db.insertInto('listings').values({ candidate_id: cl.candidate_id, source_product_id: cl.source_product_id, market: 'naver', title: cl.title, search_tags: '[]', category_code: 'X', category_name: 'X', sale_price: 1, floor_price: 1, markup: 0.3, target_markup: 0.3, fee_rate_actual: 0.07, source_option: null, images: '[]', status: 'rejected', status_reason: '스마트스토어 등록 실패: afterServiceDirector: A/S 책임자와 전화번호', dry_run: false, created_at: now, updated_at: now } as any).execute();
+    await h.ctx.kv.set('naver.skip', { [String(cl.source_product_id)]: now.toISOString() });
+    const r = await naverMirror(h.ctx);
+    expect(r.created).toBe(1);
+    const rows = await h.ctx.db.selectFrom('listings').select('status').where('market', '=', 'naver').execute();
+    expect(rows.map((x) => x.status)).toEqual(['pending_approval']);
+    expect(await h.ctx.kv.get('naver.mirrorReset')).toBe(1);
+  });
+
+  it('등록 API 오류가 3번 나면 그 회차는 중단(같은 원인으로 전부 실패 방지)', async () => {
+    await coupangActive();
+    const cl = await h.ctx.db.selectFrom('listings').selectAll().where('market', '=', 'coupang').executeTakeFirstOrThrow();
+    const now = h.clock.now();
+    for (let i = 0; i < 4; i++) {
+      const sp = await h.ctx.db.insertInto('source_products').values({ ...(await h.ctx.db.selectFrom('source_products').selectAll().where('id', '=', cl.source_product_id).executeTakeFirstOrThrow()), id: undefined, source_item_id: `X${i}` } as any).returning('id').executeTakeFirstOrThrow();
+      await h.ctx.db.insertInto('listings').values({ ...cl, id: undefined, source_product_id: sp.id, seller_product_id: `S${i}`, listed_at: now } as any).execute();
+    }
+    await h.ctx.settings.update({ naver: { perRun: 10 } });
+    let calls = 0;
+    h.naver.createProduct = async () => { calls++; throw new Error('서버 오류'); };
+    const r = await naverMirror(h.ctx);
+    expect(r.errors).toHaveLength(3);
+    expect(calls).toBe(3);
   });
 });
