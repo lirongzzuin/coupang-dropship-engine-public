@@ -90,6 +90,24 @@ function bestOf(cats: NaverCategory[], path: string | null | undefined, title: s
   return best;
 }
 
+/**
+ * 본체 카테고리(예: 디지털/가전>태블릿PC)에 '…액세서리' 분류가 따로 있고 상품명에 그 하위 이름(케이스·파우치·스탠드 등)이
+ * 들어 있으면 액세서리 쪽으로 — 공급처가 파우치를 본체로 분류하면 KC 인증 요구로 등록이 막히고 카테고리도 틀림
+ */
+export function toAccessory(cats: NaverCategory[], m: { id: string; name: string; score: number }, title: string): { id: string; name: string; score: number } {
+  const s = segs(m.name);
+  if (!s.length) return m;
+  const prefix = [...s.slice(0, -1), `${s[s.length - 1]}액세서리`];
+  const t = norm(title);
+  let hit: { c: NaverCategory; len: number } | null = null;
+  for (const c of cats) {
+    const cs = segs(c.wholeCategoryName);
+    if (cs.length <= prefix.length || prefix.some((x, i) => cs[i] !== x)) continue;
+    for (const tok of tokens(cs[cs.length - 1]!)) if (tok.length >= 2 && !STOP_BIGRAMS.has(tok) && t.includes(tok) && (!hit || tok.length > hit.len)) hit = { c, len: tok.length };
+  }
+  return hit ? { id: hit.c.id, name: hit.c.wholeCategoryName || hit.c.name, score: m.score } : m;
+}
+
 export function matchCategory(cats: NaverCategory[], path: string | null | undefined, title: string, map: Record<string, string> = {}, minScore = 0.5): { id: string; name: string; score: number } | null {
   // 직접 지정(공급처 경로 → 카테고리ID) 우선
   const direct = path ? map[path] ?? map[path.replace(/\s+/g, '')] : undefined;
@@ -99,7 +117,7 @@ export function matchCategory(cats: NaverCategory[], path: string | null | undef
   }
   const p = path ? SYNONYMS.reduce((acc, [re, to]) => acc.replace(re, to), path) : path;
   const best = bestOf(cats, p, title);
-  if (best && best.score >= minScore && titleFits(best.name, title)) return best;
+  if (best && best.score >= minScore && titleFits(best.name, title)) return toAccessory(cats, best, title);
   // 경로로 고른 카테고리가 상품명과 안 맞으면(공급처 분류 오류) 상품명으로 다시 찾되 엄격하게:
   // 같은 대분류 안에서, 말단·상위 분류 이름이 모두 상품명에 있을 때만(점수 0.7). 아니면 등록 안 함(틀린 카테고리는 판매금지 위험)
   const top = p ? segs(p)[0] : undefined;
