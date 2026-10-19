@@ -19,6 +19,13 @@ import { buildNaverPayload, withinOptionPriceRule } from './payload.js';
 export class NaverSkip extends Error {}
 
 const RETRY_DAYS = 7;
+/** 한 번 실행에서 등록 API 오류가 이만큼 나면 중단(같은 원인으로 전부 실패하는 것 방지) */
+const MAX_ERRORS = 3;
+/** 인증정보(KC·어린이제품 인증, 모델명)가 꼭 있어야 하는 카테고리 → 자동 등록 대상 아님 */
+const CERT_REQUIRED = /productCertificationInfos|KC ?인증대상|어린이(제품|인증)/;
+/** 등록 오류 수정 뒤 한 번: 그 전 실패분을 7일 기다리지 않고 바로 다시 시도 */
+const RESET_KEY = 'naver.mirrorReset';
+const RESET_VERSION = 1;
 
 export interface MirrorResult {
   created: number;
@@ -33,6 +40,7 @@ export async function naverMirror(ctx: AppContext): Promise<MirrorResult> {
   if (!s.naver.enabled || !naver || s.killSwitch || (await getHalt(ctx))) return out;
   const now = ctx.clock.now();
   const live = isLive(ctx.env, 'LIVE_LISTING');
+  await resetOldFailures(ctx);
   const naverRows = await ctx.db.selectFrom('listings').select(['source_product_id', 'status', 'dry_run', 'updated_at']).where('market', '=', 'naver').execute();
   const activeCount = naverRows.filter((r) => ['active', 'pending_approval', 'paused'].includes(r.status) && (!live || !r.dry_run)).length;
   let room = Math.min(s.naver.perRun, s.naver.maxListings - activeCount);
@@ -47,7 +55,7 @@ export async function naverMirror(ctx: AppContext): Promise<MirrorResult> {
   if (live) q = q.where('dry_run', '=', false);
   const skipMemo = (await ctx.kv.get<Record<string, string>>('naver.skip')) ?? {};
   for (const l of await q.execute()) {
-    if (room <= 0) break;
+    if (room <= 0 || out.errors.length >= MAX_ERRORS) break;
     if (blocked.has(l.source_product_id)) continue;
     const memo = skipMemo[String(l.source_product_id)];
     if (memo && now.getTime() - new Date(memo).getTime() < RETRY_DAYS * 86400_000) continue;
@@ -57,7 +65,10 @@ export async function naverMirror(ctx: AppContext): Promise<MirrorResult> {
       room--;
     } catch (e) {
       skipMemo[String(l.source_product_id)] = now.toISOString();
-      (e instanceof NaverSkip ? out.skipped : out.errors).push(`${l.title.slice(0, 28)}: ${errMessage(e)}`);
+      const msg = errMessage(e);
+      if (e instanceof NaverSkip) out.skipped.push(`${l.title.slice(0, 28)}: ${msg}`);
+      else if (CERT_REQUIRED.test(msg)) out.skipped.push(`${l.title.slice(0, 28)}: KC·어린이제품 인증 필요 카테고리(직접 등록)`);
+      else out.errors.push(`${l.title.slice(0, 28)}: ${msg}`);
     }
   }
   await ctx.kv.set('naver.skip', skipMemo);
@@ -143,6 +154,18 @@ export async function createNaverListing(ctx: AppContext, l: ListingRow): Promis
     await ctx.db.updateTable('listings').set({ status: 'rejected', status_reason: `스마트스토어 등록 실패: ${errMessage(e)}`.slice(0, 300), updated_at: ctx.clock.now() }).where('id', '=', row.id).execute();
     throw e;
   }
+}
+
+/** 등록 요청 형식 오류로 실패했던 상품(스마트스토어에 올라가지 않은 반려 행)을 지우고 재시도 메모를 비운다 — 버전당 한 번 */
+async function resetOldFailures(ctx: AppContext): Promise<void> {
+  if (((await ctx.kv.get<number>(RESET_KEY)) ?? 0) >= RESET_VERSION) return;
+  const rows = await ctx.db.selectFrom('listings').select('id').where('market', '=', 'naver').where('status', '=', 'rejected')
+    .where('seller_product_id', 'is', null).where('status_reason', 'like', '스마트스토어 등록 실패%')
+    .where(({ not, exists, selectFrom }) => not(exists(selectFrom('orders').select('orders.id').whereRef('orders.listing_id', '=', 'listings.id')))).execute();
+  if (rows.length) await ctx.db.deleteFrom('listings').where('id', 'in', rows.map((r) => r.id)).execute();
+  await ctx.kv.set('naver.skip', {});
+  await ctx.kv.set(RESET_KEY, RESET_VERSION);
+  if (rows.length) await audit(ctx, 'system', 'naver.reset', 'mirror', { removed: rows.length });
 }
 
 /** 스마트스토어 주소록의 첫 출고지·반품/교환지(하루 캐시) */
