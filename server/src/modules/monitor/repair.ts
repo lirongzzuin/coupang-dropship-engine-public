@@ -333,6 +333,7 @@ export async function requestResume(ctx: AppContext, id: number, actor: string):
   if (l.status === 'active') return { state: 'resumed', message: '이미 판매중입니다' };
   if (!['paused', 'stopped'].includes(l.status)) throw Object.assign(new Error('일시중지·판매종료 상품만 재개할 수 있습니다'), { statusCode: 400 });
   if (l.status_reason?.startsWith(PAUSE.deleted)) throw Object.assign(new Error('쿠팡에서 삭제된 상품입니다'), { statusCode: 400 });
+  if (l.status_reason?.startsWith('스마트스토어에서 삭제됨')) throw Object.assign(new Error('스마트스토어에서 삭제된 상품입니다'), { statusCode: 400 });
   if (s.killSwitch) throw Object.assign(new Error('긴급 정지 중입니다'), { statusCode: 400 });
   if (await getHalt(ctx)) throw Object.assign(new Error('안전장치 판매 중지 중입니다(먼저 홈의 [판매 재개]로 안전장치 해제)'), { statusCode: 400 });
   const now = ctx.clock.now();

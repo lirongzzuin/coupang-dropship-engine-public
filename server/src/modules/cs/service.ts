@@ -81,7 +81,7 @@ export async function answerInquiry(ctx: AppContext, id: number, text: string, a
   if (!q) throw new Error('문의 없음');
   if (q.status === 'answered') throw new Error('이미 답변한 문의입니다');
   if (!text.trim()) throw new Error('답변 내용을 입력하세요');
-  const r = await marketFor(ctx, q.market).replyInquiry({ inquiryId: q.market_inquiry_id, kind: q.kind as 'product' | 'callcenter' }, text.trim());
+  const r = await marketFor(ctx, q.market).replyInquiry({ inquiryId: q.market_inquiry_id, kind: q.kind as 'product' | 'callcenter' | 'order' }, text.trim());
   if (!r.ok) throw new Error(`답변 실패: ${r.message}`);
   await ctx.db.updateTable('inquiries').set({ status: 'answered', answer: text.trim(), answered_at: ctx.clock.now(), dry_run: !!r.dryRun }).where('id', '=', id).execute();
   await audit(ctx, actor, 'inquiry.answer', String(id));

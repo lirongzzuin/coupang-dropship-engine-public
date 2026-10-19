@@ -469,6 +469,8 @@ export const settingsSchema = z.object({
       purchaseAlertHours: z.number().default(3),
       /** 구매 후 송장 미입력 경고(시간) */
       trackingAlertHours: z.number().default(36),
+      /** 발송 지연 처리 시 미룰 일수(스마트스토어 발송 기한) */
+      dispatchDelayDays: z.number().int().min(1).max(14).default(2),
       /** 고객 취소 후 공급처 취소 수락을 기다리는 시간(넘으면 알림) */
       claimWaitHours: z.number().default(24),
       /** 송장 등록 후 이 시간 넘게 배송이 시작되지 않으면 알림 */

@@ -5,6 +5,7 @@ import { pollInquiries } from '../modules/cs/service.js';
 import { reconcile } from '../modules/finance/service.js';
 import { refreshListingStatuses } from '../modules/listing/service.js';
 import { naverMirror } from '../modules/naver/mirror.js';
+import { reconcileNaver } from '../modules/naver/reconcile.js';
 import { checkDelays, pollClaims, pollFulfillment, pollNewOrders, processPending, purgePii } from '../modules/orders/service.js';
 import { sendDailyReport, watchdog } from '../modules/reports/service.js';
 import { runSelection } from '../modules/selection/service.js';
@@ -52,7 +53,7 @@ export const JOBS: JobDef[] = [
   {
     name: 'listings.monitor', label: '주문 가능 점검·쿠팡 판매상태 대조',
     intervalMs: (s) => min(s.schedule.monitorMinutes),
-    run: async (ctx) => ({ orderable: await checkOrderability(ctx), market: await reconcileMarketState(ctx) }),
+    run: async (ctx) => ({ orderable: await checkOrderability(ctx), market: await reconcileMarketState(ctx), naver: await reconcileNaver(ctx) }),
   },
   {
     name: 'listings.repair', label: '상품 설정 점검·자동 수정(구매옵션·상품명)',

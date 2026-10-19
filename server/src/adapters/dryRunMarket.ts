@@ -19,6 +19,12 @@ export class DryRunMarket implements MarketPort {
   ) {
     this.name = inner.name;
     this.label = inner.label;
+    if (inner.delayDispatch) {
+      this.delayDispatch = (id, due, reason) => (this.live('LIVE_FULFILLMENT') ? inner.delayDispatch!(id, due, reason) : Promise.resolve(this.simulated('delayDispatch', { id, due })));
+    }
+    if (inner.redeliverExchange) {
+      this.redeliverExchange = (rid, code, no) => (this.live('LIVE_FULFILLMENT') ? inner.redeliverExchange!(rid, code, no) : Promise.resolve(this.simulated('redeliverExchange', { rid, code })));
+    }
   }
 
   /** 실제 판매채널(등록 사전 점검처럼 사람이 명시적으로 요청한 경우에만 사용) */
@@ -43,6 +49,7 @@ export class DryRunMarket implements MarketPort {
   listOrders: MarketPort['listOrders'] = (a, b, s) => this.inner.listOrders(a, b, s);
   getOrderLines: MarketPort['getOrderLines'] = (id) => this.inner.getOrderLines(id);
   listClaims: MarketPort['listClaims'] = (a, b) => this.inner.listClaims(a, b);
+  listAddressChanges = async (from: Date, to: Date) => (this.inner.listAddressChanges ? this.inner.listAddressChanges(from, to) : []);
   getClaim = async (id: string) => (this.inner.getClaim ? this.inner.getClaim(id) : null);
   predictCategory: MarketPort['predictCategory'] = (n) => this.inner.predictCategory(n);
   getCategoryMeta: MarketPort['getCategoryMeta'] = (c) => this.inner.getCategoryMeta(c);
@@ -93,6 +100,10 @@ export class DryRunMarket implements MarketPort {
     if (this.live('LIVE_FULFILLMENT') && this.inner.updateInvoice) return this.inner.updateInvoice(input);
     return this.simulated('updateInvoice', { shipmentBoxId: input.shipmentBoxId, courier: input.courierCode });
   }
+
+  // 채널 전용 기능은 안쪽 채널이 지원할 때만 노출(없는 기능을 '모의 성공'으로 처리하면 안 됨)
+  delayDispatch?: (shipmentBoxId: string, dueDate: Date, reason: string) => Promise<MarketResult>;
+  redeliverExchange?: (receiptId: string, courierCode: string, trackingNo: string) => Promise<MarketResult>;
 
   async uploadInvoice(input: InvoiceInput): Promise<MarketResult> {
     if (this.live('LIVE_FULFILLMENT')) return this.inner.uploadInvoice(input);
@@ -146,7 +157,7 @@ export class DryRunMarket implements MarketPort {
     if (id.startsWith('DRYVI-') || !this.inner.getItemSaleState) return null;
     return this.inner.getItemSaleState(id);
   }
-  async replyInquiry(inq: { inquiryId: string; kind: 'product' | 'callcenter' }, text: string): Promise<MarketResult> {
+  async replyInquiry(inq: { inquiryId: string; kind: 'product' | 'callcenter' | 'order' }, text: string): Promise<MarketResult> {
     if (this.live('LIVE_CS')) return this.inner.replyInquiry(inq, text);
     return this.simulated('replyInquiry', { inquiryId: inq.inquiryId, length: text.length });
   }

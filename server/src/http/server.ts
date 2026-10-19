@@ -334,7 +334,7 @@ export async function buildServer(ctx: AppContext, scheduler: Scheduler | null, 
         .orderBy('listings.id', 'desc').limit(300);
       if (q.market) query = query.where('listings.market', '=', q.market);
       // 쿠팡(Wing)에서 삭제한 상품은 [쿠팡 삭제] 탭에서만 보임
-      const deleted = (eb: any) => eb.and([eb('listings.status', '=', 'stopped'), eb(eb.fn.coalesce('listings.status_reason', eb.val('')), 'like', '쿠팡에서 삭제됨%')]);
+      const deleted = (eb: any) => eb.and([eb('listings.status', '=', 'stopped'), eb.or([eb(eb.fn.coalesce('listings.status_reason', eb.val('')), 'like', '쿠팡에서 삭제됨%'), eb(eb.fn.coalesce('listings.status_reason', eb.val('')), 'like', '스마트스토어에서 삭제됨%')])]);
       if (q.status === 'deleted') query = query.where(deleted);
       else if (q.status) query = query.where('listings.status', '=', q.status).where((eb) => eb.not(deleted(eb)));
       else query = query.where((eb) => eb.not(deleted(eb)));

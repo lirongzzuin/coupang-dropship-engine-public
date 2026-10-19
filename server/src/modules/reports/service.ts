@@ -233,6 +233,15 @@ export async function watchdog(ctx: AppContext): Promise<{ alerts: number }> {
     alerts++;
     await ctx.notifications.notify('error', '주문 수집이 멈췄습니다', `마지막 성공: ${last ?? '없음'}. 쿠팡 API 키/IP/네트워크를 확인하세요.`, { path: '/jobs', dedupeKey: 'watchdog-poll', dedupeMinutes: 60 });
   }
+  // 스마트스토어 주문 수집(사용 중일 때만)
+  if (ctx.markets?.naver && s.naver.enabled) {
+    const nLast = await ctx.kv.get<string>('orders.lastPollOkAt.naver');
+    const nRef = nLast ?? startedAt;
+    if (nRef && now.getTime() - new Date(nRef).getTime() > staleMs) {
+      alerts++;
+      await ctx.notifications.notify('error', '주문 수집이 멈췄습니다(스마트스토어)', `마지막 성공: ${nLast ?? '없음'}. 커머스API 키·애플리케이션 상태(커머스API센터)·네트워크를 확인하세요.`, { path: '/jobs', dedupeKey: 'watchdog-poll-naver', dedupeMinutes: 60 });
+    }
+  }
   const days = await keyExpiresInDays(ctx);
   if (days !== null && [14, 7, 3, 1, 0].includes(days)) {
     alerts++;
@@ -242,7 +251,8 @@ export async function watchdog(ctx: AppContext): Promise<{ alerts: number }> {
   // 외부 생존 신호: 주문 수집이 정상일 때만 보냄(멈췄으면 외부 서비스가 알림)
   const pollOk = !ref || now.getTime() - new Date(ref).getTime() <= staleMs;
   // 텔레그램이 안 가면 모든 경고가 묻힘 → 최근 1시간 알림이 전부 실패면 외부 감시(healthchecks)에 실패 신호(이메일 알림)
-  const recent = await ctx.db.selectFrom('notifications').select('delivered').where('at', '>=', new Date(now.getTime() - 3600_000)).execute();
+  // 방해금지 시간에 보류한 알림(held)은 전송 실패가 아님
+  const recent = await ctx.db.selectFrom('notifications').select('delivered').where('at', '>=', new Date(now.getTime() - 3600_000)).where('held', '=', false).execute();
   const notifyBroken = recent.length >= 2 && recent.every((r) => !r.delivered);
   if (ctx.env.HEARTBEAT_URL && notifyBroken) {
     try {

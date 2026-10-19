@@ -452,7 +452,7 @@ export class CoupangMarket implements MarketPort {
     return out;
   }
 
-  async replyInquiry(inq: { inquiryId: string; kind: 'product' | 'callcenter' }, text: string): Promise<MarketResult> {
+  async replyInquiry(inq: { inquiryId: string; kind: 'product' | 'callcenter' | 'order' }, text: string): Promise<MarketResult> {
     const path = inq.kind === 'product'
       ? `${OPEN}/v4/vendors/${this.v}/onlineInquiries/${inq.inquiryId}/replies`
       : `${OPEN}/v4/vendors/${this.v}/callCenterInquiries/${inq.inquiryId}/replies`;

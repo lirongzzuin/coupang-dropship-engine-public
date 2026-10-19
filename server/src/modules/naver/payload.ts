@@ -125,7 +125,8 @@ export function buildNaverPayload(s: Settings, p: NaverPayloadInput): Record<str
         taxType: 'TAX',
         purchaseQuantityInfo: { maxPurchaseQuantityPerOrder: Math.max(1, s.listing.maxBuyPerPerson) },
         ...(optionInfo ? { optionInfo } : {}),
-        ...(d?.brand || d?.manufacturer ? { naverShoppingSearchInfo: { ...(d.brand ? { brandName: d.brand } : {}), ...(d.manufacturer ? { manufacturerName: d.manufacturer } : {}) } } : {}),
+        // 브랜드는 넣지 않음(네이버 브랜드 DB와 다르면 상표 도용으로 보일 수 있음), 제조사만
+        ...(d?.manufacturer ? { naverShoppingSearchInfo: { manufacturerName: d.manufacturer } } : {}),
         productInfoProvidedNotice: {
           productInfoProvidedNoticeType: 'ETC',
           etc: {

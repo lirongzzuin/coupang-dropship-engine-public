@@ -350,9 +350,12 @@ async function handleReturnOpen(ctx: AppContext, row: OrderClaimRow, o: OrderRow
     const pickup = row.pickup_type === '수기관리'
       ? '\n※ 회수 방식 "수기관리" — 쿠팡이 회수하지 않습니다. 공급처 반품 접수 시 공급처 택배로 회수를 요청하고, 회수 송장은 Wing 반품관리에 입력하세요.'
       : row.pickup_type ? `\n회수 방식: ${row.pickup_type}` : '';
-    await notifyOnce(ctx, row, 'return_requested', 'action', '반품 요청', `${o.item_name}: ${row.reason || '사유 없음'}${fault}${feeText}\n① 공급처에 반품 접수(${src}) — 회수 상품은 공급처로\n② 회수되면 쿠팡 빠른환불(10만원 미만)이 자동 환불하거나, 공급처 입고 확인 후 관리 화면 [반품 승인(환불)]${pickup}`);
+    const step2 = o.market === 'naver'
+      ? '② 스마트스토어가 수거하면 "수거 완료"로 바뀜 → 공급처 입고 확인 후 관리 화면 [반품 승인(환불)](스마트스토어는 판매자가 승인해야 환불)'
+      : '② 회수되면 쿠팡 빠른환불(10만원 미만)이 자동 환불하거나, 공급처 입고 확인 후 관리 화면 [반품 승인(환불)]';
+    await notifyOnce(ctx, row, 'return_requested', 'action', `${o.market === 'naver' ? '스마트스토어 ' : ''}반품 요청`, `${o.item_name}: ${row.reason || '사유 없음'}${fault}${feeText}\n① 공급처에 반품 접수(${src}) — 회수 상품은 공급처로\n${step2}${pickup}`);
   } else if (row.stage === 'return_collected') {
-    await notifyOnce(ctx, row, 'return_collected', 'action', '반품 입고완료 — 승인하면 환불', `${o.item_name}: 쿠팡에 반품 입고완료로 표시됐습니다. 상품 상태를 확인했으면 관리 화면 주문 > [반품 승인(환불)]을 누르세요.`);
+    await notifyOnce(ctx, row, 'return_collected', 'action', '반품 입고완료 — 승인하면 환불', `${o.item_name}: ${o.market === 'naver' ? '스마트스토어 반품 수거가 완료됐습니다' : '쿠팡에 반품 입고완료로 표시됐습니다'}. 상품 상태를 확인했으면 관리 화면 주문 > [반품 승인(환불)]을 누르세요.`);
   } else {
     await notifyOnce(ctx, row, 'coupang_check', 'warn', '반품 — 쿠팡 확인 요청 중', `${o.item_name}: 쿠팡이 반품 건을 확인 중입니다(쿠팡확인요청). ${center(o.market)} 반품 관리에서 진행 상황을 확인하세요.`);
   }
@@ -371,8 +374,20 @@ async function handleExchange(ctx: AppContext, row: OrderClaimRow, o: OrderRow):
     const src = sp ? ctx.sources.get(sp.source) : undefined;
     const t = src?.getOrderInfo && !row.reship_source_order_id.startsWith('DRY-') ? (await src.getOrderInfo(row.reship_source_order_id)).tracking : null;
     if (t?.trackingNo) {
-      const code = resolveCourierCode(s.orders.courierAliases, t.courierName, t.courierCode) ?? t.courierName;
+      const resolved = resolveCourierCode(s.orders.courierAliases, t.courierName, t.courierCode);
+      const code = resolved ?? t.courierName;
       row = await patchClaim(ctx, row, { reship_tracking: `${t.courierName} ${t.trackingNo}`, action_note: `재발송 송장 ${t.courierName} ${t.trackingNo}` });
+      const market = marketFor(ctx, o.market);
+      if (row.claim_type === 'EXCHANGE' && resolved && market.redeliverExchange) {
+        const r = await market.redeliverExchange(row.receipt_id, resolved, t.trackingNo);
+        await audit(ctx, SYSTEM, 'claim.redeliver', String(o.id), { receiptId: row.receipt_id, ...r });
+        if (r.ok) {
+          row = await patchClaim(ctx, row, { action: 'redelivered', action_note: `교환 재배송 처리 ${t.courierName} ${t.trackingNo}` });
+          await ctx.notifications.notify('info', '교환 재배송 처리', `${o.item_name}: 재발송 송장 ${t.courierName} ${t.trackingNo}로 ${MARKET_LABEL[o.market] ?? o.market} 교환 재배송을 처리했습니다.`, { path: `/orders/${o.id}` });
+          return true;
+        }
+        ctx.log.warn({ order: o.id, msg: r.message }, '교환 재배송 자동 처리 실패 → 직접 입력 안내');
+      }
       await ctx.notifications.notify('action', row.claim_type === 'EXCHANGE' ? `교환 재발송 송장 — ${center(o.market)}에 입력` : '재발송 송장', `${o.item_name}: ${t.courierName}(${code}) ${t.trackingNo}${row.claim_type === 'EXCHANGE' ? `\n${center(o.market)} 교환 관리에서 교환상품 송장으로 입력하세요.` : '\n고객에게 새 송장을 안내하세요(쿠팡 고객문의 답변 등).'}`, { path: `/orders/${o.id}` });
       changed = true;
       if (row.claim_type === 'RESHIP') await close(ctx, row, `재발송 송장 ${t.courierName} ${t.trackingNo}`);
