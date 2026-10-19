@@ -55,6 +55,41 @@ export function scoreCategory(cat: NaverCategory, path: string | null | undefine
   return s;
 }
 
+/** 공급처와 네이버의 카테고리 이름 차이(실측 2026-10-19: 오너클랜 '키홀더' = 네이버 '키링') */
+const SYNONYMS: Array<[RegExp, string]> = [[/키홀더/g, '키링']];
+
+/** 의미 없는 두 글자(카테고리 이름에 흔한 말) — 상품명 대조에서 제외 */
+const STOP_BIGRAMS = new Set(['용품', '소품', '기타', '생활', '건강', '패션', '잡화', '의류', '세트', '전용']);
+const bigrams = (s: string) => {
+  const out: string[] = [];
+  for (let i = 0; i + 2 <= s.length; i++) out.push(s.slice(i, i + 2));
+  return out;
+};
+
+/**
+ * 상품명과 카테고리가 맞는지: 카테고리 아래 두 단계(중·소분류) 이름의 두 글자 조각이 상품명에 하나라도 있어야 함.
+ * 오너클랜 카테고리 자체가 틀린 상품(실측: '실링왁스'→'돌잔치용품>상대여', '욕실 매트'→'여성의류>코디세트')을 걸러냄 —
+ * 스마트스토어는 카테고리가 틀리면 판매금지·검색 제외가 될 수 있음
+ */
+/** 카테고리별로 상품명에 흔히 쓰는 다른 말(키링 = 키홀더·열쇠고리·가방고리·백참) */
+const FIT_EXTRA: Record<string, string[]> = { 키링: ['고리', '홀더', '장식', '참'] };
+
+export function titleFits(categoryName: string, title: string): boolean {
+  const segs = categoryName.split('>').slice(-2).map(norm);
+  const grams = new Set([...segs.flatMap((x) => tokens(x)).flatMap(bigrams), ...segs.flatMap((x) => FIT_EXTRA[x] ?? [])].filter((g) => !STOP_BIGRAMS.has(g)));
+  const t = norm(title);
+  return [...grams].some((g) => t.includes(g));
+}
+
+function bestOf(cats: NaverCategory[], path: string | null | undefined, title: string): { id: string; name: string; score: number } | null {
+  let best: { id: string; name: string; score: number } | null = null;
+  for (const c of cats) {
+    const sc = scoreCategory(c, path, title);
+    if (!best || sc > best.score) best = { id: c.id, name: c.wholeCategoryName || c.name, score: sc };
+  }
+  return best;
+}
+
 export function matchCategory(cats: NaverCategory[], path: string | null | undefined, title: string, map: Record<string, string> = {}, minScore = 0.5): { id: string; name: string; score: number } | null {
   // 직접 지정(공급처 경로 → 카테고리ID) 우선
   const direct = path ? map[path] ?? map[path.replace(/\s+/g, '')] : undefined;
@@ -62,10 +97,14 @@ export function matchCategory(cats: NaverCategory[], path: string | null | undef
     const c = cats.find((x) => x.id === direct);
     return { id: direct, name: c?.wholeCategoryName ?? direct, score: 2 };
   }
-  let best: { id: string; name: string; score: number } | null = null;
-  for (const c of cats) {
-    const sc = scoreCategory(c, path, title);
-    if (!best || sc > best.score) best = { id: c.id, name: c.wholeCategoryName || c.name, score: sc };
-  }
-  return best && best.score >= minScore ? best : null;
+  const p = path ? SYNONYMS.reduce((acc, [re, to]) => acc.replace(re, to), path) : path;
+  const best = bestOf(cats, p, title);
+  if (best && best.score >= minScore && titleFits(best.name, title)) return best;
+  // 경로로 고른 카테고리가 상품명과 안 맞으면(공급처 분류 오류) 상품명으로 다시 찾되 엄격하게:
+  // 같은 대분류 안에서, 말단·상위 분류 이름이 모두 상품명에 있을 때만(점수 0.7). 아니면 등록 안 함(틀린 카테고리는 판매금지 위험)
+  const top = p ? segs(p)[0] : undefined;
+  const pool = top ? cats.filter((c) => segs(c.wholeCategoryName)[0] === top) : cats;
+  const byTitle = bestOf(pool, null, title);
+  if (byTitle && byTitle.score >= Math.max(minScore, 0.7) && titleFits(byTitle.name, title)) return byTitle;
+  return null;
 }

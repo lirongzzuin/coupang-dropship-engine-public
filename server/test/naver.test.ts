@@ -247,6 +247,16 @@ describe('스마트스토어 상품 등록 요청', () => {
     expect(matchCategory(cats, null, '휴대용 노트북가방 15인치')!.id).toBe('D'); // 경로 없으면 상품명
     expect(matchCategory(cats, '식품>과자>쿠키', '버터 쿠키')).toBeNull();
     expect(matchCategory(cats, '식품>과자>쿠키', '버터 쿠키', { '식품>과자>쿠키': 'C' })!.id).toBe('C');
+    // 실데이터(2026-10-19): 오너클랜 분류 오류 → 상품명과 안 맞으면 등록 안 함, 이름 차이(키홀더=키링)는 맞춤
+    const real = [
+      { id: 'K', name: '키링', wholeCategoryName: '패션잡화>패션소품>키링' },
+      { id: 'S', name: '상대여', wholeCategoryName: '출산/육아>출산/돌기념품>돌잔치용품>상대여' },
+      { id: 'W', name: '코디세트', wholeCategoryName: '패션의류>여성의류>코디세트' },
+      { id: 'L', name: '슬립', wholeCategoryName: '패션의류>여성언더웨어/잠옷>슬립' },
+    ];
+    expect(matchCategory(real, '패션잡화>패션소품>키홀더', '강아지 고양이 열쇠고리 가방고리 아크릴')!.id).toBe('K');
+    expect(matchCategory(real, '출산/육아>출산/돌기념품>돌잔치용품>상대여', '실링왁스 왁스씰 스탬프 편지 인장')).toBeNull();
+    expect(matchCategory(real, '패션의류>여성의류>코디세트', '패드 논슬립 베란다 건식 타일 욕실 깔판')).toBeNull(); // '논슬립'의 '슬립'에 속지 않음
   });
 });
 
