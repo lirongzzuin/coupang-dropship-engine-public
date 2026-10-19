@@ -25,7 +25,7 @@ const MAX_ERRORS = 3;
 const CERT_REQUIRED = /productCertificationInfos|KC ?인증대상|어린이(제품|인증)/;
 /** 등록 오류 수정 뒤 한 번: 그 전 실패분을 7일 기다리지 않고 바로 다시 시도 */
 const RESET_KEY = 'naver.mirrorReset';
-const RESET_VERSION = 1;
+const RESET_VERSION = 2; // 2: 태블릿 파우치 등 액세서리 카테고리 보정 뒤 재시도
 
 export interface MirrorResult {
   created: number;

@@ -251,6 +251,16 @@ describe('스마트스토어 상품 등록 요청', () => {
     expect(matchCategory(cats, '생활용품>수납/정리용품>바구니', '주방 수납 바스켓')!.id).toBe('C'); // 도매꾹식 경로
     expect(matchCategory(cats, null, '휴대용 노트북가방 15인치')!.id).toBe('D'); // 경로 없으면 상품명
     expect(matchCategory(cats, '식품>과자>쿠키', '버터 쿠키')).toBeNull();
+    // 실데이터(2026-10-19): 공급처가 태블릿 파우치를 '태블릿PC'(KC 인증 본체)로 분류 → 상품명의 파우치로 액세서리 카테고리
+    const tab = [
+      { id: 'T', name: '태블릿PC', wholeCategoryName: '디지털/가전>태블릿PC' },
+      { id: 'TP', name: '케이스/파우치', wholeCategoryName: '디지털/가전>태블릿PC액세서리>케이스/파우치' },
+      { id: 'TS', name: '스탠드/Dock', wholeCategoryName: '디지털/가전>태블릿PC액세서리>스탠드/Dock' },
+      { id: 'TE', name: '터치펜/기타', wholeCategoryName: '디지털/가전>태블릿PC액세서리>터치펜/기타' },
+    ];
+    expect(matchCategory(tab, '디지털/가전>태블릿PC', '미니멀 태블릿 수납 가방 클래식 핸디 파우치 패드 갤럭시 탭')!.id).toBe('TP');
+    expect(matchCategory(tab, '디지털/가전>태블릿PC', '태블릿 거치대 스탠드 접이식')!.id).toBe('TS');
+    expect(matchCategory(tab, '디지털/가전>태블릿PC', '10인치 태블릿 기타 학습용')!.id).toBe('T'); // '기타' 같은 일반어로는 안 옮김
     expect(matchCategory(cats, '식품>과자>쿠키', '버터 쿠키', { '식품>과자>쿠키': 'C' })!.id).toBe('C');
     // 실데이터(2026-10-19): 오너클랜 분류 오류 → 상품명과 안 맞으면 등록 안 함, 이름 차이(키홀더=키링)는 맞춤
     const real = [
@@ -441,7 +451,7 @@ describe('스마트스토어 통합', () => {
     expect(r.created).toBe(1);
     const rows = await h.ctx.db.selectFrom('listings').select('status').where('market', '=', 'naver').execute();
     expect(rows.map((x) => x.status)).toEqual(['pending_approval']);
-    expect(await h.ctx.kv.get('naver.mirrorReset')).toBe(1);
+    expect(await h.ctx.kv.get('naver.mirrorReset')).toBe(2);
   });
 
   it('등록 API 오류가 3번 나면 그 회차는 중단(같은 원인으로 전부 실패 방지)', async () => {
