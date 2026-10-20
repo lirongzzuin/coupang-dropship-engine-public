@@ -309,7 +309,7 @@ describe('취소·반품·교환 API', () => {
     const d = (await app.inject({ url: `/api/orders/${oa.id}`, headers: H(cookie) })).json();
     expect(d.status).toBe('CANCEL_REQUESTED');
     expect(d.claims).toHaveLength(1);
-    expect(d.claims[0]).toMatchObject({ receipt_id: '77', stage: 'stop_requested', stageLabel: '출고중지 요청(고객 취소)' });
+    expect(d.claims[0]).toMatchObject({ receipt_id: '77', stage: 'stop_requested', stageLabel: '고객 취소 요청(판매자 처리 필요)' });
     const bad = await app.inject({ method: 'POST', url: `/api/orders/${oa.id}/claims/${d.claims[0].id}`, headers: H(cookie), payload: { action: 'approve_return' } });
     expect(bad.statusCode).toBe(409);
     const ok = await app.inject({ method: 'POST', url: `/api/orders/${oa.id}/claims/${d.claims[0].id}`, headers: H(cookie), payload: { action: 'source_cancelled' } });

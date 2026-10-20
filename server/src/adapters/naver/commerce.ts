@@ -142,6 +142,11 @@ const REASON: Record<string, string> = {
   INTENT_CHANGED: '구매 의사 취소', COLOR_AND_SIZE: '색상 및 사이즈 변경', WRONG_ORDER: '다른 상품 잘못 주문', PRODUCT_UNSATISFIED: '서비스 불만족',
   DELAYED_DELIVERY: '배송 지연', SOLD_OUT: '상품 품절', INCORRECT_INFO: '상품 정보 상이', DROPPED_DELIVERY: '배송 누락', BROKEN: '상품 파손',
   WRONG_DELIVERY: '오배송', WRONG_OPTION: '다른 옵션 배송', SIMPLE_INTENT_CHANGED: '단순 변심',
+  // 실제 API 사유 코드 목록(확인 2026-10-19)
+  OUT_OF_STOCK: '재고 부족', BROKEN_AND_BAD: '파손 및 불량', WRONG_DELAYED_DELIVERY: '배송 지연', INCORRECT_DELIVERY: '오배송', MISSING_DELIVERY: '배송 누락',
+  UNDER_QUANTITY: '수량 부족', NOT_YET_DELIVERY: '미배송', RECEIVER_MISMATCHED: '수령인 불일치', MISTAKE_ORDER: '주문 실수', SALE_INTENT_CHANGED: '판매 의사 변경',
+  PRODUCT_UNSATISFIED_BY_PURCHASER: '서비스 불만족', DELAYED_DELIVERY_BY_PURCHASER: '배송 지연', INCORRECT_INFO_BY_PURCHASER: '상품 정보 상이',
+  NOT_YET_PAYMENT: '미결제', FAIL_PAYMENT: '결제 실패', ETC: '기타',
 };
 
 function kst(d: Date): string {

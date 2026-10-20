@@ -8,6 +8,7 @@ import { matchCategory } from '../src/modules/naver/category.js';
 import { naverMirror } from '../src/modules/naver/mirror.js';
 import { buildNaverPayload, withinOptionPriceRule } from '../src/modules/naver/payload.js';
 import { pollClaims, pollFulfillment, pollNewOrders, processPending } from '../src/modules/orders/service.js';
+import { claimAction, sellerCancel } from '../src/modules/orders/claims.js';
 import { runSelection } from '../src/modules/selection/service.js';
 import { syncListings } from '../src/modules/sync/service.js';
 import { listedBefore } from '../src/modules/selection/service.js';
@@ -391,6 +392,82 @@ describe('스마트스토어 통합', () => {
     expect((await orderByBox(h, line.shipmentBoxId)).status).toBe('CANCELLED');
     expect(h.naver.claimActions.map((a) => a.action)).toEqual(['stopShipment']);
     expect(h.market.claimActions).toHaveLength(0);
+  });
+
+  /** 스마트스토어 판매중 상품 1개 + 주문 1건 → 자동 발주까지 */
+  async function naverOrder() {
+    await coupangActive();
+    await naverMirror(h.ctx);
+    h.naver.autoApprove = true;
+    await refreshListingStatuses(h.ctx);
+    const nl = (await naverListing())!;
+    const item = (await itemsOf(nl.id))[0]!;
+    const line = h.naver.seedOrder({ vendorItemId: item.vendor_item_id!, paidAmount: item.sale_price, orderedAt: h.clock.now() });
+    await pollNewOrders(h.ctx);
+    return { nl, item, line };
+  }
+
+  it('고객 취소 안내 문구는 스마트스토어 용어(취소 승인) — 쿠팡 출고중지 아님', async () => {
+    const { item, line } = await naverOrder();
+    await processPending(h.ctx);
+    h.naver.claim({ receiptId: `${line.shipmentBoxId}:CANCEL`, marketOrderId: line.marketOrderId, vendorItemId: item.vendor_item_id!, type: 'CANCEL', stage: 'stop_requested', requestedAt: h.clock.now() });
+    await pollClaims(h.ctx);
+    const texts = h.notifier.sent.map((m: any) => `${m.title} ${m.body}`).join('\n');
+    expect(texts).toMatch(/스마트스토어 취소 승인/);
+    expect(texts).not.toMatch(/쿠팡 출고중지|쿠팡에 이미출고|쿠팡은 이미 환불/);
+  });
+
+  it('발주 확인 전에 고객이 바로 취소(즉시 취소) → 공급처 발주 안 함, 취소로 정리', async () => {
+    const { line } = await naverOrder();
+    h.naver.setStatus(line.shipmentBoxId, 'CANCELED' as any);
+    for (const l of h.naver.orders.get(line.shipmentBoxId)!) l.canceled = true;
+    await processPending(h.ctx);
+    expect((await orderByBox(h, line.shipmentBoxId)).status).toBe('CANCELLED');
+    expect(h.apiSource.orders.size).toBe(0);
+  });
+
+  it('반품: 배송 후 반품 요청(스마트스토어 안내) → 수거 완료 → [반품 승인] → 스마트스토어 반품 승인(환불) → 반품 완료', async () => {
+    const { item, line } = await naverOrder();
+    await processPending(h.ctx);
+    let o = await orderByBox(h, line.shipmentBoxId);
+    h.apiSource.ship(o.source_order_id!, '612345678901', 'CJ대한통운');
+    await pollFulfillment(h.ctx);
+    h.naver.setStatus(line.shipmentBoxId, 'FINAL_DELIVERY');
+    await pollFulfillment(h.ctx);
+    expect((await orderByBox(h, line.shipmentBoxId)).status).toBe('DELIVERED');
+    const rid = `${line.shipmentBoxId}:RETURN`;
+    h.naver.claim({ receiptId: rid, marketOrderId: line.marketOrderId, vendorItemId: item.vendor_item_id!, type: 'RETURN', stage: 'return_requested', reason: '단순 변심', returnShippingCharge: -6000, requestedAt: h.clock.now() });
+    await pollClaims(h.ctx);
+    o = await orderByBox(h, line.shipmentBoxId);
+    expect(o.status).toBe('RETURN_REQUESTED');
+    expect(h.notifier.titles()).toContain('스마트스토어 반품 요청');
+    expect(h.notifier.sent.at(-1)!.body).toMatch(/고객 부담 6,000원.*\n?[\s\S]*스마트스토어는 판매자가 승인해야 환불/);
+    h.naver.setClaimStage(rid, 'return_collected');
+    await pollClaims(h.ctx);
+    expect(h.notifier.sent.at(-1)!.body).toMatch(/스마트스토어 반품 수거가 완료/);
+    const claim = await h.ctx.db.selectFrom('order_claims').selectAll().where('order_id', '=', o.id).executeTakeFirstOrThrow();
+    await claimAction(h.ctx, o.id, claim.id, { action: 'approve_return' }, 'admin');
+    expect(h.naver.claimActions.map((a) => a.action)).toContain('confirmReturn');
+    await pollClaims(h.ctx);
+    o = await orderByBox(h, line.shipmentBoxId);
+    expect(o.status).toBe('RETURNED');
+    expect(h.market.claimActions).toHaveLength(0); // 쿠팡은 건드리지 않음
+  });
+
+  it('공급처 품절 주문 → 발주 안 함·판매중지 → [판매자 취소] → 스마트스토어 판매 취소(품절 사유)', async () => {
+    const { nl, line } = await naverOrder();
+    const sp = await h.ctx.db.selectFrom('source_products').select('source_item_id').where('id', '=', nl.source_product_id).executeTakeFirstOrThrow();
+    const p = h.apiSource.products.get(sp.source_item_id)!;
+    p.stock = 0;
+    for (const op of p.options ?? []) op.stock = 0;
+    await processPending(h.ctx);
+    const o = await orderByBox(h, line.shipmentBoxId);
+    expect(o.status).toBe('OUT_OF_STOCK');
+    expect(h.apiSource.orders.size).toBe(0);
+    const r = await sellerCancel(h.ctx, o.id, 'stock', 'admin');
+    expect(r.message).toMatch(/스마트스토어 주문을 취소했습니다/);
+    expect(h.naver.sellerCancels[0]).toMatchObject({ reason: 'stock', marketOrderId: line.marketOrderId });
+    expect((await orderByBox(h, line.shipmentBoxId)).status).toBe('CANCELLED');
   });
 
   it('동기화: 공급처 옵션 품절 → 스마트스토어 그 옵션만 판매중지(쿠팡도 각각), 원가 상승 → 스마트스토어 가격도 조정', async () => {
