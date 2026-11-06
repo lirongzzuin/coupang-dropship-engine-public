@@ -16,7 +16,7 @@ services:
 
   app:
     # CI/CD가 GHCR에 올린 이미지를 사용(로컬에서는 build 로 직접 빌드 가능)
-    image: ${APP_IMAGE:-ghcr.io/lirongzzuin/coupang-dropship-engine:latest}
+    image: ${APP_IMAGE:-ghcr.io/lirongzzuin/coupang-dropship-engine-public:latest}
     build: .
     restart: unless-stopped
     depends_on:

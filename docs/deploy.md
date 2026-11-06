@@ -83,14 +83,14 @@ FileVault가 켜져 있으면 자동 로그인이 안 되므로, 정전으로 �
 
 ## B. 리눅스 서버(Oracle Cloud Always Free 등, 선택)
 고정 IP 서버가 필요해지면 이 방식으로 옮깁니다(데이터는 PostgreSQL 사용).
-1. 서버에서 `sudo bash deploy/setup-vps.sh` 실행(Ubuntu 전용. 레포가 비공개이므로 `scp`로 스크립트만 복사해 실행)
+1. 서버에서 `sudo bash deploy/setup-vps.sh` 실행(Ubuntu 전용)
 2. GitHub Secrets에 `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`(권장 `DEPLOY_KNOWN_HOSTS`)를 등록 → main에 push할 때마다 GitHub Actions가 테스트 → 이미지(GHCR) → SSH 배포 → 헬스체크 → 실패 시 롤백까지 자동으로 처리합니다.
 3. 시크릿이 없으면 배포 단계는 자동으로 건너뜁니다(Mac 홈서버만 쓸 때의 기본 상태).
 
 ## CI (공통)
 main에 push하거나 PR을 만들면 GitHub Actions(`.github/workflows/ci-cd.yml`)가 다음을 실행합니다:
 - 타입체크
-- 테스트 114개
+- 테스트(server)
 - 웹 빌드
 - Docker 이미지 빌드와 컨테이너 스모크 테스트
 

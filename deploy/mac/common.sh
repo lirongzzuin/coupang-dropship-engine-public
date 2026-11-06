@@ -4,7 +4,7 @@
 set -euo pipefail
 export DROPSHIP_HOME="${DROPSHIP_HOME:-$HOME/dropship}"
 export DROPSHIP_LABEL="${DROPSHIP_LABEL:-com.dropship}"
-export REPO="${DROPSHIP_REPO:-lirongzzuin/coupang-dropship-engine}"
+export REPO="${DROPSHIP_REPO:-lirongzzuin/coupang-dropship-engine-public}"
 APP="$DROPSHIP_HOME/app"
 DATA="$DROPSHIP_HOME/data"
 LOGS="$DROPSHIP_HOME/logs"
