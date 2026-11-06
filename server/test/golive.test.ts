@@ -4,7 +4,7 @@ import { OwnerclanSource } from '../src/adapters/ownerclan/source.js';
 import { createLogger } from '../src/lib/logger.js';
 import { pauseListing } from '../src/modules/listing/control.js';
 import { confirmPurchase, pollClaims, pollFulfillment, pollNewOrders, processPending, resolveCourierCode, submitTracking } from '../src/modules/orders/service.js';
-import { makeHarness, orderByBox, seedActiveListing, type TestHarness } from './helpers.js';
+import { makeHarness, orderByBox, seedActiveListing, type TestHarness, logged } from './helpers.js';
 
 /**
  * 실전 전환 점검: 실제 쿠팡 상품에 들어온 실제 주문은 어떤 스위치 조합에서도
@@ -132,7 +132,7 @@ describe('공급처 결제·취소 자동 감지', () => {
     expect((await orderByBox(h, line.shipmentBoxId)).status).toBe('CANCELLED');
     expect(h.apiSource.cancelled).toEqual([o.source_order_id]);
     expect(h.market.claimActions).toEqual([{ action: 'stopShipment', receiptId: 'c1', detail: { count: 1 } }]);
-    expect(h.notifier.sent.find((m) => m.title === '고객 취소 자동 처리')!.body).toContain('출고중지완료');
+    expect((await logged(h.ctx)).find((m) => m.title === '고객 취소 자동 처리')!.body).toContain('출고중지완료');
   });
 
   it('자동 발주 첫 실패부터 바로 알림(예치금 부족 등)', async () => {

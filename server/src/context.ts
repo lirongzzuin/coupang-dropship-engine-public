@@ -62,8 +62,17 @@ export class KvStore {
   }
 }
 
-/** 알림: DB에 항상 기록하고 외부 채널(텔레그램)로 전송. 같은 dedupeKey는 일정 시간 내 1회만.
- *  방해금지 시간(설정 notify.quietHours, 한국시간)에는 급한 알림만 바로 보내고 나머지는 보류 → 끝나면 flushHeld()가 모아서 한 번에 */
+/**
+ * 알림: 모든 알림은 DB(관리 화면 대시보드)에 기록하고, "지금 사람이 확인해야 하는 것"만 텔레그램으로 보낸다.
+ *
+ * 텔레그램 전송 기준(push):
+ *  - 보냄: 주문 처리 문제·구매/발주 필요, 고객 CS(문의·취소·반품·교환), 서버/연동 장애(주문 수집 중단·핵심 작업 실패·IP·API 키),
+ *          안전장치(문제 감지·판매 중지)
+ *  - 안 보냄: 상품 등록·선정·승인·반려·판매중지/재개·종료·원가 교체 등 자동 상품 운영, 설정 안내 → 관리 화면·아침 브리핑에서 확인
+ * 기본값: level 'info' 는 안 보내고 warn/error/action 은 보냄. 호출부에서 opts.push 로 명시적으로 덮어쓴다.
+ * 같은 dedupeKey는 일정 시간 내 1회만.
+ * 방해금지 시간(설정 notify.quietHours, 한국시간)에는 급한 알림만 바로 보내고 나머지(텔레그램 대상만)는 보류 → 끝나면 flushHeld()가 모아서 한 번에
+ */
 const LEVEL_RANK: Record<string, number> = { info: 0, action: 1, warn: 2, error: 3 };
 const LEVEL_ICON: Record<string, string> = { info: 'ℹ️', action: '👉', warn: '⚠️', error: '❗' };
 
@@ -92,7 +101,7 @@ export class NotificationService {
     return (await this.settings.get()).notify.quietHours.urgentTitles.some((t) => t && title.startsWith(t));
   }
 
-  async notify(level: 'info' | 'warn' | 'error' | 'action', title: string, body: string, opts: { path?: string; dedupeKey?: string; dedupeMinutes?: number; /** 방해금지 시간에도 바로 보냄 */ urgent?: boolean } = {}): Promise<void> {
+  async notify(level: 'info' | 'warn' | 'error' | 'action', title: string, body: string, opts: { path?: string; dedupeKey?: string; dedupeMinutes?: number; /** 방해금지 시간에도 바로 보냄 */ urgent?: boolean; /** 텔레그램 전송 여부(기본: info 외 전송) */ push?: boolean } = {}): Promise<void> {
     if (opts.dedupeKey) {
       const last = this.recent.get(opts.dedupeKey);
       const now = this.clock.now().getTime();
@@ -100,6 +109,12 @@ export class NotificationService {
       this.recent.set(opts.dedupeKey, now);
     }
     const link = opts.path ? `${this.publicBase.replace(/\/$/, '')}${opts.path}` : undefined;
+    const pushed = opts.push ?? level !== 'info';
+    if (!pushed) {
+      // 텔레그램 대상 아님 → 관리 화면에만 기록(밤사이 모음에도 넣지 않음)
+      await this.db.insertInto('notifications').values({ level, title, body, link: link ?? null, pushed: false, delivered: false, at: this.clock.now() }).execute();
+      return;
+    }
     if ((await this.isQuiet()) && !(await this.isUrgent(title, opts.urgent))) {
       await this.db.insertInto('notifications').values({ level, title, body, link: link ?? null, delivered: false, held: true, at: this.clock.now() }).execute();
       return;

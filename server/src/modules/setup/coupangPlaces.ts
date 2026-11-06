@@ -26,7 +26,7 @@ export async function syncShippingPlaces(ctx: AppContext): Promise<{ filled: str
   const filled = Object.keys(patch);
   if (!filled.length) {
     if (!ob.length || !rc.length) {
-      await ctx.notifications.notify('action', '쿠팡 출고지·반품지가 없어요', `Wing → 판매자정보 → 주소록에서 ${!ob.length ? '출고지' : ''}${!ob.length && !rc.length ? '·' : ''}${!rc.length ? '반품지' : ''}를 등록하면 자동으로 채워집니다.`, { path: '/settings' });
+      await ctx.notifications.notify('action', '쿠팡 출고지·반품지가 없어요', `Wing → 판매자정보 → 주소록에서 ${!ob.length ? '출고지' : ''}${!ob.length && !rc.length ? '·' : ''}${!rc.length ? '반품지' : ''}를 등록하면 자동으로 채워집니다.`, { path: '/settings', push: false });
     }
     return { filled };
   }

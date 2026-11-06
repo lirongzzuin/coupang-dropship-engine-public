@@ -233,7 +233,7 @@ async function followUp(ctx: AppContext, l: ListingRow, metaCache: Map<string, C
   }
   if (l.repair_requested_at && now.getTime() - new Date(l.repair_requested_at).getTime() > s.repair.reviewAlertHours * 3600_000) {
     await ctx.notifications.notify('warn', '상품 수정 심사가 오래 걸림', `${l.title.slice(0, 30)}: ${s.repair.reviewAlertHours}시간 넘게 쿠팡 심사 중(${status || '상태 확인 불가'}). Wing 상품관리에서 확인하세요.`,
-      { path: '/listings', dedupeKey: `repair-review-${l.id}`, dedupeMinutes: 24 * 60 });
+      { path: '/listings', dedupeKey: `repair-review-${l.id}`, dedupeMinutes: 24 * 60, push: false });
   }
 }
 
@@ -292,7 +292,7 @@ async function requestFix(ctx: AppContext, l: ListingRow, a: AuditResult): Promi
 async function hold(ctx: AppContext, l: ListingRow, why: string): Promise<void> {
   if (l.status !== 'paused' || !l.status_reason?.startsWith(REVIEWING)) return;
   await ctx.db.updateTable('listings').set({ status_reason: `${HELD}: ${why}`.slice(0, 300), repair_resume: false, updated_at: ctx.clock.now() }).where('id', '=', l.id).execute();
-  await ctx.notifications.notify('warn', '판매 재개 보류', `${l.title.slice(0, 30)}: ${why.slice(0, 200)}\nWing 상품관리에서 직접 확인하거나 상품을 정리하세요. 고친 뒤 다시 [판매재개]를 누르면 다시 점검합니다.`, { path: '/listings' });
+  await ctx.notifications.notify('warn', '판매 재개 보류', `${l.title.slice(0, 30)}: ${why.slice(0, 200)}\nWing 상품관리에서 직접 확인하거나 상품을 정리하세요. 고친 뒤 다시 [판매재개]를 누르면 다시 점검합니다.`, { path: '/listings', push: false });
 }
 
 /**

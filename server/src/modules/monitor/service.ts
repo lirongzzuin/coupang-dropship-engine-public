@@ -121,7 +121,7 @@ export async function checkOrderability(ctx: AppContext): Promise<OrderabilityRe
   }
   if (pausedNow.length) {
     await ctx.notifications.notify('warn', `주문 불가 상품 ${pausedNow.length}개 판매중지`,
-      `${pausedNow.slice(0, 8).join('\n')}\n공급처 주문 시뮬레이션이 실패해 쿠팡 판매를 멈췄습니다(실제 주문 없음). 다시 주문 가능해지면 자동 재개됩니다.`, { path: '/listings' });
+      `${pausedNow.slice(0, 8).join('\n')}\n공급처 주문 시뮬레이션이 실패해 쿠팡 판매를 멈췄습니다(실제 주문 없음). 다시 주문 가능해지면 자동 재개됩니다.`, { path: '/listings', push: false });
   }
   if (resumedNow.length) await ctx.notifications.notify('info', `주문 가능 회복 ${resumedNow.length}개 판매 재개`, resumedNow.slice(0, 8).join('\n'), { path: '/listings' });
   if (pricier.length) {
@@ -229,11 +229,11 @@ export async function reconcileMarketState(ctx: AppContext): Promise<ReconcileRe
     await ctx.notifications.notify('info', `쿠팡(Wing)에서 바뀐 가격 ${priceAdopted.length}개 반영`, `${priceAdopted.slice(0, 8).join('\n')}\n시스템 가격을 쿠팡 실제 가격에 맞췄습니다(손실 가격이면 판매중지).`, { path: '/listings' });
   }
   if (adopted.length) await ctx.notifications.notify('info', `Wing에서 판매 재개한 상품 ${adopted.length}개 반영`, `${adopted.slice(0, 8).join('\n')}\n공급처 상태는 다음 동기화에서 다시 확인합니다.`, { path: '/listings' });
-  if (restopped.length) await ctx.notifications.notify('warn', `판매중지했던 상품 ${restopped.length}개가 쿠팡에서 판매중 → 다시 중지`, restopped.slice(0, 8).join('\n'), { path: '/listings' });
+  if (restopped.length) await ctx.notifications.notify('warn', `판매중지했던 상품 ${restopped.length}개가 쿠팡에서 판매중 → 다시 중지`, restopped.slice(0, 8).join('\n'), { path: '/listings', push: false });
   if (failed.length) await ctx.notifications.notify('error', '쿠팡 판매중지 실패 — Wing에서 직접 중지하세요', `${failed.slice(0, 8).join('\n')}\n공급처에서 주문할 수 없는 상품이 쿠팡에서 판매중입니다.`, { path: '/listings', dedupeKey: `reconcile-fail-${failed.length}`, dedupeMinutes: 120 });
   if (marketStopped.length) {
     await ctx.notifications.notify('warn', `쿠팡에서 판매중지된 상품 ${marketStopped.length}개`,
-      `${marketStopped.slice(0, 8).join('\n')}\nWing에서 직접 멈췄거나 쿠팡이 판매를 막았습니다(정책·심사). 자동으로 재개하지 않습니다. Wing 상품관리에서 사유를 확인하고, 괜찮으면 관리 화면 [판매재개]를 누르세요.`, { path: '/listings' });
+      `${marketStopped.slice(0, 8).join('\n')}\nWing에서 직접 멈췄거나 쿠팡이 판매를 막았습니다(정책·심사). 자동으로 재개하지 않습니다. Wing 상품관리에서 사유를 확인하고, 괜찮으면 관리 화면 [판매재개]를 누르세요.`, { path: '/listings', push: false });
   }
   return out;
 }

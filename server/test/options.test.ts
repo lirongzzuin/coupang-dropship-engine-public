@@ -9,7 +9,7 @@ import { syncListings } from '../src/modules/sync/service.js';
 import { defaultSettings } from '../src/config/settings.js';
 import type { CategoryMeta } from '../src/ports/market.js';
 import type { SourceProductDetail } from '../src/ports/source.js';
-import { makeHarness, orderByBox, seedActiveListing, type TestHarness } from './helpers.js';
+import { makeHarness, orderByBox, seedActiveListing, type TestHarness, logged } from './helpers.js';
 
 let h: TestHarness;
 afterEach(async () => h && (await h.close()));
@@ -199,7 +199,7 @@ describe('옵션 없이 올라간 기존 상품 보호 + 옵션 지정해 다시
     expect(l.status).toBe('paused');
     expect(l.status_reason).toContain('옵션 미지정');
     expect(h.market.items.get(x.vendorItemId)!.onSale).toBe(false);
-    expect(h.notifier.titles()).toContain('옵션이 정해지지 않은 상품 1개 판매중지');
+    expect((await logged(h.ctx)).map((x) => x.title)).toContain('옵션이 정해지지 않은 상품 1개 판매중지');
     await syncListings(h.ctx);
     expect((await h.ctx.db.selectFrom('listings').select('status').where('id', '=', x.listing.id).executeTakeFirstOrThrow()).status).toBe('paused');
   });

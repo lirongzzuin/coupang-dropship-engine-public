@@ -3,7 +3,7 @@ import { buildServer } from '../src/http/server.js';
 import { AuthService } from '../src/http/auth.js';
 import { Scheduler } from '../src/jobs/scheduler.js';
 import { totpAt } from '../src/lib/crypto.js';
-import { makeHarness, orderByBox, seedActiveListing, type TestHarness } from './helpers.js';
+import { makeHarness, orderByBox, seedActiveListing, type TestHarness, logged } from './helpers.js';
 
 let h: TestHarness;
 let app: Awaited<ReturnType<typeof buildServer>>;
@@ -192,7 +192,8 @@ describe('Scheduler', () => {
     const failed = await h.ctx.db.selectFrom('job_runs').selectAll().where('job', '=', 'b').execute();
     expect(failed[0]!.ok).toBe(false);
     expect(failed[0]!.error).toBe('boom');
-    expect(h.notifier.titles()).toContain('작업 실패: B');
+    expect((await logged(h.ctx)).map((x) => x.title)).toContain('작업 실패: B');
+    expect(h.notifier.titles()).not.toContain('작업 실패: B'); // 핵심 작업(critical)이 아니면 텔레그램 안 보냄
     fail = false;
     expect((await s.runJob('b')).ok).toBe(true);
     const daily = await h.ctx.db.selectFrom('job_runs').selectAll().where('job', '=', 'daily').execute();

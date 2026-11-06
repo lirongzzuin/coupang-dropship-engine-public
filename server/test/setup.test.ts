@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { syncShippingPlaces } from '../src/modules/setup/coupangPlaces.js';
-import { makeHarness, type TestHarness } from './helpers.js';
+import { makeHarness, type TestHarness, logged } from './helpers.js';
 
 let h: TestHarness;
 afterEach(async () => h && (await h.close()));
@@ -20,6 +20,6 @@ describe('쿠팡 출고지·반품지 자동 설정', () => {
     h = await makeHarness();
     (h.market as any).shippingPlaces = { outbound: [], returns: [] };
     expect((await syncShippingPlaces(h.ctx)).filled).toEqual([]);
-    expect(h.notifier.sent.some((m: any) => m.title.includes('출고지'))).toBe(true);
+    expect((await logged(h.ctx)).some((m) => m.title.includes('출고지'))).toBe(true);
   });
 });

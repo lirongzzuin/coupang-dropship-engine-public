@@ -44,7 +44,10 @@ describe('방해금지 시간', () => {
     expect(h.notifier.titles()).toEqual(['🛑 자동 판매 중지', '주문 수집이 멈췄습니다', '공인 IP 변경: 1.1.1.1 → 2.2.2.2', '작업 실패: 주문 수집·처리', '직접 지정한 급한 알림']);
     // 보류한 알림도 관리 화면(알림 목록)에는 바로 보임
     const held = await h.ctx.db.selectFrom('notifications').selectAll().where('held', '=', true).execute();
-    expect(held.map((r) => r.title)).toEqual(['새 주문 — 자동 발주 완료', '구매할 주문이 있어요', '품절 주문 발생', '품절 주문 발생', '⚠️ 문제 감지']);
+    expect(held.map((r) => r.title)).toEqual(['구매할 주문이 있어요', '품절 주문 발생', '품절 주문 발생', '⚠️ 문제 감지']);
+    // 텔레그램 대상이 아닌 알림(info: 자동 처리 완료 등)은 보류도 안 함 — 관리 화면에만
+    const quietOnly = await h.ctx.db.selectFrom('notifications').selectAll().where('title', '=', '새 주문 — 자동 발주 완료').executeTakeFirstOrThrow();
+    expect([quietOnly.pushed, quietOnly.held]).toEqual([false, false]);
     // 아직 밤이면 모아 보내기 안 함
     expect(await h.ctx.notifications.flushHeld()).toBe(0);
   });
@@ -54,28 +57,29 @@ describe('방해금지 시간', () => {
     await n('info', '새 주문 — 자동 발주 완료', '독서노트 1개 — 오너클랜 주문 2026…\n둘째 줄');
     await n('error', '품절 주문 발생', '수납함');
     await n('error', '품절 주문 발생', '노트');
-    await n('action', '고객문의 1건 답변 필요');
+    await n('action', '고객문의 1건 답변 필요', '내용\n둘째 줄');
     h.clock.advanceMinutes(6 * 60); // 07:00
-    expect(await h.ctx.notifications.flushHeld()).toBe(4);
+    expect(await h.ctx.notifications.flushHeld()).toBe(3);
     expect(h.notifier.sent).toHaveLength(1);
     const d = h.notifier.sent[0]!;
-    expect(d).toMatchObject({ level: 'error', title: '🌙 밤사이 알림 4건' });
+    expect(d).toMatchObject({ level: 'error', title: '🌙 밤사이 알림 3건' });
     const lines = d.body.split('\n');
     expect(lines[0]).toBe('❗ 품절 주문 발생 ×2');
     expect(lines).toContain('👉 고객문의 1건 답변 필요 — 내용');
-    expect(d.body).toContain('ℹ️ 새 주문 — 자동 발주 완료 — 독서노트 1개 — 오너클랜 주문 2026…');
     expect(d.body).not.toContain('둘째 줄');
+    expect(d.body).not.toContain('새 주문 — 자동 발주 완료'); // 텔레그램 대상 아님 → 모음에도 없음
     expect(await h.ctx.db.selectFrom('notifications').select('id').where('held', '=', true).execute()).toHaveLength(0);
     expect(await h.ctx.notifications.flushHeld()).toBe(0);
     expect(h.notifier.sent).toHaveLength(1);
-    // 낮에는 바로 보냄
+    // 낮에는 바로 보냄(텔레그램 대상만)
     await n('info', '상품 판매 시작');
-    expect(h.notifier.titles()).toEqual(['🌙 밤사이 알림 4건', '상품 판매 시작']);
+    await n('warn', '송장 지연');
+    expect(h.notifier.titles()).toEqual(['🌙 밤사이 알림 3건', '송장 지연']);
   });
 
   it('텔레그램 전송 실패면 보류 유지 → 다음 확인 때 다시', async () => {
     await at('2026-10-16T05:00:00');
-    await n('info', '새 주문 — 자동 발주 완료');
+    await n('action', '구매할 주문이 있어요');
     h.clock.advanceMinutes(150);
     const send = h.notifier.send.bind(h.notifier);
     h.notifier.send = async () => false;
@@ -87,7 +91,7 @@ describe('방해금지 시간', () => {
 
   it('스케줄러가 5분마다 확인해 아침에 보냄, 설정으로 끄거나 시간 변경', async () => {
     await at('2026-10-16T06:50:00');
-    await n('info', '새 주문 — 자동 발주 완료');
+    await n('action', '구매할 주문이 있어요');
     const sch = new Scheduler(h.ctx);
     expect(await sch.runJob('notify.digest')).toMatchObject({ ok: true, result: { sent: 0 } });
     h.clock.advanceMinutes(10);

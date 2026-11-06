@@ -6,7 +6,7 @@ import { reconcileMarketState } from '../src/modules/monitor/service.js';
 import { listedBefore, runSelection } from '../src/modules/selection/service.js';
 import { syncListings } from '../src/modules/sync/service.js';
 import { defaultSettings } from '../src/config/settings.js';
-import { makeHarness, seedActiveListing, type TestHarness } from './helpers.js';
+import { makeHarness, seedActiveListing, type TestHarness, logged } from './helpers.js';
 
 let h: TestHarness;
 afterEach(async () => h && (await h.close()));
@@ -39,7 +39,7 @@ describe('Wing에서 삭제한 상품 → 자동 정리', () => {
       expect(await listedBefore(h.ctx, 'mockapi', x.d.sourceItemId)).toBe(true);
     }
     expect((await listingOf(keep.listing.id)).status).toBe('active');
-    expect(h.notifier.titles()).toContain('쿠팡에서 삭제한 상품 2개 정리');
+    expect((await logged(h.ctx)).map((x) => x.title)).toContain('쿠팡에서 삭제한 상품 2개 정리');
     expect(h.notifier.titles()).not.toContain('쿠팡 판매상태 조회 실패'); // 삭제는 조회 실패가 아님
     // 다음 동기화가 되살리지 않음
     await syncListings(h.ctx);
@@ -95,7 +95,7 @@ describe('쿠팡(Wing)에서 바꾼 가격 반영', () => {
     const l = await listingOf(listing.id);
     expect(l.sale_price).toBe(28000);
     expect(l.status).toBe('active');
-    expect(h.notifier.titles()).toContain('쿠팡(Wing)에서 바뀐 가격 1개 반영');
+    expect((await logged(h.ctx)).map((x) => x.title)).toContain('쿠팡(Wing)에서 바뀐 가격 1개 반영');
   });
 
   it('최근 3시간 안에 우리가 바꾼 가격은 반영 지연으로 보고 건너뜀', async () => {

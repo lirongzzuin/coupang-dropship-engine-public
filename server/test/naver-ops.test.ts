@@ -15,7 +15,7 @@ import { runSelection } from '../src/modules/selection/service.js';
 import type { CategoryMeta } from '../src/ports/market.js';
 import type { SourceOption } from '../src/ports/source.js';
 import { FakeMarket } from '../src/adapters/fake/fakeMarket.js';
-import { makeHarness, orderByBox, TEST_ENV_BASE, type TestHarness } from './helpers.js';
+import { makeHarness, orderByBox, TEST_ENV_BASE, type TestHarness, logged } from './helpers.js';
 
 /** 스마트스토어 실운영 점검: 쿠팡과 같은 흐름 + 스마트스토어 전용 기능 */
 const log = createLogger('silent');
@@ -166,7 +166,7 @@ describe('스마트스토어 전용 운영', () => {
     expect(h.naver.delays[0]!.dueDate.toISOString()).toBe('2026-10-17T14:59:00.000Z'); // 10-17 23:59 KST
     let cur = await orderByBox(h, line.shipmentBoxId);
     expect(cur.ship_by).toBe('2026-10-17');
-    expect(h.notifier.titles()).toContain('스마트스토어 발송 지연 처리');
+    expect((await logged(h.ctx)).map((x) => x.title)).toContain('스마트스토어 발송 지연 처리');
     await checkDelays(h.ctx);
     expect(h.naver.delays).toHaveLength(1); // 새 기한 전에는 다시 안 함
     h.clock.advanceMinutes(60 * 48);
@@ -220,7 +220,7 @@ describe('스마트스토어 전용 운영', () => {
     h.apiSource.ship(c.reship_source_order_id!, '512345678901', '한진택배');
     await pollClaims(h.ctx);
     expect(h.naver.redeliveries).toEqual([{ receiptId: `${line.shipmentBoxId}:EXCHANGE`, courierCode: 'HANJIN', trackingNo: '512345678901' }]);
-    expect(h.notifier.titles()).toContain('교환 재배송 처리');
+    expect((await logged(h.ctx)).map((x) => x.title)).toContain('교환 재배송 처리');
     expect(h.notifier.titles()).not.toContain('교환 재발송 송장 — 스마트스토어센터에 입력');
   });
 
@@ -254,7 +254,7 @@ describe('스마트스토어 전용 운영', () => {
     expect(r.deleted).toBe(1);
     l = await h.ctx.db.selectFrom('listings').selectAll().where('id', '=', nl.id).executeTakeFirstOrThrow();
     expect(l).toMatchObject({ status: 'stopped', status_reason: '스마트스토어에서 삭제됨' });
-    expect(h.notifier.titles().filter((t) => t.startsWith('스마트스토어 판매상태 변경'))).toHaveLength(3);
+    expect((await logged(h.ctx)).map((x) => x.title).filter((t) => t.startsWith('스마트스토어 판매상태 변경'))).toHaveLength(3);
   });
 
   it('문의: 스마트스토어 상품 문의·주문 문의 모두 수집·자동 답변(쿠팡 고객센터용 긴급 알림 아님)', async () => {

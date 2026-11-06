@@ -3,7 +3,7 @@ import { defaultSettings } from '../src/config/settings.js';
 import { resolveCourier } from '../src/modules/orders/couriers.js';
 import { reconcileMarketState } from '../src/modules/monitor/service.js';
 import { pollClaims, pollFulfillment, pollNewOrders, processPending, submitTracking } from '../src/modules/orders/service.js';
-import { makeHarness, orderByBox, seedActiveListing, type TestHarness } from './helpers.js';
+import { makeHarness, orderByBox, seedActiveListing, type TestHarness, logged } from './helpers.js';
 
 /** 실제 배송: 택배사 표기가 제각각인 공급처 송장을 쿠팡에 정확히 올리고, 배송이 멈추면 잡아낸다 */
 let h: TestHarness;
@@ -150,7 +150,7 @@ describe('송장 등록 후 배송 감시', () => {
     expect(h.market.invoiceUpdates).toEqual([expect.objectContaining({ courierCode: 'HYUNDAI', trackingNo: '412345678901' })]);
     let after = await orderByBox(h, line.shipmentBoxId);
     expect(after).toMatchObject({ courier_code: 'HYUNDAI', tracking_no: '412345678901', status: 'TRACKING_UPLOADED' });
-    expect(h.notifier.titles()).toContain('송장 수정 반영');
+    expect((await logged(h.ctx)).map((x) => x.title)).toContain('송장 수정 반영');
     // 그 뒤로도 배송 시작이 안 잡힘 → 72시간 넘으면 1회 알림
     for (let i = 0; i < 14; i++) {
       h.clock.advanceMinutes(60 * 6);
@@ -184,7 +184,7 @@ describe('송장 등록 후 배송 감시', () => {
   it('자동 발주가 되면 알림(새 주문 — 자동 발주 완료)', async () => {
     h = await makeHarness({ live: true });
     await purchasedOrder();
-    const n = h.notifier.sent.find((m) => m.title === '새 주문 — 자동 발주 완료')!;
+    const n = (await logged(h.ctx)).find((m) => m.title === '새 주문 — 자동 발주 완료')!;
     expect(n.body).toContain('예상 이익');
   });
 });
@@ -220,6 +220,6 @@ describe('쿠팡 삭제 정리 알림', () => {
     expect((await reconcileMarketState(h.ctx)).deleted ?? 0).toBe(0);
     h.clock.advanceMinutes(60);
     await reconcileMarketState(h.ctx);
-    expect(h.notifier.titles().filter((t) => t.startsWith('쿠팡에서 삭제한 상품'))).toHaveLength(1);
+    expect((await logged(h.ctx)).map((x) => x.title).filter((t) => t.startsWith('쿠팡에서 삭제한 상품'))).toHaveLength(1);
   });
 });

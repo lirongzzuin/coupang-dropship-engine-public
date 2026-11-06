@@ -258,7 +258,7 @@ export async function processOrder(ctx: AppContext, orderId: number, opts: { ove
     if (breakdown.profit < 0 && breakdown.profit >= -s.orders.maxAutoLossKrw) {
       // 소액 손실: 구매자가 기다리지 않게 그대로 발주하고, 더 팔리지 않게 상품만 멈춤(동기화가 가격 재조정 후 재개)
       await pauseListing(ctx, listing, '마진 역전');
-      await ctx.notifications.notify('warn', '소액 손실 주문 — 그대로 발송', `${o.item_name}: 예상 손익 ${breakdown.profit.toLocaleString()}원(허용 ${s.orders.maxAutoLossKrw.toLocaleString()}원 이내). 구매자 보호를 위해 발주하고 상품은 판매중지했습니다(가격 재조정 후 자동 재개).`, { path: `/orders/${o.id}` });
+      await ctx.notifications.notify('warn', '소액 손실 주문 — 그대로 발송', `${o.item_name}: 예상 손익 ${breakdown.profit.toLocaleString()}원(허용 ${s.orders.maxAutoLossKrw.toLocaleString()}원 이내). 구매자 보호를 위해 발주하고 상품은 판매중지했습니다(가격 재조정 후 자동 재개).`, { path: `/orders/${o.id}`, push: false });
     } else if (breakdown.profit < 0) {
       await pauseListing(ctx, listing, '마진 역전');
       await ctx.notifications.notify('error', '마진 역전 주문', `${o.item_name}: 예상 손익 ${breakdown.profit.toLocaleString()}원. 상품 판매중지함.`, { path: `/orders/${o.id}` });

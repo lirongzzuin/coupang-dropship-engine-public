@@ -56,7 +56,7 @@ export async function reconcileNaver(ctx: AppContext): Promise<{ checked: number
     }
   }
   if (lines.length) {
-    await ctx.notifications.notify('warn', `스마트스토어 판매상태 변경 ${lines.length}개`, `${lines.slice(0, 10).join('\n')}\n삭제된 상품은 판매종료로 정리했고, 판매금지·판매중지 상품은 자동으로 재개하지 않습니다(스마트스토어센터에서 사유 확인).`, { path: '/listings' });
+    await ctx.notifications.notify('warn', `스마트스토어 판매상태 변경 ${lines.length}개`, `${lines.slice(0, 10).join('\n')}\n삭제된 상품은 판매종료로 정리했고, 판매금지·판매중지 상품은 자동으로 재개하지 않습니다(스마트스토어센터에서 사유 확인).`, { path: '/listings', push: false });
   }
   return out;
 }

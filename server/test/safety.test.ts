@@ -4,7 +4,7 @@ import { refreshListingStatuses } from '../src/modules/listing/service.js';
 import { pollClaims, pollFulfillment, pollNewOrders, processPending, transition } from '../src/modules/orders/service.js';
 import { runSelection } from '../src/modules/selection/service.js';
 import { syncListings } from '../src/modules/sync/service.js';
-import { makeHarness, orderByBox, seedActiveListing, type TestHarness } from './helpers.js';
+import { makeHarness, orderByBox, seedActiveListing, type TestHarness, logged } from './helpers.js';
 
 /** 구매자 보호 안전장치: 문제 감지 → 경고 → 유예 후 자동 판매 중지, 결제된 주문은 계속 처리 */
 let h: TestHarness;
@@ -152,7 +152,7 @@ describe('주문별 구매자 보호', () => {
     expect(o.expected_profit!).toBeLessThan(0);
     expect(o.expected_profit!).toBeGreaterThanOrEqual(-2000);
     expect(o.status).toBe('PURCHASED');
-    expect(h.notifier.titles()).toContain('소액 손실 주문 — 그대로 발송');
+    expect((await logged(h.ctx)).map((x) => x.title)).toContain('소액 손실 주문 — 그대로 발송'); // 자동 처리됨 → 대시보드에만
     expect((await listingStatus(small.listing.id)).status).toBe('paused');
 
     const big = await seedActiveListing(h, { price: 40000 });
@@ -228,5 +228,53 @@ describe('알림 통로 고장 대비', () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+describe('텔레그램 알림 선별(바로 확인할 것만)', () => {
+  it('info·상품 운영 알림은 대시보드에만, 주문·CS·서버 문제는 텔레그램까지', async () => {
+    h = await makeHarness();
+    await h.ctx.notifications.notify('info', '상품 판매 시작', 'x');
+    await h.ctx.notifications.notify('warn', '상품 승인 반려', 'x', { push: false });
+    await h.ctx.notifications.notify('action', '구매할 주문이 있어요', 'x');
+    await h.ctx.notifications.notify('error', '주문 수집이 멈췄습니다', 'x');
+    await h.ctx.notifications.notify('info', '✅ 문제 해결됨', 'x', { push: true });
+    expect(h.notifier.titles()).toEqual(['구매할 주문이 있어요', '주문 수집이 멈췄습니다', '✅ 문제 해결됨']);
+    const rows = await logged(h.ctx);
+    expect(rows.map((r) => [r.title, r.pushed])).toEqual([
+      ['상품 판매 시작', false], ['상품 승인 반려', false], ['구매할 주문이 있어요', true], ['주문 수집이 멈췄습니다', true], ['✅ 문제 해결됨', true],
+    ]);
+  });
+
+  it('텔레그램 대상이 아닌 알림이 많아도 알림 통로 고장으로 오인하지 않음', async () => {
+    const { vi } = await import('vitest');
+    const { watchdog } = await import('../src/modules/reports/service.js');
+    h = await makeHarness({ live: true, env: { HEARTBEAT_URL: 'https://hc.example/abc' } });
+    const urls: string[] = [];
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation((async (u: string) => (urls.push(String(u)), new Response('ok'))) as any);
+    try {
+      for (let i = 0; i < 5; i++) await h.ctx.notifications.notify('info', `상품 판매 시작 ${i}`, 'x');
+      await watchdog(h.ctx);
+      expect(urls).toEqual(['https://hc.example/abc']);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('핵심 작업(주문·송장·재고·CS·감시) 실패만 텔레그램', async () => {
+    const { JOBS } = await import('../src/jobs/scheduler.js');
+    expect(JOBS.filter((j) => j.critical).map((j) => j.name).sort()).toEqual(['cs.poll', 'listings.sync', 'notify.digest', 'orders.fulfillment', 'orders.poll', 'watchdog']);
+  });
+
+  it('아침 브리핑: 처리할 일이 없으면 대시보드에만, 있으면 텔레그램', async () => {
+    const { sendDailyReport } = await import('../src/modules/reports/service.js');
+    h = await makeHarness();
+    await h.ctx.kv.set('orders.lastPollOkAt', h.clock.now().toISOString());
+    await sendDailyReport(h.ctx);
+    expect(h.notifier.titles().some((t) => t.startsWith('☀️ 아침 브리핑'))).toBe(false);
+    expect((await logged(h.ctx)).some((t) => t.title.startsWith('☀️ 아침 브리핑'))).toBe(true);
+    await h.ctx.kv.set('orders.lastPollOkAt', null); // 주문 수집 이상
+    await sendDailyReport(h.ctx);
+    expect(h.notifier.titles().some((t) => t.startsWith('☀️ 아침 브리핑'))).toBe(true);
   });
 });

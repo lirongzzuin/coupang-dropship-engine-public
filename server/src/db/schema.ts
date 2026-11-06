@@ -310,6 +310,8 @@ export interface NotificationsTable {
   title: string;
   body: string;
   link: string | null;
+  /** 텔레그램 전송 대상이었는지(false = 관리 화면에만 기록) */
+  pushed: Generated<boolean>;
   delivered: boolean;
   /** 방해금지 시간이라 보류(아침에 모아서 보냄) */
   held: Generated<boolean>;

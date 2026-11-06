@@ -3,7 +3,7 @@ import { parseExchange, parseReturnReceipt } from '../src/adapters/coupang/marke
 import { claimAction, reshipOrder, sellerCancel } from '../src/modules/orders/claims.js';
 import { reconcile } from '../src/modules/finance/service.js';
 import { confirmPurchase, pollClaims, pollFulfillment, pollNewOrders, processPending } from '../src/modules/orders/service.js';
-import { makeHarness, orderByBox, seedActiveListing, type TestHarness } from './helpers.js';
+import { makeHarness, orderByBox, seedActiveListing, type TestHarness, logged } from './helpers.js';
 
 /** 취소·반품·교환(클레임)을 쿠팡 접수 단위로 끝까지 처리 */
 let h: TestHarness;
@@ -70,7 +70,7 @@ describe('고객 취소(상품준비중 = 출고중지요청)', () => {
     claim({ receiptId: '502', marketOrderId: line.marketOrderId, vendorItemId, type: 'RETURN', stage: 'stop_requested' });
     await cycle();
     expect((await orderByBox(h, line.shipmentBoxId)).status).toBe('CANCEL_REQUESTED');
-    expect(h.notifier.titles()).toContain('고객 취소 — 공급처 취소 요청함');
+    expect((await logged(h.ctx)).map((x) => x.title)).toContain('고객 취소 — 공급처 취소 요청함');
     expect(h.market.claimActions).toHaveLength(0);
     h.clock.advanceMinutes(60 * 25);
     await cycle();

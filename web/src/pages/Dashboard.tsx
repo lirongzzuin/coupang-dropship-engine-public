@@ -20,7 +20,7 @@ interface Dash {
 }
 interface Safety { halt: { reason: string; at: string; by: 'auto' | 'manual' } | null; issues: Array<{ key: string; message: string; fix: string; since: string }> }
 interface LP { listingId: number; title: string; salePrice: number; markup: number; status: string; orders: number; revenue: number; expectedProfit: number; settledProfit: number }
-interface Noti { id: number; level: string; title: string; body: string; link: string | null; at: string }
+interface Noti { id: number; level: string; title: string; body: string; link: string | null; pushed?: boolean; at: string }
 
 export function Dashboard() {
   const d = useLoad<Dash>('/api/dashboard');
@@ -110,12 +110,13 @@ export function Dashboard() {
       <Card title="최근 알림">
         {(n.data ?? []).slice(0, 15).map((m) => (
           <div key={m.id} className={`noti ${m.level}`}>
-            <div className="noti-head"><b>{m.title}</b><span className="muted">{dt(m.at)}</span></div>
+            <div className="noti-head"><b>{m.title}</b><span className="muted">{m.pushed ? '📱 ' : ''}{dt(m.at)}</span></div>
             <div className="pre">{m.body}</div>
             {m.link && <a href={new URL(m.link).pathname}>열기</a>}
           </div>
         ))}
         {n.data?.length === 0 && <div className="muted">알림이 없습니다</div>}
+        <div className="muted small">📱 = 텔레그램으로도 보낸 알림(주문·CS·서버 문제). 상품 등록·변경 같은 자동 운영 알림은 여기에만 기록됩니다.</div>
       </Card>
     </div>
   );

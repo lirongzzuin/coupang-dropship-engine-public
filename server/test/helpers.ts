@@ -22,6 +22,11 @@ export class CapturingNotifier implements Notifier {
   }
 }
 
+/** 관리 화면에 기록된 모든 알림(텔레그램으로 안 보낸 것 포함). pushed=false 는 대시보드에만 기록 */
+export async function logged(ctx: AppContext): Promise<Array<{ title: string; body: string; pushed: boolean }>> {
+  return ctx.db.selectFrom('notifications').select(['title', 'body', 'pushed']).orderBy('id').execute();
+}
+
 export class FakeMarketData implements MarketDataProvider {
   lowest = new Map<string, number>();
   volume = new Map<string, number>();

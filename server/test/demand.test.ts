@@ -3,7 +3,7 @@ import { pollNewOrders, processPending } from '../src/modules/orders/service.js'
 import { expectedMonthly, keywordMatches, learnedFactor, looksBranded, looksBulk, priceBandFactor, productFamily, profitScore } from '../src/modules/selection/demandModel.js';
 import { learnedHistory, runSelection } from '../src/modules/selection/service.js';
 import { reviewSlowListings } from '../src/modules/sync/service.js';
-import { makeHarness, seedActiveListing, type TestHarness } from './helpers.js';
+import { makeHarness, seedActiveListing, type TestHarness, logged } from './helpers.js';
 
 let h: TestHarness;
 afterEach(async () => h && (await h.close()));
@@ -95,7 +95,8 @@ describe('선정 알고리즘(통합)', () => {
     const sig = typeof cands[0]!.signals === 'string' ? JSON.parse(cands[0]!.signals) : cands[0]!.signals;
     expect(sig.demand.sales).toBeGreaterThan(0);
     expect(sig.keywordMedianPrice).toBeGreaterThan(0);
-    const msg = h.notifier.sent.find((x) => x.title.startsWith('상품 선정 결과'))!;
+    const msg = (await logged(h.ctx)).find((x) => x.title.startsWith('상품 선정 결과'))!;
+    expect(h.notifier.titles().some((t) => t.startsWith('상품 선정 결과'))).toBe(false); // 텔레그램 안 보냄
     expect(msg.body).toContain('키워드당 2개 한도');
   });
 
@@ -135,7 +136,7 @@ describe('판매 부진 교체', () => {
     expect((await reviewSlowListings(h.ctx)).stopped).toBe(1);
     const l = await h.ctx.db.selectFrom('listings').selectAll().where('id', '=', listing.id).executeTakeFirstOrThrow();
     expect(l.status).toBe('stopped');
-    expect(h.notifier.titles().some((t) => t.includes('판매 부진'))).toBe(true);
+    expect((await logged(h.ctx)).some((t) => t.title.includes('판매 부진'))).toBe(true);
   });
 });
 
@@ -165,7 +166,8 @@ describe('쿠팡 등록 요청 점검', () => {
     h.apiSource.add({ sourceItemId: 'P1', title: '원목 수납 정리함', price: 16000 });
     const r = await runSelection(h.ctx, { keywords: ['정리함'] });
     expect(r.autoListed).toBe(0);
-    expect(h.notifier.titles()).toContain('자동 등록 중단: 이미지 공개 필요');
+    expect((await logged(h.ctx)).map((x) => x.title)).toContain('자동 등록 중단: 이미지 공개 필요');
+    expect(h.notifier.titles()).not.toContain('자동 등록 중단: 이미지 공개 필요'); // 상품 등록 문제는 텔레그램 안 보냄
     expect(h.market.products.size).toBe(0);
   });
 });

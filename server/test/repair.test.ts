@@ -5,7 +5,7 @@ import { forceStop, repairListings, requestResume } from '../src/modules/monitor
 import { optionItemName } from '../src/modules/listing/payload.js';
 import { syncListings } from '../src/modules/sync/service.js';
 import type { CategoryMeta } from '../src/ports/market.js';
-import { makeHarness, seedActiveListing, type TestHarness } from './helpers.js';
+import { makeHarness, seedActiveListing, type TestHarness, logged } from './helpers.js';
 
 let h: TestHarness;
 afterEach(async () => h && (await h.close()));
@@ -82,7 +82,7 @@ describe('상품 설정 자동 점검·수정', () => {
     let l = await listingOf(b.listingId);
     expect(l).toMatchObject({ repair_state: 'requested', repair_resume: true, source_option: '심플바스켓 (3호 화이트)', status: 'paused' });
     expect(l.repair_note).toContain('색상: 멀티 → 화이트');
-    expect(h.notifier.titles()).toContain('상품 설정 자동 수정 요청 1개(쿠팡 심사 중)');
+    expect((await logged(h.ctx)).map((x) => x.title)).toContain('상품 설정 자동 수정 요청 1개(쿠팡 심사 중)');
 
     // 심사 중: 아무것도 하지 않음(다시 요청 안 함)
     h.clock.advanceMinutes(HOUR);
@@ -99,7 +99,7 @@ describe('상품 설정 자동 점검·수정', () => {
     l = await listingOf(b.listingId);
     expect(l).toMatchObject({ status: 'active', repair_state: null, repair_resume: false });
     for (const v of b.vids) expect(h.market.items.get(v)!.onSale).toBe(true);
-    expect(h.notifier.titles()).toEqual(expect.arrayContaining(['상품 설정 수정 완료 1개', '설정 수정 확인 → 판매 재개 1개']));
+    expect((await logged(h.ctx)).map((x) => x.title)).toEqual(expect.arrayContaining(['상품 설정 수정 완료 1개', '설정 수정 확인 → 판매 재개 1개']));
     // 이후 점검: 정상 → 다시 요청 없음
     h.clock.advanceMinutes(HOUR);
     await repairListings(h.ctx);
@@ -367,7 +367,7 @@ describe('강제 판매중지 · 판매재개(검토 후 재개)', () => {
     let l = await listingOf(a.listingId);
     expect(l.status).toBe('paused');
     expect(l.status_reason).toContain('재개 보류');
-    expect(h.notifier.titles()).toContain('판매 재개 보류');
+    expect((await logged(h.ctx)).map((x) => x.title)).toContain('판매 재개 보류');
     await repairListings(h.ctx);
     expect((await listingOf(a.listingId)).status).toBe('paused');
 

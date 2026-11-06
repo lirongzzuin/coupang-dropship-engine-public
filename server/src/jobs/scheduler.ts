@@ -29,24 +29,26 @@ export interface JobDef {
   intervalMs: (s: Settings) => number | null;
   due?: (ctx: AppContext, s: Settings, lastStarted: Date | null) => boolean;
   run: (ctx: AppContext) => Promise<unknown>;
+  /** 실패 시 텔레그램으로 바로 알림(주문·송장·재고·CS·감시 등 구매자에게 영향이 가는 작업). 나머지는 관리 화면에만 기록 */
+  critical?: boolean;
 }
 
 const min = (m: number) => m * 60_000;
 
 export const JOBS: JobDef[] = [
   {
-    name: 'orders.poll', label: '주문 수집·처리',
+    name: 'orders.poll', label: '주문 수집·처리', critical: true,
     intervalMs: (s) => min(s.schedule.orderPollMinutes),
     run: async (ctx) => ({ poll: await pollNewOrders(ctx), process: await processPending(ctx), claims: await pollClaims(ctx) }),
   },
   {
-    name: 'orders.fulfillment', label: '송장 회수·배송 추적',
+    name: 'orders.fulfillment', label: '송장 회수·배송 추적', critical: true,
     intervalMs: (s) => min(s.schedule.fulfillmentMinutes),
     run: async (ctx) => ({ fulfillment: await pollFulfillment(ctx), delays: await checkDelays(ctx) }),
   },
   { name: 'listings.status', label: '상품 승인 상태', intervalMs: (s) => min(s.schedule.listingStatusMinutes), run: refreshListingStatuses },
   {
-    name: 'listings.sync', label: '가격·재고 동기화',
+    name: 'listings.sync', label: '가격·재고 동기화', critical: true,
     intervalMs: (s) => min(s.schedule.syncMinutes),
     run: async (ctx) => ({ sync: await syncListings(ctx), slow: await reviewSlowListings(ctx), retired: await retireStalePaused(ctx) }),
   },
@@ -65,9 +67,9 @@ export const JOBS: JobDef[] = [
     intervalMs: () => 24 * 3600_000,
     run: async (ctx) => ({ prices: await optimizePrices(ctx), cost: await scoutCheaperSources(ctx) }),
   },
-  { name: 'cs.poll', label: '고객문의', intervalMs: (s) => min(s.schedule.csMinutes), run: pollInquiries },
+  { name: 'cs.poll', label: '고객문의', critical: true, intervalMs: (s) => min(s.schedule.csMinutes), run: pollInquiries },
   // 방해금지 시간(기본 23~07시)에 보류한 알림을 끝나는 시각에 모아서 보냄
-  { name: 'notify.digest', label: '밤사이 알림 모아 보내기', intervalMs: () => min(5), run: async (ctx) => ({ sent: await ctx.notifications.flushHeld() }) },
+  { name: 'notify.digest', label: '밤사이 알림 모아 보내기', critical: true, intervalMs: () => min(5), run: async (ctx) => ({ sent: await ctx.notifications.flushHeld() }) },
   // 스마트스토어 키가 없거나 naver.enabled=false 면 아무것도 하지 않음
   { name: 'naver.mirror', label: '스마트스토어 자동 등록', intervalMs: (s) => min(s.schedule.naverMirrorMinutes), run: naverMirror },
   { name: 'finance.reconcile', label: '정산 대사', intervalMs: (s) => s.schedule.reconcileHours * 3600_000, run: async (ctx) => ({ reconcile: await reconcile(ctx), pii: await purgePii(ctx) }) },
@@ -84,7 +86,7 @@ export const JOBS: JobDef[] = [
   },
   { name: 'setup.coupangPlaces', label: '쿠팡 출고지·반품지 자동 설정', intervalMs: () => 6 * 3600_000, run: syncShippingPlaces },
   {
-    name: 'watchdog', label: '감시·안전장치(문제 감지 → 자동 판매 중지)',
+    name: 'watchdog', label: '감시·안전장치(문제 감지 → 자동 판매 중지)', critical: true,
     intervalMs: (s) => min(s.schedule.watchdogMinutes),
     run: async (ctx) => ({ watchdog: await watchdog(ctx), safety: await safetyCheck(ctx) }),
   },
@@ -142,7 +144,7 @@ export class Scheduler {
       const msg = errMessage(e);
       this.ctx.log.error({ job: name, err: msg }, 'job failed');
       await this.ctx.db.updateTable('job_runs').set({ finished_at: this.ctx.clock.now(), ok: false, error: msg.slice(0, 1000) }).where('id', '=', run.id).execute();
-      await this.ctx.notifications.notify('error', `작업 실패: ${j.label}`, msg.slice(0, 500), { path: '/jobs', dedupeKey: `job-fail-${name}`, dedupeMinutes: 60 });
+      await this.ctx.notifications.notify('error', `작업 실패: ${j.label}`, msg.slice(0, 500), { path: '/jobs', dedupeKey: `job-fail-${name}`, dedupeMinutes: 60, push: !!j.critical });
       return { ok: false, error: msg };
     } finally {
       this.running.delete(name);

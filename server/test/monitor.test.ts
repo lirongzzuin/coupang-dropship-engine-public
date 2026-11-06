@@ -6,7 +6,7 @@ import { pollNewOrders, processPending } from '../src/modules/orders/service.js'
 import { sendDailyReport } from '../src/modules/reports/service.js';
 import { listedBefore, runSelection } from '../src/modules/selection/service.js';
 import { reviewSlowListings, syncListings } from '../src/modules/sync/service.js';
-import { makeHarness, orderByBox, seedActiveListing, type TestHarness } from './helpers.js';
+import { makeHarness, orderByBox, seedActiveListing, type TestHarness, logged } from './helpers.js';
 
 let h: TestHarness;
 afterEach(async () => h && (await h.close()));
@@ -60,7 +60,7 @@ describe('판매 가능 감시(동기화)', () => {
     l = await listingOf(listing.id);
     expect(l.status).toBe('active');
     expect(l.paused_at).toBeNull();
-    expect(h.notifier.titles()).toContain('상품 1개 판매 재개');
+    expect((await logged(h.ctx)).map((x) => x.title)).toContain('상품 1개 판매 재개');
     // 주문 → 올린 옵션(빨강)으로 발주
     const line = h.market.seedOrder({ vendorItemId, paidAmount: 30000, orderedAt: h.clock.now() });
     await pollNewOrders(h.ctx);
@@ -79,7 +79,7 @@ describe('판매 가능 감시(동기화)', () => {
     expect(l.status).toBe('paused');
     expect(l.status_reason).toContain('공급처 판매 불가');
     expect(l.status_reason).toContain('빨강');
-    const msg = h.notifier.sent.find((m) => m.title === '상품 1개 자동 판매중지')!;
+    const msg = (await logged(h.ctx)).find((m) => m.title === '상품 1개 자동 판매중지')!;
     expect(msg.body).toContain('빨강');
   });
 
@@ -202,7 +202,7 @@ describe('주문 가능 점검(공급처 주문 시뮬레이션)', () => {
     expect(l.status).toBe('paused');
     expect(l.status_reason).toContain('주문 불가');
     expect(h.market.items.get(vendorItemId)!.onSale).toBe(false);
-    expect(h.notifier.titles()).toContain('주문 불가 상품 1개 판매중지');
+    expect((await logged(h.ctx)).map((x) => x.title)).toContain('주문 불가 상품 1개 판매중지');
     // 공급처 상품 자체는 정상 → 동기화가 재개하면 안 됨
     await syncListings(h.ctx);
     expect((await listingOf(listing.id)).status).toBe('paused');
@@ -246,7 +246,7 @@ describe('주문 가능 점검(공급처 주문 시뮬레이션)', () => {
     expect(l.status).toBe('paused');
     expect(l.status_reason).toContain('실주문 금액 29,000원 기준 손실');
     expect((await listingOf(pricier.listing.id)).status).toBe('active');
-    expect(h.notifier.titles()).toContain('실주문 금액이 예상보다 비싼 상품');
+    expect((await logged(h.ctx)).map((x) => x.title)).toContain('실주문 금액이 예상보다 비싼 상품');
   });
 
   it('한 번에 다수가 거부되면 연동 문제로 보고 멈추지 않음(알림)', async () => {
@@ -292,7 +292,7 @@ describe('쿠팡 판매상태 대조', () => {
     r = await reconcileMarketState(h.ctx);
     expect((await listingOf(b.listing.id)).status).toBe('active');
     expect(h.market.items.get(b.vendorItemId)!.onSale).toBe(true);
-    expect(h.notifier.titles()).toContain('Wing에서 판매 재개한 상품 1개 반영');
+    expect((await logged(h.ctx)).map((x) => x.title)).toContain('Wing에서 판매 재개한 상품 1개 반영');
   });
 
   it('모의 등록 상품은 대조하지 않음, 조회 실패는 건너뜀', async () => {
@@ -395,7 +395,7 @@ describe('판매 상품 정리', () => {
     expect(stopped).toHaveLength(1);
     expect(stopped[0]!.status_reason).toContain('우선순위 밀림');
     expect(h.market.items.get(stopped[0]!.vendor_item_id!)!.onSale).toBe(false);
-    const msg = h.notifier.sent.find((x) => x.title.startsWith('상품 선정 결과'))!;
+    const msg = (await logged(h.ctx)).find((x) => x.title.startsWith('상품 선정 결과'))!;
     expect(msg.body).toContain('우선순위 교체 1개');
     expect(msg.body).toContain('1회 교체 한도(1개) 도달');
     // 남은 운영 상품 수는 상한 그대로
@@ -413,7 +413,7 @@ describe('판매 상품 정리', () => {
     expect(r.autoListed).toBe(0);
     expect((await listingOf(a.listing.id)).status).toBe('active');
     expect(await h.ctx.db.selectFrom('listings').select('id').where('status', '=', 'draft').execute()).toHaveLength(0); // 초안도 안 만듦
-    expect(h.notifier.sent.find((x) => x.title.startsWith('상품 선정 결과'))!.body).toContain('교체할 저성과 상품 없음');
+    expect((await logged(h.ctx)).find((x) => x.title.startsWith('상품 선정 결과'))!.body).toContain('교체할 저성과 상품 없음');
   });
 
   it('교체 중 새 상품 등록이 실패하면 기존 상품을 되살림', async () => {

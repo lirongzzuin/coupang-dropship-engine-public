@@ -146,12 +146,12 @@ export async function syncListings(ctx: AppContext): Promise<{ checked: number; 
   if (stats.paused) {
     const lines = pausedNow.slice(0, 8).map((x) => `• ${x.title.slice(0, 28)} — ${x.reason}`);
     await ctx.notifications.notify('warn', `상품 ${stats.paused}개 자동 판매중지`,
-      `${lines.join('\n')}${pausedNow.length > 8 ? `\n외 ${pausedNow.length - 8}개` : ''}\n공급처에서 주문할 수 없는 상태라 쿠팡 판매를 멈췄습니다. 회복되면 자동 재개됩니다.`, { path: '/listings' });
+      `${lines.join('\n')}${pausedNow.length > 8 ? `\n외 ${pausedNow.length - 8}개` : ''}\n공급처에서 주문할 수 없는 상태라 쿠팡 판매를 멈췄습니다. 회복되면 자동 재개됩니다.`, { path: '/listings', push: false });
   }
   if (optionUnset.length) {
     await ctx.notifications.notify('action', `옵션이 정해지지 않은 상품 ${optionUnset.length}개 판매중지`,
       `${optionUnset.slice(0, 8).map((t) => `• ${t.slice(0, 28)}`).join('\n')}\n공급처에 색상·사이즈 옵션이 여러 개인데 어떤 옵션을 파는지 정해지지 않은 채 올라가(쿠팡 옵션: 멀티/FREE 등) 구매자가 다른 옵션을 받을 수 있습니다.\n관리 화면 상품 > 해당 상품 > [옵션 지정해 다시 등록]을 누르면 옵션(예: 3호 화이트)을 정해 새로 등록합니다. 이전 쿠팡 상품은 Wing에서 삭제하면 자동 정리됩니다.`,
-      { path: '/listings' });
+      { path: '/listings', push: false });
   }
   if (stats.resumed) await ctx.notifications.notify('info', `상품 ${stats.resumed}개 판매 재개`, resumedNow.slice(0, 8).map((t) => `• ${t.slice(0, 28)}`).join('\n'), { path: '/listings' });
   return stats;

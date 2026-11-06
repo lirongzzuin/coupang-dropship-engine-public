@@ -461,12 +461,12 @@ async function autoList(ctx: AppContext, runId: string): Promise<AutoListOutcome
       ctx.log.warn({ candidate: r.id, err: msg }, '자동 등록 실패');
       if (msg.includes('이미지 공개 주소 미설정')) {
         out.stopReason = msg;
-        await ctx.notifications.notify('error', '자동 등록 중단: 이미지 공개 필요', msg, { path: '/settings', dedupeKey: 'autolist-media', dedupeMinutes: 24 * 60 });
+        await ctx.notifications.notify('error', '자동 등록 중단: 이미지 공개 필요', msg, { path: '/settings', dedupeKey: 'autolist-media', dedupeMinutes: 24 * 60, push: false });
         break;
       }
       if (msg.includes('쿠팡 정보 미입력')) {
         out.stopReason = msg;
-        await ctx.notifications.notify('error', '자동 등록 중단: 설정 필요', `${msg}\n설정 화면에서 쿠팡 판매자 정보를 입력하면 다음 선정 주기에 자동 등록됩니다.`, { path: '/settings', dedupeKey: 'autolist-settings', dedupeMinutes: 24 * 60 });
+        await ctx.notifications.notify('error', '자동 등록 중단: 설정 필요', `${msg}\n설정 화면에서 쿠팡 판매자 정보를 입력하면 다음 선정 주기에 자동 등록됩니다.`, { path: '/settings', dedupeKey: 'autolist-settings', dedupeMinutes: 24 * 60, push: false });
         break;
       }
       if (msg.includes('상한')) {
@@ -511,7 +511,7 @@ async function notifySelectionSummary(ctx: AppContext, runId: string, result: Se
   }
   if (result.errors.length) lines.push('', `오류 ${result.errors.length}건(예: ${result.errors[0]!.slice(0, 80)})`);
   if (!auto) lines.push('', '수동 승인 모드: 관리 화면 [후보]에서 승인하면 등록됩니다.');
-  await ctx.notifications.notify(auto?.listed.length ? 'info' : 'action', `상품 선정 결과${ctx.env.DRY_RUN ? ' (모의 실행)' : ''}`, lines.join('\n'), { path: '/candidates' });
+  await ctx.notifications.notify(auto?.listed.length ? 'info' : 'action', `상품 선정 결과${ctx.env.DRY_RUN ? ' (모의 실행)' : ''}`, lines.join('\n'), { path: '/candidates', push: false });
 }
 
 export async function decideCandidate(ctx: AppContext, id: number, approve: boolean, actor: string): Promise<{ listingId?: number }> {

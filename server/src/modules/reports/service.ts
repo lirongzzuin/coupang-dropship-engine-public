@@ -102,10 +102,14 @@ export async function sendDailyReport(ctx: AppContext): Promise<string> {
   // 1) 시스템 상태
   const { JOBS } = await import('../../jobs/scheduler.js');
   const bad: string[] = [];
+  let criticalBad = 0;
   for (const j of JOBS) {
     if (j.name === 'report.daily') continue;
     const r = await ctx.db.selectFrom('job_runs').select(['ok', 'error', 'started_at']).where('job', '=', j.name).orderBy('started_at', 'desc').executeTakeFirst();
-    if (r && r.ok === false) bad.push(`${j.label}: ${(r.error ?? '').slice(0, 60)}`);
+    if (r && r.ok === false) {
+      bad.push(`${j.label}: ${(r.error ?? '').slice(0, 60)}`);
+      if (j.critical) criticalBad++;
+    }
   }
   const pollAgo = d.lastOrderPollAt ? Math.round((now.getTime() - new Date(d.lastOrderPollAt).getTime()) / 60000) : null;
   const pollOk = pollAgo !== null && pollAgo <= 30;
@@ -189,7 +193,10 @@ export async function sendDailyReport(ctx: AppContext): Promise<string> {
   for (const t of todo) L.push(`  · ${t}`);
 
   const body = L.join('\n');
-  await ctx.notifications.notify(bad.length || !pollOk ? 'warn' : 'info', `☀️ 아침 브리핑 ${kstDate(now).slice(5).replace('-', '/')}`, body, { path: '/' });
+  // 텔레그램은 지금 처리할 일(주문·CS·서버·안전장치)이 있을 때만. 평소(실적·상품 운영 요약)는 관리 화면에만 기록
+  const urgent = !pollOk || criticalBad > 0 || !!safety.halt || safety.issues.length > 0 || d.actionCount > 0 || d.exceptionCount > 0 || d.inquiriesOpen > 0 || d.killSwitch
+    || (d.keyExpiresInDays !== null && d.keyExpiresInDays <= 7);
+  await ctx.notifications.notify(bad.length || !pollOk ? 'warn' : 'info', `☀️ 아침 브리핑 ${kstDate(now).slice(5).replace('-', '/')}`, body, { path: '/', push: urgent });
   await recordDailyMetrics(ctx, yStart, todayStart);
   await pruneOldData(ctx);
   return body;
@@ -251,8 +258,8 @@ export async function watchdog(ctx: AppContext): Promise<{ alerts: number }> {
   // 외부 생존 신호: 주문 수집이 정상일 때만 보냄(멈췄으면 외부 서비스가 알림)
   const pollOk = !ref || now.getTime() - new Date(ref).getTime() <= staleMs;
   // 텔레그램이 안 가면 모든 경고가 묻힘 → 최근 1시간 알림이 전부 실패면 외부 감시(healthchecks)에 실패 신호(이메일 알림)
-  // 방해금지 시간에 보류한 알림(held)은 전송 실패가 아님
-  const recent = await ctx.db.selectFrom('notifications').select('delivered').where('at', '>=', new Date(now.getTime() - 3600_000)).where('held', '=', false).execute();
+  // 방해금지 시간에 보류한 알림(held)·텔레그램 대상이 아닌 알림(pushed=false)은 전송 실패가 아님
+  const recent = await ctx.db.selectFrom('notifications').select('delivered').where('at', '>=', new Date(now.getTime() - 3600_000)).where('held', '=', false).where('pushed', '=', true).execute();
   const notifyBroken = recent.length >= 2 && recent.every((r) => !r.delivered);
   if (ctx.env.HEARTBEAT_URL && notifyBroken) {
     try {
@@ -289,7 +296,7 @@ export async function checkPublicIp(ctx: AppContext): Promise<number> {
   await ctx.kv.set('net.publicIp', ip);
   await ctx.kv.set('net.publicIpChangedAt', ctx.clock.now().toISOString());
   if (!prev) {
-    await ctx.notifications.notify('info', `서버 공인 IP: ${ip}`, '이 IP를 쿠팡 Wing > OPEN API 키 > 허용 IP에 등록하세요(최대 10개).', { dedupeKey: `ip-${ip}`, dedupeMinutes: 24 * 60 });
+    await ctx.notifications.notify('info', `서버 공인 IP: ${ip}`, '이 IP를 쿠팡 Wing > OPEN API 키 > 허용 IP에 등록하세요(최대 10개).', { dedupeKey: `ip-${ip}`, dedupeMinutes: 24 * 60, push: true });
     return 0;
   }
   await ctx.notifications.notify('error', `공인 IP 변경: ${prev} → ${ip}`, '쿠팡 API 호출이 차단될 수 있습니다. Wing > 판매자정보 > 추가판매정보 > OPEN API 키에서 새 IP를 추가하세요(최대 30분 후 반영). 예전 IP는 그대로 두어도 됩니다(최대 10개).', { path: '/', dedupeKey: `ip-${ip}`, dedupeMinutes: 24 * 60 });

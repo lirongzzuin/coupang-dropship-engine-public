@@ -71,7 +71,7 @@ export async function resumeSales(ctx: AppContext, actor: string): Promise<{ res
   for (const k of Object.keys(issues)) issues[k] = { ...issues[k]!, since: now, remindedAt: now };
   await ctx.kv.set('safety.issues', issues);
   await audit(ctx, actor, 'safety.resume', undefined, { resumed });
-  await ctx.notifications.notify('info', '판매 재개', `상품 ${resumed}개 판매를 재개했습니다.${Object.keys(issues).length ? `\n아직 남은 문제 ${Object.keys(issues).length}건 — 해결하지 않으면 다시 자동 중지됩니다.` : ''}`, { path: '/' });
+  await ctx.notifications.notify('info', '판매 재개', `상품 ${resumed}개 판매를 재개했습니다.${Object.keys(issues).length ? `\n아직 남은 문제 ${Object.keys(issues).length}건 — 해결하지 않으면 다시 자동 중지됩니다.` : ''}`, { path: '/', push: Object.keys(issues).length > 0 });
   return { resumed };
 }
 
@@ -155,7 +155,7 @@ export async function safetyCheck(ctx: AppContext): Promise<{ issues: number; ha
   }
   for (const k of Object.keys(prev)) if (!next[k]) {
     resolved++;
-    await ctx.notifications.notify('info', '✅ 문제 해결됨', prev[k]!.message, { dedupeKey: `safety-resolved-${k}`, dedupeMinutes: 60 });
+    await ctx.notifications.notify('info', '✅ 문제 해결됨', prev[k]!.message, { dedupeKey: `safety-resolved-${k}`, dedupeMinutes: 60, push: true }); // 받은 경고를 닫아주는 알림
   }
   await ctx.kv.set('safety.issues', next);
 

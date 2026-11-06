@@ -14,7 +14,7 @@ import { syncListings } from '../src/modules/sync/service.js';
 import { listedBefore } from '../src/modules/selection/service.js';
 import type { CategoryMeta } from '../src/ports/market.js';
 import type { SourceOption } from '../src/ports/source.js';
-import { makeHarness, orderByBox, type TestHarness } from './helpers.js';
+import { makeHarness, orderByBox, type TestHarness, logged } from './helpers.js';
 
 const log = createLogger('silent');
 const json = (obj: unknown, status = 200) => new Response(JSON.stringify(obj), { status, headers: { 'content-type': 'application/json' } });
@@ -339,7 +339,7 @@ describe('스마트스토어 통합', () => {
     nl = (await naverListing())!;
     expect(nl.status).toBe('active');
     for (const it of await itemsOf(nl.id)) expect(it.vendor_item_id).toBe(`NV${nl.seller_product_id}:${it.id}`);
-    expect(h.notifier.titles()).toContain('스마트스토어 판매 시작');
+    expect((await logged(h.ctx)).map((x) => x.title)).toContain('스마트스토어 판매 시작');
     // 쿠팡 선정·재등록 판단은 스마트스토어 상품과 무관
     expect(await listedBefore(h.ctx, 'mockapi', 'V1')).toBe(true); // 쿠팡 상품 때문(스마트스토어와 별개)
   });
@@ -358,7 +358,7 @@ describe('스마트스토어 통합', () => {
     expect(o).toMatchObject({ market: 'naver', status: 'PURCHASED', listing_id: nl.id });
     expect(h.naver.calls).toContain('acknowledge');
     expect([...h.apiSource.orders.values()].at(-1)!.req.option).toBe('블랙 / L');
-    expect(h.notifier.titles()).toContain('새 주문 — 자동 발주 완료');
+    expect((await logged(h.ctx)).map((x) => x.title)).toContain('새 주문 — 자동 발주 완료');
     h.apiSource.ship(o.source_order_id!, '612345678901', 'CJ대한통운');
     await pollFulfillment(h.ctx);
     o = await orderByBox(h, line.shipmentBoxId);
@@ -412,7 +412,7 @@ describe('스마트스토어 통합', () => {
     await processPending(h.ctx);
     h.naver.claim({ receiptId: `${line.shipmentBoxId}:CANCEL`, marketOrderId: line.marketOrderId, vendorItemId: item.vendor_item_id!, type: 'CANCEL', stage: 'stop_requested', requestedAt: h.clock.now() });
     await pollClaims(h.ctx);
-    const texts = h.notifier.sent.map((m: any) => `${m.title} ${m.body}`).join('\n');
+    const texts = (await logged(h.ctx)).map((m: any) => `${m.title} ${m.body}`).join('\n');
     expect(texts).toMatch(/스마트스토어 취소 승인/);
     expect(texts).not.toMatch(/쿠팡 출고중지|쿠팡에 이미출고|쿠팡은 이미 환불/);
   });
@@ -507,7 +507,7 @@ describe('스마트스토어 통합', () => {
     r = await naverMirror(h.ctx);
     expect(r.errors).toHaveLength(1);
     expect((await naverListing())!).toMatchObject({ status: 'rejected' });
-    expect(h.notifier.titles().some((t) => t.startsWith('스마트스토어 등록 요청 0개 · 실패 1개'))).toBe(true);
+    expect((await logged(h.ctx)).map((x) => x.title).some((t) => t.startsWith('스마트스토어 등록 요청 0개 · 실패 1개'))).toBe(true);
   });
 
   it('KC·어린이제품 인증이 필요한 카테고리 거부는 실패가 아니라 건너뜀(알림 경고 없음)', async () => {

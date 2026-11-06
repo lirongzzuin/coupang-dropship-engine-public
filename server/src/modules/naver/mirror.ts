@@ -74,7 +74,7 @@ export async function naverMirror(ctx: AppContext): Promise<MirrorResult> {
   await ctx.kv.set('naver.skip', skipMemo);
   if (out.created || out.errors.length) {
     await ctx.notifications.notify(out.errors.length ? 'warn' : 'info', `스마트스토어 등록 요청 ${out.created}개${out.errors.length ? ` · 실패 ${out.errors.length}개` : ''}`,
-      [...out.errors.map((x) => `✗ ${x}`), ...out.skipped.slice(0, 5).map((x) => `· 건너뜀 ${x}`)].join('\n') || '스마트스토어 상태 확인 후 판매가 시작됩니다.', { path: '/listings' });
+      [...out.errors.map((x) => `✗ ${x}`), ...out.skipped.slice(0, 5).map((x) => `· 건너뜀 ${x}`)].join('\n') || '스마트스토어 상태 확인 후 판매가 시작됩니다.', { path: '/listings', push: false });
   }
   return out;
 }

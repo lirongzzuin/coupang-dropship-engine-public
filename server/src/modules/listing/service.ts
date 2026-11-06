@@ -207,7 +207,7 @@ export async function refreshListingStatuses(ctx: AppContext): Promise<{ approve
         const where = l.market === 'coupang' ? 'Wing' : `${label}센터`;
         await ctx.db.updateTable('listings').set({ status: 'rejected', status_reason: `${label} 승인 반려(${st.rawStatus}) — ${where}에서 사유 확인`, updated_at: ctx.clock.now() }).where('id', '=', l.id).execute();
         rejected++;
-        await ctx.notifications.notify('warn', l.market === 'coupang' ? '상품 승인 반려' : `${label} 상품 승인 반려`, `${l.title}: ${where}에서 반려 사유를 확인하세요.`, { path: `/listings` });
+        await ctx.notifications.notify('warn', l.market === 'coupang' ? '상품 승인 반려' : `${label} 상품 승인 반려`, `${l.title}: ${where}에서 반려 사유를 확인하세요.`, { path: `/listings`, push: false });
       }
     } catch (e) {
       ctx.log.warn({ listing: l.id, err: errMessage(e) }, '상품 상태 조회 실패');

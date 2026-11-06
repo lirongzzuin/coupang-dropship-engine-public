@@ -7,7 +7,7 @@ import { bundleOptions, charmPrice, initialMarkup, markupCapForMarket, targetMar
 import { decideCandidate, runSelection } from '../src/modules/selection/service.js';
 import { evaluateGates, scoreCandidate } from '../src/modules/selection/scoring.js';
 import { optimizePrices, scoutCheaperSources } from '../src/modules/sync/service.js';
-import { makeHarness, orderByBox, seedActiveListing, type TestHarness } from './helpers.js';
+import { makeHarness, orderByBox, seedActiveListing, type TestHarness, logged } from './helpers.js';
 
 const S = () => mergeSettings(defaultSettings(), { fees: { monthlyServiceFee: 0 } });
 
@@ -204,7 +204,8 @@ describe('원가 절감·수수료 학습', () => {
     expect(r.switched).toBe(1);
     const l = await h.ctx.db.selectFrom('listings').innerJoin('source_products', 'source_products.id', 'listings.source_product_id').select(['source_products.source_item_id']).where('listings.id', '=', listing.id).executeTakeFirstOrThrow();
     expect(l.source_item_id).toBe('C2');
-    expect(h.notifier.titles()).toContain('더 싼 공급처로 교체');
+    expect((await logged(h.ctx)).map((x) => x.title)).toContain('더 싼 공급처로 교체');
+    expect(h.notifier.titles()).not.toContain('더 싼 공급처로 교체');
     expect((await scoutCheaperSources(h.ctx)).checked).toBe(0); // 주기 내 재탐색 안 함
   });
 
