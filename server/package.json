@@ -12,16 +12,16 @@
     "admin:create": "tsx src/cli/create-admin.ts"
   },
   "dependencies": {
-    "@electric-sql/pglite": "0.5.9",
-    "@fastify/cookie": "11.1.3",
-    "@fastify/static": "10.1.6",
-    "bcryptjs": "3.0.2",
-    "fastify": "5.12.5",
-    "iconv-lite": "0.6.3",
-    "kysely": "0.29.6",
+    "@electric-sql/pglite": "0.5.14",
+    "@fastify/cookie": "11.1.5",
+    "@fastify/static": "10.1.8",
+    "bcryptjs": "3.0.3",
+    "fastify": "5.12.8",
+    "iconv-lite": "0.7.3",
+    "kysely": "0.29.8",
     "pg": "8.23.1",
     "pino": "10.4.0",
-    "sharp": "0.34.4",
+    "sharp": "0.35.5",
     "zod": "3.25.76"
   },
   "devDependencies": {
