@@ -1,5 +1,5 @@
 # 빌드: 관리자 웹 + 서버를 한 이미지로
-FROM node:24-slim AS build
+FROM node:25-slim AS build
 WORKDIR /app
 RUN corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
@@ -9,7 +9,7 @@ RUN pnpm install --frozen-lockfile
 COPY . .
 RUN pnpm --filter web build && pnpm --filter server build
 
-FROM node:24-slim
+FROM node:25-slim
 WORKDIR /app
 ENV NODE_ENV=production WEB_DIR=/app/web/dist DATA_DIR=/data
 RUN corepack enable
